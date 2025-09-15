@@ -1,0 +1,57 @@
+version: '3.8'
+
+services:
+  diu:
+    build: .
+    container_name: diu-daemon
+    ports:
+      - "8080:8080"  # Daemon port
+      - "8081:8081"  # API port
+    volumes:
+      - diu-data:/var/lib/diu
+      - ./configs/default.yaml:/etc/diu/config.yaml:ro
+    environment:
+      - DIU_LOG_LEVEL=debug
+    restart: unless-stopped
+    networks:
+      - diu-network
+
+  # E2E test runner
+  e2e-tests:
+    build:
+      context: .
+      dockerfile: Dockerfile.e2e
+    container_name: diu-e2e
+    depends_on:
+      - diu
+    environment:
+      - DIU_API_URL=http://diu:8081
+      - TEST_TIMEOUT=60s
+    volumes:
+      - ./e2e:/app/e2e
+      - ./test-results:/app/test-results
+    networks:
+      - diu-network
+    profiles:
+      - e2e
+
+  # Simulated package managers for testing
+  test-env:
+    image: alpine:latest
+    container_name: diu-test-env
+    command: tail -f /dev/null
+    volumes:
+      - ./test-scripts:/scripts
+    environment:
+      - DIU_API_URL=http://diu:8081
+    networks:
+      - diu-network
+    profiles:
+      - e2e
+
+volumes:
+  diu-data:
+
+networks:
+  diu-network:
+    driver: bridge

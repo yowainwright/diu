@@ -1,0 +1,36 @@
+{
+  "name": "diu",
+  "version": "0.1.0",
+  "description": "Do I Use - Package Manager Execution Tracker",
+  "keywords": [
+    "package-manager",
+    "tracking",
+    "cli",
+    "homebrew",
+    "npm",
+    "go",
+    "monitoring"
+  ],
+  "homepage": "https://github.com/yowainwright/diu",
+  "bugs": {
+    "url": "https://github.com/yowainwright/diu/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yowainwright/diu.git"
+  },
+  "license": "MIT",
+  "author": "Jeffry Wainwright",
+  "scripts": {
+    "build": "go build -o diu ./cmd/diu",
+    "test": "go test ./...",
+    "clean": "go clean && rm -f diu",
+    "install:local": "go install ./cmd/diu",
+    "release": "goreleaser release --clean",
+    "release:snapshot": "goreleaser release --snapshot --clean"
+  },
+  "devDependencies": {},
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

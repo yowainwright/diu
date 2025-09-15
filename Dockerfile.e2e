@@ -1,0 +1,24 @@
+# E2E Test Runner Dockerfile
+FROM golang:1.22-alpine
+
+WORKDIR /app
+
+# Install test dependencies
+RUN apk add --no-cache bash curl jq git npm python3 py3-pip
+
+# Install package managers for testing
+RUN npm install -g yarn pnpm && \
+    pip3 install --upgrade pip
+
+# Copy test files
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+
+# Install test tools
+RUN go install github.com/onsi/ginkgo/v2/ginkgo@latest && \
+    go install github.com/onsi/gomega/...@latest
+
+# Run tests
+CMD ["go", "test", "-v", "./e2e/..."]

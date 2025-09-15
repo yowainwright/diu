@@ -1,0 +1,174 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  GO_VERSION: '1.22'
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Cache Go modules
+        uses: actions/cache@v4
+        with:
+          path: ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+
+      - name: Install golangci-lint
+        run: |
+          brew install golangci-lint
+
+      - name: Run linters
+        run: |
+          golangci-lint run ./...
+          go vet ./...
+
+  test:
+    name: Test
+    runs-on: macos-latest
+    strategy:
+      matrix:
+        go: ['1.21', '1.22']
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go }}
+
+      - name: Cache Go modules
+        uses: actions/cache@v4
+        with:
+          path: ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+
+      - name: Run tests
+        run: |
+          go test -v -race -coverprofile=coverage.out ./...
+          go tool cover -func=coverage.out
+
+      - name: Upload coverage to Codecov
+        if: matrix.go == '1.22'
+        uses: codecov/codecov-action@v4
+        with:
+          file: ./coverage.out
+          flags: unittests
+          name: codecov-umbrella
+
+  build:
+    name: Build
+    runs-on: macos-latest
+    strategy:
+      matrix:
+        arch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Build
+        env:
+          GOOS: darwin
+          GOARCH: ${{ matrix.arch }}
+        run: |
+          go build -v -o diu-darwin-${{ matrix.arch }} ./cmd/diu
+
+      - name: Test binary
+        if: matrix.arch == 'arm64' && runner.arch == 'ARM64' || matrix.arch == 'amd64' && runner.arch == 'X64'
+        run: |
+          ./diu-darwin-${{ matrix.arch }} --version
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: diu-darwin-${{ matrix.arch }}
+          path: diu-darwin-${{ matrix.arch }}
+
+  integration:
+    name: Integration Tests
+    runs-on: macos-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Download binary
+        uses: actions/download-artifact@v4
+        with:
+          name: diu-darwin-arm64
+          path: .
+
+      - name: Make binary executable
+        run: chmod +x ./diu-darwin-arm64
+
+      - name: Test daemon start/stop
+        run: |
+          ./diu-darwin-arm64 daemon start &
+          sleep 5
+          ./diu-darwin-arm64 daemon status
+          ./diu-darwin-arm64 daemon stop
+
+      - name: Test CLI commands
+        run: |
+          ./diu-darwin-arm64 --help
+          ./diu-darwin-arm64 query --help
+          ./diu-darwin-arm64 stats --help
+
+  homebrew-test:
+    name: Homebrew Formula Test
+    runs-on: macos-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Test Homebrew formula (dry-run)
+        run: |
+          # This would test the Homebrew formula once published
+          echo "Homebrew formula test would run here"
+
+  security:
+    name: Security Scan
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Run gosec security scanner
+        run: |
+          go install github.com/securego/gosec/v2/cmd/gosec@latest
+          gosec -fmt sarif -out gosec-results.sarif ./...
+
+      - name: Upload security results
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: 'gosec-results.sarif'

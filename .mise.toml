@@ -1,0 +1,176 @@
+[tools]
+go = "1.25"
+golangci-lint = "latest"
+goreleaser = "latest"
+
+[env]
+CGO_ENABLED = "0"
+GOFLAGS = "-mod=readonly"
+
+[tasks.build]
+description = "Build the DIU binary"
+run = "go build -o diu ./cmd/diu"
+
+[tasks.test]
+description = "Run all tests"
+run = "go test -v -race -coverprofile=coverage.out ./..."
+
+[tasks.test-unit]
+description = "Run unit tests only"
+run = "go test -v -short ./..."
+
+[tasks.test-e2e]
+description = "Run E2E tests"
+run = "go test -v ./e2e/..."
+
+[tasks.test-coverage]
+description = "Run tests with coverage report"
+run = """
+go test -v -race -coverprofile=coverage.out ./...
+go tool cover -html=coverage.out -o coverage.html
+open coverage.html
+"""
+
+[tasks.lint]
+description = "Run linters"
+run = """
+go vet ./...
+golangci-lint run ./...
+"""
+
+[tasks.fmt]
+description = "Format code"
+run = "gofmt -w ."
+
+[tasks.check]
+description = "Run all checks (format, lint, test)"
+depends = ["fmt", "lint", "test"]
+
+[tasks.clean]
+description = "Clean build artifacts"
+run = """
+go clean
+rm -rf diu coverage.out coverage.html dist/
+"""
+
+[tasks.install]
+description = "Install DIU locally"
+depends = ["build"]
+run = "cp diu /usr/local/bin/"
+
+[tasks.uninstall]
+description = "Uninstall DIU"
+run = "rm -f /usr/local/bin/diu"
+
+# Development tasks
+[tasks.dev]
+description = "Run in development mode with auto-reload"
+run = """
+if ! command -v air &> /dev/null; then
+  go install github.com/cosmtrek/air@latest
+fi
+air
+"""
+
+[tasks.run]
+description = "Build and run DIU"
+depends = ["build"]
+run = "./diu"
+
+# Daemon tasks
+[tasks.daemon-start]
+description = "Start the DIU daemon"
+depends = ["build"]
+run = "./diu daemon start"
+
+[tasks.daemon-stop]
+description = "Stop the DIU daemon"
+run = "./diu daemon stop"
+
+[tasks.daemon-status]
+description = "Check daemon status"
+run = "./diu daemon status"
+
+[tasks.daemon-restart]
+description = "Restart the DIU daemon"
+run = """
+./diu daemon stop
+sleep 1
+./diu daemon start
+"""
+
+# Query shortcuts
+[tasks.query]
+description = "Query recent executions"
+run = "./diu query --last 24h"
+
+[tasks.stats]
+description = "Show statistics"
+run = "./diu stats --top 10"
+
+[tasks.unused]
+description = "Show unused packages"
+run = "./diu packages --unused 6m"
+
+# Release tasks
+[tasks.release-snapshot]
+description = "Create a release snapshot"
+run = "goreleaser release --snapshot --clean"
+
+[tasks.release-check]
+description = "Check if ready for release"
+run = "goreleaser check"
+
+[tasks.release]
+description = "Create a new release"
+run = "goreleaser release --clean"
+
+# Docker tasks
+[tasks.docker-build]
+description = "Build Docker image"
+run = "docker build -t diu:latest ."
+
+[tasks.docker-up]
+description = "Start Docker services"
+run = "docker-compose up -d"
+
+[tasks.docker-down]
+description = "Stop Docker services"
+run = "docker-compose down"
+
+[tasks.docker-logs]
+description = "Show Docker logs"
+run = "docker-compose logs -f"
+
+[tasks.docker-e2e]
+description = "Run E2E tests in Docker"
+run = "docker-compose --profile e2e up --build --exit-code-from e2e-tests e2e-tests"
+
+# Setup tasks
+[tasks.setup]
+description = "Initialize project for development"
+run = """
+go mod download
+mkdir -p ~/.config/diu ~/.local/share/diu ~/.local/bin/diu-wrappers
+echo "✓ Project initialized"
+"""
+
+[tasks.deps]
+description = "Download dependencies"
+run = "go mod download"
+
+[tasks.deps-update]
+description = "Update dependencies"
+run = """
+go get -u ./...
+go mod tidy
+"""
+
+[tasks.deps-tidy]
+description = "Tidy dependencies"
+run = "go mod tidy"
+
+# CI simulation
+[tasks.ci]
+description = "Run CI pipeline locally"
+depends = ["clean", "deps", "lint", "test", "build"]

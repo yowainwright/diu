@@ -1,0 +1,82 @@
+version: 2
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: diu
+    main: ./cmd/diu
+    binary: diu
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X main.version={{.Version}} -X main.commit={{.Commit}} -X main.date={{.Date}}
+
+archives:
+  - id: diu
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: 'checksums.txt'
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+
+brews:
+  - repository:
+      owner: yowainwright
+      name: homebrew-tap
+    name: diu
+    homepage: "https://github.com/yowainwright/diu"
+    description: "Do I Use - Package Manager Execution Tracker"
+    license: "MIT"
+    directory: Formula
+    test: |
+      system "#{bin}/diu", "--version"
+    install: |
+      bin.install "diu"
+
+      # Create directories
+      (var/"diu").mkpath
+      (etc/"diu").mkpath
+
+      # Install default config
+      (etc/"diu").install "config.json" => "config.json.default" if File.exist?("config.json")
+
+    caveats: |
+      To get started with DIU:
+
+      1. Start the daemon:
+         diu daemon start
+
+      2. Check status:
+         diu daemon status
+
+      Configuration is stored in:
+         #{etc}/diu/config.json
+
+      Data is stored in:
+         #{var}/diu
+
+# No Linux packages needed for Mac-only release
+
+release:
+  github:
+    owner: yowainwright
+    name: diu
+  draft: false
+  prerelease: auto
+  name_template: "{{.ProjectName}} v{{.Version}}"

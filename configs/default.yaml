@@ -1,0 +1,68 @@
+version: "1.0"
+
+daemon:
+  port: 8080
+  log_level: info
+  data_dir: ~/.local/share/diu
+  pid_file: /tmp/diu.pid
+
+storage:
+  backend: json
+  json_file: ~/.local/share/diu/executions.json
+  backup_enabled: true
+  backup_interval: 24h
+  retention_days: 365
+
+monitoring:
+  enabled_tools:
+    - homebrew
+    - npm
+    - go
+    - pip
+    - gem
+    - cargo
+
+  methods:
+    - process
+    - filesystem
+
+  process:
+    wrapper_dir: ~/.local/bin/diu-wrappers
+    auto_install_wrappers: true
+
+  filesystem:
+    scan_interval: 30s
+    watch_paths:
+      homebrew:
+        - /usr/local/bin
+        - /opt/homebrew/bin
+      npm:
+        - ~/.npm/bin
+        - /usr/local/lib/node_modules
+
+tools:
+  homebrew:
+    cellar_paths:
+      - /usr/local/Cellar
+      - /opt/homebrew/Cellar
+    track_casks: true
+    track_services: true
+
+  npm:
+    track_global_only: true
+    ignore_dev_dependencies: true
+
+  go:
+    gopath: $GOPATH
+    gobin: $GOBIN
+
+api:
+  enabled: true
+  host: 127.0.0.1
+  port: 8081
+  cors_enabled: false
+
+reporting:
+  daily_summary: true
+  weekly_summary: true
+  email_reports: false
