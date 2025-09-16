@@ -2,7 +2,7 @@ version: 2
 
 before:
   hooks:
-    - go mod tidy
+    - env GOTOOLCHAIN=local go mod tidy
 
 builds:
   - id: diu
@@ -10,6 +10,7 @@ builds:
     binary: diu
     env:
       - CGO_ENABLED=0
+      - GOTOOLCHAIN=local
     goos:
       - darwin
     goarch:
