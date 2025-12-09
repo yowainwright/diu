@@ -21,7 +21,7 @@ type GoMonitor struct {
 
 func NewGoMonitor() Monitor {
 	return &GoMonitor{
-		ProcessMonitor: NewProcessMonitor("go", "go"),
+		ProcessMonitor: NewProcessMonitor(core.ToolGo, "go"),
 	}
 }
 
@@ -52,7 +52,7 @@ func (m *GoMonitor) Initialize(config *core.Config) error {
 
 func (m *GoMonitor) ParseCommand(cmd string, args []string) (*core.ExecutionRecord, error) {
 	record := &core.ExecutionRecord{
-		Tool:     "go",
+		Tool:     core.ToolGo,
 		Command:  cmd,
 		Args:     args,
 		Metadata: make(map[string]interface{}),
@@ -239,7 +239,7 @@ func (m *GoMonitor) getModules() ([]*core.PackageInfo, error) {
 		pkg := &core.PackageInfo{
 			Name:        name,
 			Version:     version,
-			Tool:        "go",
+			Tool:        core.ToolGo,
 			InstallDate: time.Now(),
 		}
 		packages = append(packages, pkg)
@@ -279,7 +279,7 @@ func (m *GoMonitor) getBinaries() ([]*core.PackageInfo, error) {
 
 		pkg := &core.PackageInfo{
 			Name:        entry.Name(),
-			Tool:        "go-binary",
+			Tool:        core.ToolGoBinary,
 			InstallDate: info.ModTime(),
 			Path:        filepath.Join(m.goBin, entry.Name()),
 		}

@@ -51,3 +51,5 @@ coverage/
 *.tsbuildinfo
 dist/
 build/
+tmp
+.idea

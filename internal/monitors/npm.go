@@ -22,7 +22,7 @@ type NPMMonitor struct {
 
 func NewNPMMonitor() Monitor {
 	return &NPMMonitor{
-		ProcessMonitor: NewProcessMonitor("npm", "npm"),
+		ProcessMonitor: NewProcessMonitor(core.ToolNPM, "npm"),
 	}
 }
 
@@ -59,7 +59,7 @@ func (m *NPMMonitor) getGlobalPath() string {
 
 func (m *NPMMonitor) ParseCommand(cmd string, args []string) (*core.ExecutionRecord, error) {
 	record := &core.ExecutionRecord{
-		Tool:     "npm",
+		Tool:     core.ToolNPM,
 		Command:  cmd,
 		Args:     args,
 		Metadata: make(map[string]interface{}),
@@ -245,8 +245,8 @@ func (m *NPMMonitor) getGlobalPackages() ([]*core.PackageInfo, error) {
 		pkg := &core.PackageInfo{
 			Name:        name,
 			Version:     info.Version,
-			Tool:        "npm",
-			InstallDate: time.Now(), // NPM doesn't track install time
+			Tool:        core.ToolNPM,
+			InstallDate: time.Now(),
 		}
 
 		// Extract dependencies if available
@@ -296,7 +296,7 @@ func (m *NPMMonitor) getGlobalPackagesSimple() ([]*core.PackageInfo, error) {
 					pkg := &core.PackageInfo{
 						Name:        name,
 						Version:     version,
-						Tool:        "npm",
+						Tool:        core.ToolNPM,
 						InstallDate: time.Now(),
 					}
 					packages = append(packages, pkg)

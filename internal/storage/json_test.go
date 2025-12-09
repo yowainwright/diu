@@ -266,3 +266,370 @@ func TestCleanup(t *testing.T) {
 		t.Error("Wrong execution retained after cleanup")
 	}
 }
+
+func TestGetExecutionByID(t *testing.T) {
+	tempDir := t.TempDir()
+	config := &core.Config{
+		Storage: core.StorageConfig{
+			JSONFile: filepath.Join(tempDir, "test.json"),
+		},
+	}
+
+	storage, err := NewJSONStorage(config)
+	if err != nil {
+		t.Fatalf("Failed to create storage: %v", err)
+	}
+	defer storage.Close()
+
+	record := &core.ExecutionRecord{
+		ID:        "test-id-123",
+		Tool:      "test",
+		Command:   "test command",
+		Timestamp: time.Now(),
+	}
+
+	storage.AddExecution(record)
+
+	retrieved, err := storage.GetExecutionByID("test-id-123")
+	if err != nil {
+		t.Fatalf("Failed to get execution by ID: %v", err)
+	}
+
+	if retrieved.Tool != "test" {
+		t.Errorf("Expected tool 'test', got %s", retrieved.Tool)
+	}
+
+	_, err = storage.GetExecutionByID("nonexistent")
+	if err == nil {
+		t.Error("Expected error for nonexistent ID")
+	}
+}
+
+func TestGetAllPackages(t *testing.T) {
+	tempDir := t.TempDir()
+	config := &core.Config{
+		Storage: core.StorageConfig{
+			JSONFile: filepath.Join(tempDir, "test.json"),
+		},
+	}
+
+	storage, err := NewJSONStorage(config)
+	if err != nil {
+		t.Fatalf("Failed to create storage: %v", err)
+	}
+	defer storage.Close()
+
+	pkg1 := &core.PackageInfo{
+		Name:        "package1",
+		Version:     "1.0.0",
+		Tool:        "npm",
+		InstallDate: time.Now(),
+	}
+	pkg2 := &core.PackageInfo{
+		Name:        "package2",
+		Version:     "2.0.0",
+		Tool:        "go",
+		InstallDate: time.Now(),
+	}
+
+	storage.UpdatePackage(pkg1)
+	storage.UpdatePackage(pkg2)
+
+	allPackages, err := storage.GetAllPackages()
+	if err != nil {
+		t.Fatalf("Failed to get all packages: %v", err)
+	}
+
+	if len(allPackages) != 2 {
+		t.Errorf("Expected 2 tool groups, got %d", len(allPackages))
+	}
+
+	if allPackages["npm"]["package1"] == nil {
+		t.Error("Expected npm/package1 to exist")
+	}
+	if allPackages["go"]["package2"] == nil {
+		t.Error("Expected go/package2 to exist")
+	}
+}
+
+func TestGetStatistics(t *testing.T) {
+	tempDir := t.TempDir()
+	config := &core.Config{
+		Storage: core.StorageConfig{
+			JSONFile: filepath.Join(tempDir, "test.json"),
+		},
+	}
+
+	storage, err := NewJSONStorage(config)
+	if err != nil {
+		t.Fatalf("Failed to create storage: %v", err)
+	}
+	defer storage.Close()
+
+	storage.AddExecution(&core.ExecutionRecord{Tool: "npm", Timestamp: time.Now()})
+	storage.AddExecution(&core.ExecutionRecord{Tool: "npm", Timestamp: time.Now()})
+	storage.AddExecution(&core.ExecutionRecord{Tool: "go", Timestamp: time.Now()})
+
+	stats, err := storage.GetStatistics()
+	if err != nil {
+		t.Fatalf("Failed to get statistics: %v", err)
+	}
+
+	if stats.TotalExecutions != 3 {
+		t.Errorf("Expected 3 total executions, got %d", stats.TotalExecutions)
+	}
+
+	if stats.ExecutionFrequency["npm"] != 2 {
+		t.Errorf("Expected npm frequency 2, got %d", stats.ExecutionFrequency["npm"])
+	}
+
+	if stats.ExecutionFrequency["go"] != 1 {
+		t.Errorf("Expected go frequency 1, got %d", stats.ExecutionFrequency["go"])
+	}
+}
+
+func TestUpdateStatistics(t *testing.T) {
+	tempDir := t.TempDir()
+	config := &core.Config{
+		Storage: core.StorageConfig{
+			JSONFile: filepath.Join(tempDir, "test.json"),
+		},
+	}
+
+	storage, err := NewJSONStorage(config)
+	if err != nil {
+		t.Fatalf("Failed to create storage: %v", err)
+	}
+	defer storage.Close()
+
+	today := time.Now()
+	yesterday := time.Now().Add(-24 * time.Hour)
+
+	storage.AddExecution(&core.ExecutionRecord{Tool: "npm", Timestamp: today})
+	storage.AddExecution(&core.ExecutionRecord{Tool: "npm", Timestamp: today})
+	storage.AddExecution(&core.ExecutionRecord{Tool: "npm", Timestamp: today})
+	storage.AddExecution(&core.ExecutionRecord{Tool: "go", Timestamp: yesterday})
+
+	err = storage.UpdateStatistics()
+	if err != nil {
+		t.Fatalf("Failed to update statistics: %v", err)
+	}
+
+	stats, _ := storage.GetStatistics()
+	expectedDay := today.Format("2006-01-02")
+	if stats.MostActiveDay != expectedDay {
+		t.Errorf("Expected most active day %s, got %s", expectedDay, stats.MostActiveDay)
+	}
+}
+
+func TestConcurrentAccess(t *testing.T) {
+	tempDir := t.TempDir()
+	config := &core.Config{
+		Storage: core.StorageConfig{
+			JSONFile: filepath.Join(tempDir, "test.json"),
+		},
+	}
+
+	storage, err := NewJSONStorage(config)
+	if err != nil {
+		t.Fatalf("Failed to create storage: %v", err)
+	}
+	defer storage.Close()
+
+	done := make(chan bool)
+	for i := 0; i < 10; i++ {
+		go func(id int) {
+			for j := 0; j < 10; j++ {
+				record := &core.ExecutionRecord{
+					Tool:      "test",
+					Command:   "concurrent test",
+					Timestamp: time.Now(),
+				}
+				storage.AddExecution(record)
+			}
+			done <- true
+		}(i)
+	}
+
+	for i := 0; i < 10; i++ {
+		<-done
+	}
+
+	executions, err := storage.GetExecutions(QueryOptions{})
+	if err != nil {
+		t.Fatalf("Failed to get executions: %v", err)
+	}
+
+	if len(executions) != 100 {
+		t.Errorf("Expected 100 executions, got %d", len(executions))
+	}
+}
+
+func TestQueryOptionsTimeFiltering(t *testing.T) {
+	tempDir := t.TempDir()
+	config := &core.Config{
+		Storage: core.StorageConfig{
+			JSONFile: filepath.Join(tempDir, "test.json"),
+		},
+	}
+
+	storage, err := NewJSONStorage(config)
+	if err != nil {
+		t.Fatalf("Failed to create storage: %v", err)
+	}
+	defer storage.Close()
+
+	now := time.Now()
+	storage.AddExecution(&core.ExecutionRecord{Tool: "old", Timestamp: now.Add(-48 * time.Hour)})
+	storage.AddExecution(&core.ExecutionRecord{Tool: "yesterday", Timestamp: now.Add(-24 * time.Hour)})
+	storage.AddExecution(&core.ExecutionRecord{Tool: "today", Timestamp: now})
+
+	since := now.Add(-30 * time.Hour)
+	results, _ := storage.GetExecutions(QueryOptions{Since: &since})
+	if len(results) != 2 {
+		t.Errorf("Expected 2 results with Since filter, got %d", len(results))
+	}
+
+	until := now.Add(-12 * time.Hour)
+	results, _ = storage.GetExecutions(QueryOptions{Until: &until})
+	if len(results) != 2 {
+		t.Errorf("Expected 2 results with Until filter, got %d", len(results))
+	}
+
+	results, _ = storage.GetExecutions(QueryOptions{Since: &since, Until: &until})
+	if len(results) != 1 {
+		t.Errorf("Expected 1 result with Since+Until filter, got %d", len(results))
+	}
+}
+
+func TestQueryOptionsPackageFiltering(t *testing.T) {
+	tempDir := t.TempDir()
+	config := &core.Config{
+		Storage: core.StorageConfig{
+			JSONFile: filepath.Join(tempDir, "test.json"),
+		},
+	}
+
+	storage, err := NewJSONStorage(config)
+	if err != nil {
+		t.Fatalf("Failed to create storage: %v", err)
+	}
+	defer storage.Close()
+
+	storage.AddExecution(&core.ExecutionRecord{
+		Tool:             "npm",
+		Timestamp:        time.Now(),
+		PackagesAffected: []string{"express", "lodash"},
+	})
+	storage.AddExecution(&core.ExecutionRecord{
+		Tool:             "npm",
+		Timestamp:        time.Now(),
+		PackagesAffected: []string{"react"},
+	})
+
+	results, _ := storage.GetExecutions(QueryOptions{Package: "express"})
+	if len(results) != 1 {
+		t.Errorf("Expected 1 result with package filter, got %d", len(results))
+	}
+
+	results, _ = storage.GetExecutions(QueryOptions{Package: "nonexistent"})
+	if len(results) != 0 {
+		t.Errorf("Expected 0 results for nonexistent package, got %d", len(results))
+	}
+}
+
+func TestGetPackagesAllTools(t *testing.T) {
+	tempDir := t.TempDir()
+	config := &core.Config{
+		Storage: core.StorageConfig{
+			JSONFile: filepath.Join(tempDir, "test.json"),
+		},
+	}
+
+	storage, err := NewJSONStorage(config)
+	if err != nil {
+		t.Fatalf("Failed to create storage: %v", err)
+	}
+	defer storage.Close()
+
+	storage.UpdatePackage(&core.PackageInfo{Name: "pkg1", Tool: "npm"})
+	storage.UpdatePackage(&core.PackageInfo{Name: "pkg2", Tool: "go"})
+	storage.UpdatePackage(&core.PackageInfo{Name: "pkg3", Tool: "npm"})
+
+	results, err := storage.GetPackages("")
+	if err != nil {
+		t.Fatalf("Failed to get all packages: %v", err)
+	}
+
+	if len(results) != 3 {
+		t.Errorf("Expected 3 packages, got %d", len(results))
+	}
+}
+
+func TestPackageNotFound(t *testing.T) {
+	tempDir := t.TempDir()
+	config := &core.Config{
+		Storage: core.StorageConfig{
+			JSONFile: filepath.Join(tempDir, "test.json"),
+		},
+	}
+
+	storage, err := NewJSONStorage(config)
+	if err != nil {
+		t.Fatalf("Failed to create storage: %v", err)
+	}
+	defer storage.Close()
+
+	_, err = storage.GetPackage("npm", "nonexistent")
+	if err == nil {
+		t.Error("Expected error for nonexistent package")
+	}
+
+	_, err = storage.GetPackage("nonexistent-tool", "pkg")
+	if err == nil {
+		t.Error("Expected error for nonexistent tool")
+	}
+}
+
+func TestRestoreNonexistentFile(t *testing.T) {
+	tempDir := t.TempDir()
+	config := &core.Config{
+		Storage: core.StorageConfig{
+			JSONFile: filepath.Join(tempDir, "test.json"),
+		},
+	}
+
+	storage, err := NewJSONStorage(config)
+	if err != nil {
+		t.Fatalf("Failed to create storage: %v", err)
+	}
+	defer storage.Close()
+
+	err = storage.Restore("/nonexistent/path/file.json")
+	if err == nil {
+		t.Error("Expected error for nonexistent restore file")
+	}
+}
+
+func TestRestoreInvalidJSON(t *testing.T) {
+	tempDir := t.TempDir()
+	config := &core.Config{
+		Storage: core.StorageConfig{
+			JSONFile: filepath.Join(tempDir, "test.json"),
+		},
+	}
+
+	storage, err := NewJSONStorage(config)
+	if err != nil {
+		t.Fatalf("Failed to create storage: %v", err)
+	}
+	defer storage.Close()
+
+	invalidFile := filepath.Join(tempDir, "invalid.json")
+	os.WriteFile(invalidFile, []byte("not valid json"), 0644)
+
+	err = storage.Restore(invalidFile)
+	if err == nil {
+		t.Error("Expected error for invalid JSON restore file")
+	}
+}

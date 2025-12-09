@@ -7,7 +7,7 @@ on:
     branches: [ main ]
 
 env:
-  GO_VERSION: '1.22'
+  GO_VERSION: '1.25'
 
 jobs:
   lint:
@@ -43,7 +43,7 @@ jobs:
     runs-on: macos-latest
     strategy:
       matrix:
-        go: ['1.21', '1.22']
+        go: ['1.24', '1.25']
     steps:
       - uses: actions/checkout@v4
 
@@ -66,7 +66,7 @@ jobs:
           go tool cover -func=coverage.out
 
       - name: Upload coverage to Codecov
-        if: matrix.go == '1.22'
+        if: matrix.go == '1.25'
         uses: codecov/codecov-action@v4
         with:
           file: ./coverage.out

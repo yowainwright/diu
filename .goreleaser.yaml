@@ -39,7 +39,7 @@ changelog:
 brews:
   - repository:
       owner: yowainwright
-      name: homebrew-tap
+      name: tap
     name: diu
     homepage: "https://github.com/yowainwright/diu"
     description: "Do I Use - Package Manager Execution Tracker"

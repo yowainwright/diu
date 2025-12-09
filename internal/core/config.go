@@ -90,23 +90,23 @@ func DefaultConfig() *Config {
 	dataDir := filepath.Join(homeDir, ".local", "share", "diu")
 
 	return &Config{
-		Version: "1.0",
+		Version: ConfigVersion,
 		Daemon: DaemonConfig{
-			Port:     8080,
-			LogLevel: "info",
+			Port:     DefaultDaemonPort,
+			LogLevel: DefaultLogLevel,
 			DataDir:  dataDir,
-			PIDFile:  "/tmp/diu.pid",
+			PIDFile:  DefaultPIDFile,
 		},
 		Storage: StorageConfig{
-			Backend:        "json",
+			Backend:        StorageBackendJSON,
 			JSONFile:       filepath.Join(dataDir, "executions.json"),
 			BackupEnabled:  true,
 			BackupInterval: 24 * time.Hour,
-			RetentionDays:  365,
+			RetentionDays:  DefaultRetentionDays,
 		},
 		Monitoring: MonitoringConfig{
-			EnabledTools: []string{"homebrew", "npm", "go", "pip", "gem", "cargo"},
-			Methods:      []string{"process", "filesystem"},
+			EnabledTools: DefaultEnabledTools,
+			Methods:      DefaultMonitorMethods,
 			Process: ProcessConfig{
 				WrapperDir:          filepath.Join(homeDir, ".local", "bin", "diu-wrappers"),
 				AutoInstallWrappers: true,
@@ -114,14 +114,14 @@ func DefaultConfig() *Config {
 			Filesystem: FilesystemConfig{
 				ScanInterval: 30 * time.Second,
 				WatchPaths: map[string][]string{
-					"homebrew": {"/usr/local/bin", "/opt/homebrew/bin"},
-					"npm":      {filepath.Join(homeDir, ".npm", "bin"), "/usr/local/lib/node_modules"},
+					ToolHomebrew: HomebrewBinPaths,
+					ToolNPM:      {filepath.Join(homeDir, ".npm", "bin"), "/usr/local/lib/node_modules"},
 				},
 			},
 		},
 		Tools: ToolsConfig{
 			Homebrew: HomebrewConfig{
-				CellarPaths:   []string{"/usr/local/Cellar", "/opt/homebrew/Cellar"},
+				CellarPaths:   HomebrewCellarPaths,
 				TrackCasks:    true,
 				TrackServices: true,
 			},
@@ -136,8 +136,8 @@ func DefaultConfig() *Config {
 		},
 		API: APIConfig{
 			Enabled:     true,
-			Host:        "127.0.0.1",
-			Port:        8081,
+			Host:        DefaultAPIHost,
+			Port:        DefaultAPIPort,
 			CORSEnabled: false,
 		},
 		Reporting: ReportingConfig{
@@ -173,7 +173,10 @@ func LoadConfig(path string) (*Config, error) {
 func (c *Config) Save() error {
 	homeDir, _ := os.UserHomeDir()
 	path := filepath.Join(homeDir, ".config", "diu", "config.json")
+	return c.SaveTo(path)
+}
 
+func (c *Config) SaveTo(path string) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return fmt.Errorf("failed to create config directory: %w", err)

@@ -22,7 +22,7 @@ type HomebrewMonitor struct {
 
 func NewHomebrewMonitor() Monitor {
 	return &HomebrewMonitor{
-		ProcessMonitor: NewProcessMonitor("homebrew", "brew"),
+		ProcessMonitor: NewProcessMonitor(core.ToolHomebrew, "brew"),
 	}
 }
 
@@ -95,7 +95,7 @@ func (m *HomebrewMonitor) detectCaskroom() string {
 
 func (m *HomebrewMonitor) ParseCommand(cmd string, args []string) (*core.ExecutionRecord, error) {
 	record := &core.ExecutionRecord{
-		Tool:     "homebrew",
+		Tool:     core.ToolHomebrew,
 		Command:  cmd,
 		Args:     args,
 		Metadata: make(map[string]interface{}),
@@ -237,7 +237,7 @@ func (m *HomebrewMonitor) getFormulae() ([]*core.PackageInfo, error) {
 		pkg := &core.PackageInfo{
 			Name:         formula.Name,
 			Version:      formula.Version,
-			Tool:         "homebrew",
+			Tool:         core.ToolHomebrew,
 			InstallDate:  installTime,
 			Dependencies: formula.Dependencies,
 		}
@@ -266,7 +266,7 @@ func (m *HomebrewMonitor) getFormulaeSimple() ([]*core.PackageInfo, error) {
 		if name != "" {
 			pkg := &core.PackageInfo{
 				Name:        name,
-				Tool:        "homebrew",
+				Tool:        core.ToolHomebrew,
 				InstallDate: time.Now(),
 			}
 			packages = append(packages, pkg)
