@@ -9,6 +9,8 @@ import (
 	"os/exec"
 	"testing"
 	"time"
+
+	"github.com/yowainwright/diu/internal/core"
 )
 
 var (
@@ -19,7 +21,7 @@ func getAPIURL() string {
 	if url := os.Getenv("DIU_API_URL"); url != "" {
 		return url
 	}
-	return "http://localhost:8081"
+	return fmt.Sprintf("http://%s:%d", core.DefaultAPIHost, core.DefaultAPIPort)
 }
 
 func TestE2EDaemonHealth(t *testing.T) {
@@ -117,9 +119,8 @@ func TestE2EExecutionTracking(t *testing.T) {
 func TestE2EPackageTracking(t *testing.T) {
 	client := &http.Client{Timeout: 10 * time.Second}
 
-	// Send execution that affects a package
 	execution := map[string]interface{}{
-		"tool":       "npm",
+		"tool":       core.ToolNPM,
 		"command":    "npm install express",
 		"args":       []string{"install", "express"},
 		"exit_code":  0,
@@ -140,8 +141,7 @@ func TestE2EPackageTracking(t *testing.T) {
 	// Wait for processing
 	time.Sleep(2 * time.Second)
 
-	// Query packages
-	resp, err := client.Get(apiURL + "/api/v1/packages?tool=npm")
+	resp, err := client.Get(apiURL + "/api/v1/packages?tool=" + core.ToolNPM)
 	if err != nil {
 		t.Fatalf("Failed to query packages: %v", err)
 	}
@@ -168,8 +168,7 @@ func TestE2EPackageTracking(t *testing.T) {
 func TestE2EStatistics(t *testing.T) {
 	client := &http.Client{Timeout: 10 * time.Second}
 
-	// Add multiple executions
-	tools := []string{"homebrew", "npm", "go"}
+	tools := []string{core.ToolHomebrew, core.ToolNPM, core.ToolGo}
 	for _, tool := range tools {
 		execution := map[string]interface{}{
 			"tool":       tool,

@@ -401,20 +401,45 @@ func showStats(cmd *cobra.Command, args []string) error {
 	}
 	defer store.Close()
 
-	stats, err := store.GetStatistics()
-	if err != nil {
-		return fmt.Errorf("failed to get statistics: %w", err)
+	daily, _ := cmd.Flags().GetBool("daily")
+	weekly, _ := cmd.Flags().GetBool("weekly")
+	toolFilter, _ := cmd.Flags().GetString("tool")
+
+	opts := storage.QueryOptions{}
+	if toolFilter != "" {
+		opts.Tool = toolFilter
 	}
 
-	fmt.Println(titleStyle.Render("DIU Statistics"))
+	if daily {
+		since := time.Now().Add(-24 * time.Hour)
+		opts.Since = &since
+		fmt.Println(titleStyle.Render("DIU Statistics (Last 24 Hours)"))
+	} else if weekly {
+		since := time.Now().Add(-7 * 24 * time.Hour)
+		opts.Since = &since
+		fmt.Println(titleStyle.Render("DIU Statistics (Last 7 Days)"))
+	} else {
+		fmt.Println(titleStyle.Render("DIU Statistics"))
+	}
 	fmt.Println()
+
+	executions, err := store.GetExecutions(opts)
+	if err != nil {
+		return fmt.Errorf("failed to get executions: %w", err)
+	}
+
+	toolCounts := make(map[string]int)
+	for _, exec := range executions {
+		toolCounts[exec.Tool]++
+	}
 
 	fmt.Printf("%s %d\n",
 		infoStyle.Render("Total executions:"),
-		stats.TotalExecutions,
+		len(executions),
 	)
 
-	if stats.MostActiveDay != "" {
+	stats, _ := store.GetStatistics()
+	if stats.MostActiveDay != "" && !daily && !weekly {
 		fmt.Printf("%s %s\n",
 			infoStyle.Render("Most active day:"),
 			stats.MostActiveDay,
@@ -423,7 +448,7 @@ func showStats(cmd *cobra.Command, args []string) error {
 
 	fmt.Println()
 	fmt.Println(subtitleStyle.Render("Tool usage:"))
-	for tool, count := range stats.ExecutionFrequency {
+	for tool, count := range toolCounts {
 		toolColor := getToolColor(tool)
 		toolStyle := lipgloss.NewStyle().Foreground(toolColor)
 		fmt.Printf("  %s %d\n", toolStyle.Render(tool+":"), count)
@@ -431,8 +456,7 @@ func showStats(cmd *cobra.Command, args []string) error {
 
 	top, _ := cmd.Flags().GetInt("top")
 	if top > 0 {
-		// Get top packages
-		packages, _ := store.GetPackages("")
+		packages, _ := store.GetPackages(toolFilter)
 		fmt.Println()
 		fmt.Printf(subtitleStyle.Render("Top %d packages:\n"), top)
 

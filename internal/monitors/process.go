@@ -74,21 +74,16 @@ func (m *ProcessMonitor) InstallWrapper() error {
 
 func (m *ProcessMonitor) generateWrapperScript() string {
 	return fmt.Sprintf(`#!/bin/bash
-# DIU wrapper for %s
-# This wrapper tracks execution of %s commands
-
-DIU_SOCKET="/tmp/diu.sock"
+DIU_SOCKET="%s"
 ORIGINAL_BINARY="%s"
 START_TIME=$(date +%%s%%N)
 
-# Execute the original command
 "$ORIGINAL_BINARY" "$@"
 EXIT_CODE=$?
 
 END_TIME=$(date +%%s%%N)
 DURATION=$((($END_TIME - $START_TIME) / 1000000))
 
-# Send execution data to DIU daemon if it's running
 if [ -S "$DIU_SOCKET" ]; then
     echo "{
         \"tool\": \"%s\",
@@ -103,7 +98,7 @@ if [ -S "$DIU_SOCKET" ]; then
 fi
 
 exit $EXIT_CODE
-`, m.name, m.name, m.originalPath, m.name)
+`, core.DefaultSocketPath, m.originalPath, m.name)
 }
 
 func (m *ProcessMonitor) updateShellConfig() error {
