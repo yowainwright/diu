@@ -46,6 +46,9 @@ func (m *GoMonitor) Initialize(config *core.Config) error {
 	if m.goBin == "" {
 		m.goBin = filepath.Join(m.goPath, "bin")
 	}
+	if m.originalPath != "" && filepath.Dir(m.originalPath) == m.goBin {
+		m.goBin = filepath.Join(m.goPath, "bin")
+	}
 
 	return nil
 }
@@ -152,24 +155,13 @@ func (m *GoMonitor) extractGoPackages(args []string) []string {
 		if strings.HasPrefix(arg, "-") {
 			continue
 		}
-		// Go packages typically look like domain.com/user/package
-		if strings.Contains(arg, "/") || strings.Contains(arg, ".") {
-			// Extract package name from full path
-			parts := strings.Split(arg, "/")
-			if len(parts) > 0 {
-				// Use the last part as the package name
-				pkgName := parts[len(parts)-1]
-				// Remove version suffix if present
-				if idx := strings.Index(pkgName, "@"); idx > 0 {
-					pkgName = pkgName[:idx]
-				}
-				packages = append(packages, arg)
-			}
-		} else if arg == "." || arg == "./..." || arg == "..." {
-			// Current directory packages
+		if arg == "." || arg == "./..." || arg == "..." || strings.HasSuffix(arg, "/...") {
 			continue
-		} else {
-			packages = append(packages, arg)
+		}
+
+		pkgName := normalizeGoPackageName(arg)
+		if pkgName != "" {
+			packages = append(packages, pkgName)
 		}
 	}
 	return packages
@@ -188,19 +180,7 @@ func (m *GoMonitor) extractOutputFlag(args []string) string {
 }
 
 func (m *GoMonitor) GetInstalledPackages() ([]*core.PackageInfo, error) {
-	var packages []*core.PackageInfo
-
-	// Get modules if in module mode
-	if modPackages, err := m.getModules(); err == nil {
-		packages = append(packages, modPackages...)
-	}
-
-	// Get binaries in GOBIN
-	if binPackages, err := m.getBinaries(); err == nil {
-		packages = append(packages, binPackages...)
-	}
-
-	return packages, nil
+	return m.getBinaries()
 }
 
 func (m *GoMonitor) getModules() ([]*core.PackageInfo, error) {
@@ -279,7 +259,7 @@ func (m *GoMonitor) getBinaries() ([]*core.PackageInfo, error) {
 
 		pkg := &core.PackageInfo{
 			Name:        entry.Name(),
-			Tool:        "go-binary",
+			Tool:        "go",
 			InstallDate: info.ModTime(),
 			Path:        filepath.Join(m.goBin, entry.Name()),
 		}
@@ -308,20 +288,8 @@ func (m *GoMonitor) getBinaryVersion(binaryPath string) (string, error) {
 	}
 
 	// Extract version from output
-	outputStr := strings.TrimSpace(string(output))
-	lines := strings.Split(outputStr, "\n")
-	if len(lines) > 0 {
-		// Look for version patterns
-		for _, line := range lines {
-			if strings.Contains(strings.ToLower(line), "version") {
-				parts := strings.Fields(line)
-				for _, part := range parts {
-					if strings.HasPrefix(part, "v") || strings.Contains(part, ".") {
-						return part, nil
-					}
-				}
-			}
-		}
+	if version := extractVersionToken(string(output)); version != "" {
+		return version, nil
 	}
 
 	return "", fmt.Errorf("version not found")
@@ -329,4 +297,50 @@ func (m *GoMonitor) getBinaryVersion(binaryPath string) (string, error) {
 
 func (m *GoMonitor) Start(ctx context.Context, eventChan chan<- *core.ExecutionRecord) error {
 	return m.ProcessMonitor.Start(ctx, eventChan)
+}
+
+func normalizeGoPackageName(arg string) string {
+	arg = strings.TrimSpace(arg)
+	if arg == "" {
+		return ""
+	}
+
+	if idx := strings.Index(arg, "@"); idx >= 0 {
+		arg = arg[:idx]
+	}
+
+	arg = strings.TrimSuffix(arg, "/")
+	if arg == "" {
+		return ""
+	}
+
+	if idx := strings.LastIndex(arg, "/"); idx >= 0 {
+		arg = arg[idx+1:]
+	}
+
+	return arg
+}
+
+func extractVersionToken(output string) string {
+	for _, line := range strings.Split(strings.TrimSpace(output), "\n") {
+		if !strings.Contains(strings.ToLower(line), "version") {
+			continue
+		}
+
+		for _, part := range strings.Fields(line) {
+			part = strings.Trim(part, ",:;()[]")
+			lower := strings.ToLower(part)
+			if lower == "" || lower == "version" {
+				continue
+			}
+			if strings.HasPrefix(lower, "v") && len(lower) > 1 && lower[1] >= '0' && lower[1] <= '9' {
+				return part
+			}
+			if strings.Contains(part, ".") && strings.IndexFunc(part, func(r rune) bool { return r >= '0' && r <= '9' }) >= 0 {
+				return part
+			}
+		}
+	}
+
+	return ""
 }

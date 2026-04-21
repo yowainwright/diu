@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"text/template"
 
 	"github.com/yowainwright/diu/internal/core"
@@ -14,9 +15,7 @@ type WrapperGenerator struct {
 }
 
 func NewWrapperGenerator(config *core.Config) *WrapperGenerator {
-	return &WrapperGenerator{
-		config: config,
-	}
+	return &WrapperGenerator{config: config}
 }
 
 func (g *WrapperGenerator) GenerateWrapper(tool, originalPath string) error {
@@ -26,7 +25,6 @@ func (g *WrapperGenerator) GenerateWrapper(tool, originalPath string) error {
 	}
 
 	wrapperPath := filepath.Join(wrapperDir, tool)
-
 	tmpl := template.Must(template.New("wrapper").Parse(wrapperTemplate))
 
 	file, err := os.OpenFile(wrapperPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0755)
@@ -38,11 +36,9 @@ func (g *WrapperGenerator) GenerateWrapper(tool, originalPath string) error {
 	data := struct {
 		Tool         string
 		OriginalPath string
-		APIEndpoint  string
 	}{
 		Tool:         tool,
 		OriginalPath: originalPath,
-		APIEndpoint:  fmt.Sprintf("http://%s:%d/api/v1/executions", g.config.API.Host, g.config.API.Port),
 	}
 
 	if err := tmpl.Execute(file, data); err != nil {
@@ -53,31 +49,23 @@ func (g *WrapperGenerator) GenerateWrapper(tool, originalPath string) error {
 }
 
 func (g *WrapperGenerator) InstallWrappers() error {
-	tools := g.config.Monitoring.EnabledTools
-
-	for _, tool := range tools {
+	for _, tool := range g.config.Monitoring.EnabledTools {
 		originalPath, err := g.findOriginalBinary(tool)
 		if err != nil {
 			fmt.Printf("Warning: %s not found, skipping wrapper\n", tool)
 			continue
 		}
-
 		if err := g.GenerateWrapper(tool, originalPath); err != nil {
 			return fmt.Errorf("failed to generate wrapper for %s: %w", tool, err)
 		}
 	}
-
 	return g.updatePATH()
 }
 
 func (g *WrapperGenerator) findOriginalBinary(tool string) (string, error) {
-	// Map tool names to binary names
 	binaryName := tool
-	switch tool {
-	case "homebrew":
+	if tool == "homebrew" {
 		binaryName = "brew"
-	case "python":
-		binaryName = "pip"
 	}
 
 	paths := filepath.SplitList(os.Getenv("PATH"))
@@ -85,7 +73,6 @@ func (g *WrapperGenerator) findOriginalBinary(tool string) (string, error) {
 		if path == g.config.Monitoring.Process.WrapperDir {
 			continue
 		}
-
 		candidate := filepath.Join(path, binaryName)
 		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
 			if info.Mode()&0111 != 0 {
@@ -93,7 +80,6 @@ func (g *WrapperGenerator) findOriginalBinary(tool string) (string, error) {
 			}
 		}
 	}
-
 	return "", fmt.Errorf("binary not found: %s", binaryName)
 }
 
@@ -106,42 +92,33 @@ func (g *WrapperGenerator) updatePATH() error {
 	shellConfigs := []string{
 		filepath.Join(homeDir, ".bashrc"),
 		filepath.Join(homeDir, ".zshrc"),
-		filepath.Join(homeDir, ".config", "fish", "config.fish"),
 	}
 
 	exportLine := fmt.Sprintf("export PATH=\"%s:$PATH\"", g.config.Monitoring.Process.WrapperDir)
-	fishLine := fmt.Sprintf("set -gx PATH %s $PATH", g.config.Monitoring.Process.WrapperDir)
 
 	for _, configFile := range shellConfigs {
 		if _, err := os.Stat(configFile); err != nil {
 			continue
 		}
-
 		content, err := os.ReadFile(configFile)
 		if err != nil {
 			continue
 		}
-
-		line := exportLine
-		if filepath.Base(configFile) == "config.fish" {
-			line = fishLine
+		if containsStr(string(content), exportLine) {
+			continue
 		}
-
-		if !contains(string(content), line) {
-			file, err := os.OpenFile(configFile, os.O_APPEND|os.O_WRONLY, 0644)
-			if err != nil {
-				continue
-			}
-			defer file.Close()
-
-			file.WriteString("\n# DIU wrapper path\n")
-			file.WriteString(line + "\n")
+		file, err := os.OpenFile(configFile, os.O_APPEND|os.O_WRONLY, 0644)
+		if err != nil {
+			continue
 		}
+		file.WriteString("\n# DIU wrapper path\n")
+		file.WriteString(exportLine + "\n")
+		file.Close()
 	}
 
 	return nil
 }
 
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && s[len(s)-len(substr):] == substr
+func containsStr(s, substr string) bool {
+	return strings.Contains(s, substr)
 }

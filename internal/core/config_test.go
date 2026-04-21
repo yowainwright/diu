@@ -13,10 +13,6 @@ func TestDefaultConfig(t *testing.T) {
 		t.Errorf("Expected version 1.0, got %s", config.Version)
 	}
 
-	if config.Daemon.Port != 8080 {
-		t.Errorf("Expected daemon port 8080, got %d", config.Daemon.Port)
-	}
-
 	if config.Storage.Backend != "json" {
 		t.Errorf("Expected storage backend json, got %s", config.Storage.Backend)
 	}
@@ -28,14 +24,9 @@ func TestDefaultConfig(t *testing.T) {
 	if len(config.Monitoring.EnabledTools) == 0 {
 		t.Error("Expected enabled tools to be configured")
 	}
-
-	if !config.API.Enabled {
-		t.Error("Expected API to be enabled by default")
-	}
 }
 
 func TestLoadConfig(t *testing.T) {
-	// Test loading non-existent config returns default
 	config, err := LoadConfig("/non/existent/path")
 	if err != nil {
 		t.Errorf("Expected no error for non-existent config, got %v", err)
@@ -51,26 +42,52 @@ func TestConfigSave(t *testing.T) {
 	configPath := filepath.Join(tempDir, "config.json")
 
 	config := DefaultConfig()
-	config.Daemon.Port = 9090
+	config.Storage.RetentionDays = 90
 
 	err := config.Save(configPath)
 	if err != nil {
 		t.Fatalf("Failed to save config: %v", err)
 	}
 
-	// Verify file exists
 	if _, err := os.Stat(configPath); os.IsNotExist(err) {
 		t.Error("Config file was not created")
 	}
 
-	// Load and verify
 	loaded, err := LoadConfig(configPath)
 	if err != nil {
 		t.Fatalf("Failed to load config: %v", err)
 	}
 
-	if loaded.Daemon.Port != 9090 {
-		t.Errorf("Expected port 9090, got %d", loaded.Daemon.Port)
+	if loaded.Storage.RetentionDays != 90 {
+		t.Errorf("Expected retention days 90, got %d", loaded.Storage.RetentionDays)
+	}
+}
+
+func TestLoadConfigMergesDefaults(t *testing.T) {
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "config.json")
+
+	data := []byte(`{"storage":{"retention_days":90}}`)
+	if err := os.WriteFile(configPath, data, 0644); err != nil {
+		t.Fatalf("Failed to seed config: %v", err)
+	}
+
+	loaded, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("Failed to load config: %v", err)
+	}
+
+	if loaded.Storage.RetentionDays != 90 {
+		t.Errorf("Expected retention days 90, got %d", loaded.Storage.RetentionDays)
+	}
+	if loaded.Storage.JSONFile == "" {
+		t.Fatal("Expected storage json file default to be preserved")
+	}
+	if len(loaded.Monitoring.EnabledTools) == 0 {
+		t.Fatal("Expected enabled tools defaults to be preserved")
+	}
+	if loaded.Monitoring.Process.WrapperDir == "" {
+		t.Fatal("Expected process wrapper dir default to be preserved")
 	}
 }
 
@@ -78,8 +95,7 @@ func TestEnsureDirectories(t *testing.T) {
 	tempDir := t.TempDir()
 
 	config := DefaultConfig()
-	config.Daemon.DataDir = filepath.Join(tempDir, "data")
-	config.Storage.JSONFile = filepath.Join(tempDir, "storage", "exec.json")
+	config.Storage.JSONFile = filepath.Join(tempDir, "storage", "diu.json")
 	config.Monitoring.Process.WrapperDir = filepath.Join(tempDir, "wrappers")
 
 	err := config.EnsureDirectories()
@@ -87,9 +103,7 @@ func TestEnsureDirectories(t *testing.T) {
 		t.Fatalf("Failed to create directories: %v", err)
 	}
 
-	// Verify directories exist
 	dirs := []string{
-		config.Daemon.DataDir,
 		filepath.Dir(config.Storage.JSONFile),
 		config.Monitoring.Process.WrapperDir,
 	}

@@ -20,6 +20,22 @@ type HomebrewMonitor struct {
 	caskroom    string
 }
 
+type brewInfoResponse struct {
+	Formulae []brewInstalledFormula `json:"formulae"`
+}
+
+type brewInstalledFormula struct {
+	Name         string                 `json:"name"`
+	Dependencies []string               `json:"dependencies"`
+	LinkedKeg    string                 `json:"linked_keg"`
+	Installed    []brewInstalledVersion `json:"installed"`
+}
+
+type brewInstalledVersion struct {
+	Version string `json:"version"`
+	Time    int64  `json:"time"`
+}
+
 func NewHomebrewMonitor() Monitor {
 	return &HomebrewMonitor{
 		ProcessMonitor: NewProcessMonitor("homebrew", "brew"),
@@ -208,40 +224,16 @@ func (m *HomebrewMonitor) getFormulae() ([]*core.PackageInfo, error) {
 		return nil, fmt.Errorf("brew not found: %w", err)
 	}
 
-	// Get JSON info for all installed formulae
-	cmd := exec.Command(brewPath, "list", "--formula", "--json=v2")
+	// Current Homebrew exposes installed formula metadata via `brew info`.
+	cmd := exec.Command(brewPath, "info", "--installed", "--json=v2")
 	output, err := cmd.Output()
 	if err != nil {
-		return nil, fmt.Errorf("failed to list formulae: %w", err)
-	}
-
-	var brewData struct {
-		Formulae []struct {
-			Name            string   `json:"name"`
-			FullName        string   `json:"full_name"`
-			Version         string   `json:"version"`
-			InstalledTime   string   `json:"installed_time"`
-			Dependencies    []string `json:"dependencies"`
-			InstalledAsPath string   `json:"installed_as_dependency"`
-		} `json:"formulae"`
-	}
-
-	if err := json.Unmarshal(output, &brewData); err != nil {
-		// Fallback to simple list
 		return m.getFormulaeSimple()
 	}
 
-	var packages []*core.PackageInfo
-	for _, formula := range brewData.Formulae {
-		installTime, _ := time.Parse(time.RFC3339, formula.InstalledTime)
-		pkg := &core.PackageInfo{
-			Name:         formula.Name,
-			Version:      formula.Version,
-			Tool:         "homebrew",
-			InstallDate:  installTime,
-			Dependencies: formula.Dependencies,
-		}
-		packages = append(packages, pkg)
+	packages, err := parseInstalledFormulae(output)
+	if err != nil {
+		return m.getFormulaeSimple()
 	}
 
 	return packages, nil
@@ -295,7 +287,7 @@ func (m *HomebrewMonitor) getCasks() ([]*core.PackageInfo, error) {
 		if name != "" {
 			pkg := &core.PackageInfo{
 				Name:        name,
-				Tool:        "homebrew-cask",
+				Tool:        "homebrew",
 				InstallDate: time.Now(),
 			}
 			packages = append(packages, pkg)
@@ -316,4 +308,49 @@ func contains(slice []string, item string) bool {
 		}
 	}
 	return false
+}
+
+func parseInstalledFormulae(output []byte) ([]*core.PackageInfo, error) {
+	var brewData brewInfoResponse
+	if err := json.Unmarshal(output, &brewData); err != nil {
+		return nil, err
+	}
+
+	packages := make([]*core.PackageInfo, 0, len(brewData.Formulae))
+	for _, formula := range brewData.Formulae {
+		version, installTime := formulaDetails(formula)
+		if installTime.IsZero() {
+			installTime = time.Now()
+		}
+
+		pkg := &core.PackageInfo{
+			Name:         formula.Name,
+			Version:      version,
+			Tool:         "homebrew",
+			InstallDate:  installTime,
+			Dependencies: formula.Dependencies,
+		}
+		packages = append(packages, pkg)
+	}
+
+	return packages, nil
+}
+
+func formulaDetails(formula brewInstalledFormula) (string, time.Time) {
+	version := formula.LinkedKeg
+	var installTime time.Time
+
+	if len(formula.Installed) == 0 {
+		return version, installTime
+	}
+
+	latest := formula.Installed[len(formula.Installed)-1]
+	if latest.Version != "" {
+		version = latest.Version
+	}
+	if latest.Time > 0 {
+		installTime = time.Unix(latest.Time, 0)
+	}
+
+	return version, installTime
 }

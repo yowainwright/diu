@@ -1,198 +1,157 @@
-# DIU - Do I Use
+# diu — Do I Use
 
-> Package Manager Execution Tracker for macOS - Know what you actually use
+> Know what global packages you actually use
 
-DIU tracks when package managers and global development tools are executed on macOS, storing execution data for analysis and auditing.
+`diu` tracks globally installed packages across package managers — what's installed, what version, when it was last updated, and when it was last used.
 
-## Features
+## How it works
 
-- 🔍 Track package manager executions (Homebrew, npm, Go, pip, gem, cargo)
-- 📊 Usage statistics and analytics
-- 🗂️ JSON-based storage with automatic backups
-- 🎨 Beautiful CLI with Charm styling via Fang
-- 🚀 Lightweight daemon process
-- 🔌 Extensible monitor system
-- 🍎 **Native macOS support** (Intel & Apple Silicon)
+`diu` installs lightweight shell function hooks for `brew`, `npm`, `go`, `pip`, `pip3`, `cargo`, and `gem`. After each install or upgrade command, the hook calls `diu record` to update the local JSON cache. Run `diu scan` at any time to pull current version info from the package managers themselves.
 
-## Requirements
+```
+shell hook (brew install wget)
+  → diu record --tool brew --exit-code 0 -- install wget
+    → upserts ~/.local/share/diu/diu.json
+```
 
-- macOS 10.15 or later
-- Go 1.22+ (for building from source)
+No daemon. No background process. No network calls.
 
 ## Installation
-
-### Using mise
-
-```bash
-mise install diu
-mise use -g diu
-```
-
-### Using Homebrew
-
-```bash
-brew tap yowainwright/tap
-brew install diu
-```
-
-### Using Go
 
 ```bash
 go install github.com/yowainwright/diu/cmd/diu@latest
 ```
 
-### From source
+Or build from source:
 
 ```bash
 git clone https://github.com/yowainwright/diu
 cd diu
-mise run build
+go build -o diu ./cmd/diu
 ```
 
-## Quick Start
+## Quick start
 
-1. Start the DIU daemon:
 ```bash
-diu daemon start
+# 1. Inject shell hooks into ~/.zshrc / ~/.bashrc
+diu setup
+
+# 2. Populate the cache with what's currently installed
+diu scan
+
+# 3. See what's tracked
+diu list
+
+# 4. Check status at any time
+diu status
 ```
 
-2. Check daemon status:
-```bash
-diu daemon status
-```
-
-3. Query your package usage:
-```bash
-# Do I use docker?
-diu query --package docker --last 90d
-
-# What haven't I used in 6 months?
-diu packages --unused 6m
-
-# Show usage statistics
-diu stats --top 10
-```
+Restart your shell (or `source ~/.zshrc`) after `setup` for hooks to take effect.
 
 ## Commands
-
-### Daemon Management
-
-```bash
-diu daemon start    # Start the daemon
-diu daemon stop     # Stop the daemon
-diu daemon restart  # Restart the daemon
-diu daemon status   # Check daemon status
-```
-
-### Query Executions
-
-```bash
-diu query [options]
-  --tool, -t        Filter by tool (brew, npm, go, etc.)
-  --package, -p     Filter by package name
-  --last, -l        Show executions in last duration (24h, 7d, 30d)
-  --limit, -n       Limit number of results (default: 20)
-  --format, -f      Output format (table, json, csv)
-```
-
-### Statistics
-
-```bash
-diu stats [options]
-  --daily, -d       Show daily statistics
-  --weekly, -w      Show weekly statistics
-  --tool, -t        Statistics for specific tool
-  --top             Show top N most used packages
-```
-
-### Package Management
-
-```bash
-diu packages [options]
-  --tool, -t        Filter by tool
-  --unused, -u      Show packages not used in duration
-```
-
-## Configuration
-
-Configuration is stored in `~/.config/diu/config.json`
-
-Default configuration includes:
-- Enabled tools: homebrew, npm, go, pip, gem, cargo
-- Storage location: `~/.local/share/diu/executions.json`
-- Retention: 365 days
-- Automatic backups: enabled
-
-## How It Works
-
-DIU uses multiple monitoring strategies:
-
-1. **Process Monitoring**: Creates lightweight wrapper scripts that track executions
-2. **File System Monitoring**: Watches package directories for changes
-3. **Shell Integration**: Optional shell hooks for command tracking
-
-## Development
-
-### Prerequisites
-
-- macOS (Intel or Apple Silicon)
-- Go 1.22+
-- mise (for task running)
-- Docker (optional, for E2E tests)
 
 ### Setup
 
 ```bash
-# Clone the repository
-git clone https://github.com/yowainwright/diu
-cd diu
-
-# Install dependencies with mise
-mise install
-
-# Initialize the project
-mise run setup
-
-# Run tests
-mise run test
-
-# Build
-mise run build
+diu setup       # inject shell hooks into ~/.zshrc and ~/.bashrc
+diu teardown    # remove shell hooks
+diu status      # show hook status and storage stats
 ```
 
-### Available Tasks (via mise)
+### Discovery
 
 ```bash
-mise tasks                    # List all available tasks
-mise run test                 # Run tests
-mise run lint                 # Run linters
-mise run build                # Build the binary
-mise run dev                  # Run in development mode
-mise run release-snapshot     # Create a release snapshot
+diu scan                # scan all enabled tools for installed packages + versions
+diu scan --tool brew    # scan only homebrew
 ```
 
-### Architecture
+### Viewing data
 
-Built with:
-- Go 1.22+
-- [Cobra](https://github.com/spf13/cobra) for CLI
-- [Fang](https://github.com/charmbracelet/fang) for beautiful CLI styling
-- [Lipgloss](https://github.com/charmbracelet/lipgloss) for terminal UI
-- [mise](https://mise.jdx.dev) for task running
-- [GoReleaser](https://goreleaser.com) for releases
+```bash
+diu list                        # all tracked packages
+diu list --tool npm             # filter by tool
+diu list --unused 90d           # packages not used in 90 days
+diu list --format json          # JSON output
 
-## macOS Specific Details
+diu stats                       # usage frequency by tool
+diu stats --top 10              # top 10 packages by use count
+diu stats --tool homebrew       # filter by tool
+```
 
-DIU is optimized for macOS and handles both Intel and Apple Silicon architectures:
+### Maintenance
 
-- **Homebrew paths**: Automatically detects `/usr/local` (Intel) and `/opt/homebrew` (Apple Silicon)
-- **LaunchAgent support**: Can be configured to start at login
-- **Native performance**: Compiled specifically for macOS
+```bash
+diu cleanup                     # remove records older than retention_days (default 365)
+diu cleanup --before 90d        # remove records older than 90 days
+```
+
+### Config
+
+```bash
+diu config list                         # print full config as JSON
+diu config get storage.json_file        # get a specific value
+diu config set storage.retention_days 180
+```
+
+## Package data
+
+Each tracked package stores:
+
+| Field | Description |
+|---|---|
+| `name` | Package name |
+| `version` | Installed version (populated by `scan`) |
+| `tool` | Package manager (homebrew, npm, go, pip, cargo, gem) |
+| `install_date` | When first seen |
+| `last_updated` | When version last changed (detected by `scan`) or last upgraded |
+| `last_used` | When last install/upgrade command was recorded |
+| `usage_count` | Number of recorded installs/upgrades |
+
+## Configuration
+
+Config lives at `~/.config/diu/config.json` and is auto-created with defaults on first run.
+
+Key settings:
+
+```json
+{
+  "storage": {
+    "json_file": "~/.local/share/diu/diu.json",
+    "retention_days": 365
+  },
+  "monitoring": {
+    "enabled_tools": ["homebrew", "npm", "go", "pip", "gem", "cargo"]
+  }
+}
+```
+
+## Supported tools
+
+| Tool | Hook triggers on | Scan uses |
+|---|---|---|
+| `brew` | `install`, `upgrade`, `reinstall` | `brew list --json=v2` |
+| `npm` | `install -g`, `update -g` | `npm list -g --json` |
+| `go` | `install`, `get` | GOBIN directory scan |
+| `pip` / `pip3` | `install` | — |
+| `cargo` | `install` | — |
+| `gem` | `install`, `update` | — |
+
+## Development
+
+```bash
+mise run test       # run unit tests
+mise run build      # build binary
+mise run lint       # run linters
+mise run scan       # build + diu scan
+mise run unused     # show packages unused for 6+ months
+```
+
+## Requirements
+
+- macOS (Intel or Apple Silicon)
+- Go 1.25+
+- bash or zsh
 
 ## License
 
 MIT
-
-## Author
-
-Jeffry Wainwright (@yowainwright)

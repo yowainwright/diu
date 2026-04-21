@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -45,14 +46,14 @@ func TestAddExecution(t *testing.T) {
 	defer storage.Close()
 
 	record := &core.ExecutionRecord{
-		Tool:       "test",
-		Command:    "test command",
-		Args:       []string{"arg1", "arg2"},
-		Timestamp:  time.Now(),
-		Duration:   5 * time.Second,
-		ExitCode:   0,
-		WorkingDir: "/tmp",
-		User:       "testuser",
+		Tool:             "test",
+		Command:          "test command",
+		Args:             []string{"arg1", "arg2"},
+		Timestamp:        time.Now(),
+		Duration:         5 * time.Second,
+		ExitCode:         0,
+		WorkingDir:       "/tmp",
+		User:             "testuser",
 		PackagesAffected: []string{"package1"},
 	}
 
@@ -169,6 +170,68 @@ func TestPackageManagement(t *testing.T) {
 
 	if len(packages) != 1 {
 		t.Errorf("Expected 1 package, got %d", len(packages))
+	}
+}
+
+func TestLoadNormalizesLegacyToolNames(t *testing.T) {
+	tempDir := t.TempDir()
+	config := &core.Config{
+		Storage: core.StorageConfig{
+			JSONFile: filepath.Join(tempDir, "test.json"),
+		},
+	}
+
+	legacy := core.StorageData{
+		Version: "1.0.0",
+		Metadata: core.StorageMetadata{
+			Created:     time.Now(),
+			LastUpdated: time.Now(),
+			Hostname:    "test-host",
+			User:        "testuser",
+			DIUVersion:  "0.1.0",
+		},
+		Packages: map[string]map[string]core.PackageInfo{
+			"go-binary": {
+				"stringer": {
+					Name:       "stringer",
+					Tool:       "go-binary",
+					LastUsed:   time.Now(),
+					UsageCount: 1,
+				},
+			},
+			"homebrew-cask": {
+				"firefox": {
+					Name:       "firefox",
+					Tool:       "homebrew-cask",
+					LastUsed:   time.Now(),
+					UsageCount: 1,
+				},
+			},
+		},
+		Statistics: core.StorageStatistics{
+			ExecutionFrequency: make(map[string]int),
+		},
+	}
+
+	data, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatalf("failed to marshal legacy storage: %v", err)
+	}
+	if err := os.WriteFile(config.Storage.JSONFile, data, 0644); err != nil {
+		t.Fatalf("failed to seed legacy storage: %v", err)
+	}
+
+	store, err := NewJSONStorage(config)
+	if err != nil {
+		t.Fatalf("failed to open storage: %v", err)
+	}
+	defer store.Close()
+
+	if _, err := store.GetPackage("go", "stringer"); err != nil {
+		t.Fatalf("expected go package after normalization: %v", err)
+	}
+	if _, err := store.GetPackage("homebrew", "firefox"); err != nil {
+		t.Fatalf("expected homebrew package after normalization: %v", err)
 	}
 }
 

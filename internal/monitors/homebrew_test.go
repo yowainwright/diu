@@ -137,3 +137,41 @@ func TestHomebrewInitialize(t *testing.T) {
 		t.Fatalf("Failed to initialize monitor: %v", err)
 	}
 }
+
+func TestParseInstalledFormulae(t *testing.T) {
+	output := []byte(`{
+		"formulae": [
+			{
+				"name": "wget",
+				"dependencies": ["libidn2"],
+				"linked_keg": "1.21.4",
+				"installed": [
+					{"version": "1.21.4", "time": 1710000000}
+				]
+			}
+		]
+	}`)
+
+	packages, err := parseInstalledFormulae(output)
+	if err != nil {
+		t.Fatalf("parseInstalledFormulae failed: %v", err)
+	}
+
+	if len(packages) != 1 {
+		t.Fatalf("expected 1 package, got %d", len(packages))
+	}
+
+	pkg := packages[0]
+	if pkg.Name != "wget" {
+		t.Fatalf("expected wget, got %s", pkg.Name)
+	}
+	if pkg.Tool != "homebrew" {
+		t.Fatalf("expected tool homebrew, got %s", pkg.Tool)
+	}
+	if pkg.Version != "1.21.4" {
+		t.Fatalf("expected version 1.21.4, got %s", pkg.Version)
+	}
+	if len(pkg.Dependencies) != 1 || pkg.Dependencies[0] != "libidn2" {
+		t.Fatalf("expected dependencies to be preserved, got %v", pkg.Dependencies)
+	}
+}

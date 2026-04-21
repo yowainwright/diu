@@ -24,6 +24,9 @@
   "scripts": {
     "build": "go build -o diu ./cmd/diu",
     "test": "go test ./...",
+    "test:unit": "go test ./cmd/... ./internal/... ./pkg/...",
+    "test:integration": "go test ./integration/...",
+    "test:e2e": "docker compose run --build --rm e2e",
     "clean": "go clean && rm -f diu",
     "install:local": "go install ./cmd/diu",
     "release": "goreleaser release --clean",

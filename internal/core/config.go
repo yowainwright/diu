@@ -9,20 +9,10 @@ import (
 )
 
 type Config struct {
-	Version    string            `json:"version"`
-	Daemon     DaemonConfig      `json:"daemon"`
-	Storage    StorageConfig     `json:"storage"`
-	Monitoring MonitoringConfig  `json:"monitoring"`
-	Tools      ToolsConfig       `json:"tools"`
-	API        APIConfig         `json:"api"`
-	Reporting  ReportingConfig   `json:"reporting"`
-}
-
-type DaemonConfig struct {
-	Port     int    `json:"port"`
-	LogLevel string `json:"log_level"`
-	DataDir  string `json:"data_dir"`
-	PIDFile  string `json:"pid_file"`
+	Version    string           `json:"version"`
+	Storage    StorageConfig    `json:"storage"`
+	Monitoring MonitoringConfig `json:"monitoring"`
+	Tools      ToolsConfig      `json:"tools"`
 }
 
 type StorageConfig struct {
@@ -34,20 +24,13 @@ type StorageConfig struct {
 }
 
 type MonitoringConfig struct {
-	EnabledTools []string          `json:"enabled_tools"`
-	Methods      []string          `json:"methods"`
-	Process      ProcessConfig     `json:"process"`
-	Filesystem   FilesystemConfig  `json:"filesystem"`
+	EnabledTools []string      `json:"enabled_tools"`
+	Process      ProcessConfig `json:"process"`
 }
 
 type ProcessConfig struct {
 	WrapperDir          string `json:"wrapper_dir"`
 	AutoInstallWrappers bool   `json:"auto_install_wrappers"`
-}
-
-type FilesystemConfig struct {
-	ScanInterval time.Duration            `json:"scan_interval"`
-	WatchPaths   map[string][]string      `json:"watch_paths"`
 }
 
 type ToolsConfig struct {
@@ -72,51 +55,24 @@ type GoConfig struct {
 	GoBin  string `json:"gobin"`
 }
 
-type APIConfig struct {
-	Enabled     bool   `json:"enabled"`
-	Host        string `json:"host"`
-	Port        int    `json:"port"`
-	CORSEnabled bool   `json:"cors_enabled"`
-}
-
-type ReportingConfig struct {
-	DailySummary  bool `json:"daily_summary"`
-	WeeklySummary bool `json:"weekly_summary"`
-	EmailReports  bool `json:"email_reports"`
-}
-
 func DefaultConfig() *Config {
 	homeDir, _ := os.UserHomeDir()
 	dataDir := filepath.Join(homeDir, ".local", "share", "diu")
 
 	return &Config{
 		Version: "1.0",
-		Daemon: DaemonConfig{
-			Port:     8080,
-			LogLevel: "info",
-			DataDir:  dataDir,
-			PIDFile:  "/tmp/diu.pid",
-		},
 		Storage: StorageConfig{
 			Backend:        "json",
-			JSONFile:       filepath.Join(dataDir, "executions.json"),
+			JSONFile:       filepath.Join(dataDir, "diu.json"),
 			BackupEnabled:  true,
 			BackupInterval: 24 * time.Hour,
 			RetentionDays:  365,
 		},
 		Monitoring: MonitoringConfig{
 			EnabledTools: []string{"homebrew", "npm", "go", "pip", "gem", "cargo"},
-			Methods:      []string{"process", "filesystem"},
 			Process: ProcessConfig{
 				WrapperDir:          filepath.Join(homeDir, ".local", "bin", "diu-wrappers"),
-				AutoInstallWrappers: true,
-			},
-			Filesystem: FilesystemConfig{
-				ScanInterval: 30 * time.Second,
-				WatchPaths: map[string][]string{
-					"homebrew": {"/usr/local/bin", "/opt/homebrew/bin"},
-					"npm":      {filepath.Join(homeDir, ".npm", "bin"), "/usr/local/lib/node_modules"},
-				},
+				AutoInstallWrappers: false,
 			},
 		},
 		Tools: ToolsConfig{
@@ -133,17 +89,6 @@ func DefaultConfig() *Config {
 				GoPath: os.Getenv("GOPATH"),
 				GoBin:  os.Getenv("GOBIN"),
 			},
-		},
-		API: APIConfig{
-			Enabled:     true,
-			Host:        "127.0.0.1",
-			Port:        8081,
-			CORSEnabled: false,
-		},
-		Reporting: ReportingConfig{
-			DailySummary:  true,
-			WeeklySummary: true,
-			EmailReports:  false,
 		},
 	}
 }
@@ -162,17 +107,19 @@ func LoadConfig(path string) (*Config, error) {
 		return nil, fmt.Errorf("failed to read config: %w", err)
 	}
 
-	var cfg Config
-	if err := json.Unmarshal(data, &cfg); err != nil {
+	cfg := DefaultConfig()
+	if err := json.Unmarshal(data, cfg); err != nil {
 		return nil, fmt.Errorf("failed to parse config: %w", err)
 	}
 
-	return &cfg, nil
+	return cfg, nil
 }
 
-func (c *Config) Save() error {
-	homeDir, _ := os.UserHomeDir()
-	path := filepath.Join(homeDir, ".config", "diu", "config.json")
+func (c *Config) Save(path string) error {
+	if path == "" {
+		homeDir, _ := os.UserHomeDir()
+		path = filepath.Join(homeDir, ".config", "diu", "config.json")
+	}
 
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0755); err != nil {
@@ -184,16 +131,16 @@ func (c *Config) Save() error {
 		return fmt.Errorf("failed to marshal config: %w", err)
 	}
 
-	if err := os.WriteFile(path, data, 0644); err != nil {
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0644); err != nil {
 		return fmt.Errorf("failed to write config: %w", err)
 	}
 
-	return nil
+	return os.Rename(tmp, path)
 }
 
 func (c *Config) EnsureDirectories() error {
 	dirs := []string{
-		c.Daemon.DataDir,
 		filepath.Dir(c.Storage.JSONFile),
 		c.Monitoring.Process.WrapperDir,
 	}

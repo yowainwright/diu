@@ -24,6 +24,7 @@ type PackageInfo struct {
 	Version      string    `json:"version"`
 	Tool         string    `json:"tool"`
 	InstallDate  time.Time `json:"install_date"`
+	LastUpdated  time.Time `json:"last_updated"`
 	LastUsed     time.Time `json:"last_used"`
 	UsageCount   int       `json:"usage_count"`
 	Path         string    `json:"path,omitempty"`

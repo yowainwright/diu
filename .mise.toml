@@ -12,16 +12,20 @@ description = "Build the DIU binary"
 run = "go build -o diu ./cmd/diu"
 
 [tasks.test]
-description = "Run all tests"
+description = "Run unit and integration tests"
 run = "go test -v -race -coverprofile=coverage.out ./..."
 
 [tasks.test-unit]
 description = "Run unit tests only"
-run = "go test -v -short ./..."
+run = "go test -v -short ./cmd/... ./internal/... ./pkg/..."
+
+[tasks.test-integration]
+description = "Run integration tests"
+run = "go test -v ./integration/..."
 
 [tasks.test-e2e]
-description = "Run E2E tests"
-run = "go test -v ./e2e/..."
+description = "Run Docker E2E tests"
+run = "docker compose run --build --rm e2e"
 
 [tasks.test-coverage]
 description = "Run tests with coverage report"
@@ -77,40 +81,32 @@ description = "Build and run DIU"
 depends = ["build"]
 run = "./diu"
 
-# Daemon tasks
-[tasks.daemon-start]
-description = "Start the DIU daemon"
+# Shell hook tasks
+[tasks.hooks-setup]
+description = "Inject diu shell hooks into .zshrc / .bashrc"
 depends = ["build"]
-run = "./diu daemon start"
+run = "./diu setup"
 
-[tasks.daemon-stop]
-description = "Stop the DIU daemon"
-run = "./diu daemon stop"
+[tasks.hooks-teardown]
+description = "Remove diu shell hooks"
+run = "./diu teardown"
 
-[tasks.daemon-status]
-description = "Check daemon status"
-run = "./diu daemon status"
+[tasks.hooks-status]
+description = "Check shell hook status"
+run = "./diu status"
 
-[tasks.daemon-restart]
-description = "Restart the DIU daemon"
-run = """
-./diu daemon stop
-sleep 1
-./diu daemon start
-"""
-
-# Query shortcuts
-[tasks.query]
-description = "Query recent executions"
-run = "./diu query --last 24h"
+[tasks.scan]
+description = "Scan installed packages and update cache"
+depends = ["build"]
+run = "./diu scan"
 
 [tasks.stats]
 description = "Show statistics"
 run = "./diu stats --top 10"
 
 [tasks.unused]
-description = "Show unused packages"
-run = "./diu packages --unused 6m"
+description = "Show packages unused for 6+ months"
+run = "./diu list --unused 6m"
 
 # Release tasks
 [tasks.release-snapshot]
@@ -130,21 +126,9 @@ run = "goreleaser release --clean"
 description = "Build Docker image"
 run = "docker build -t diu:latest ."
 
-[tasks.docker-up]
-description = "Start Docker services"
-run = "docker-compose up -d"
-
-[tasks.docker-down]
-description = "Stop Docker services"
-run = "docker-compose down"
-
-[tasks.docker-logs]
-description = "Show Docker logs"
-run = "docker-compose logs -f"
-
 [tasks.docker-e2e]
 description = "Run E2E tests in Docker"
-run = "docker-compose --profile e2e up --build --exit-code-from e2e-tests e2e-tests"
+run = "docker compose run --build --rm e2e"
 
 # Setup tasks
 [tasks.setup]

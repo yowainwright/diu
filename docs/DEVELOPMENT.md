@@ -2,15 +2,15 @@
 
 ## Architecture Overview
 
-DIU follows a modular architecture with clear separation of concerns:
+DIU is a CLI-first tool with shell integration and local JSON storage:
 
 ```
 ┌──────────────────────────────────────────────────────┐
 │                    CLI Interface                      │
 │                  (Cobra + Fang)                       │
 ├──────────────────────────────────────────────────────┤
-│                    Daemon Core                        │
-│              (Event Processing, API)                  │
+│               Shell Hook Management                   │
+│          (setup, teardown, interactive shells)        │
 ├──────────────────────────────────────────────────────┤
 │                Monitor Registry                       │
 │         (Homebrew, NPM, Go, Pip, etc.)               │
@@ -26,26 +26,28 @@ DIU follows a modular architecture with clear separation of concerns:
 diu/
 ├── cmd/                    # Entry points
 │   └── diu/               # Main CLI application
+├── integration/           # Process-level integration tests
 ├── internal/              # Private packages
 │   ├── core/             # Core types and config
-│   ├── daemon/           # Daemon service
 │   ├── monitors/         # Package manager monitors
+│   ├── shell/            # Shell hook setup and teardown
 │   ├── storage/          # Storage implementations
 │   └── wrappers/         # Wrapper generation
 ├── pkg/                   # Public packages
 │   └── models/           # Shared data models
-├── e2e/                   # End-to-end tests
+├── e2e/                   # Docker-only black-box tests
 ├── docs/                  # Documentation
 ├── configs/              # Configuration files
-└── scripts/              # Build and install scripts
+├── Dockerfile.e2e         # Docker E2E runner
+└── docker-compose.yml     # Docker E2E entrypoint
 ```
 
 ## Getting Started
 
 ### Prerequisites
 
-- Go 1.22 or higher
-- Docker and Docker Compose (for E2E tests)
+- Go 1.25 or higher
+- Docker with Compose support (for E2E tests)
 - Make (optional, for convenience commands)
 
 ### Setup
@@ -75,32 +77,24 @@ go test ./...
 
 ### Running Locally
 
-1. Start the daemon:
+1. Build the binary:
 ```bash
-./diu daemon start
+go build -o diu ./cmd/diu
 ```
 
-2. In another terminal, interact with the CLI:
+2. Exercise the CLI locally:
 ```bash
-./diu query --last 24h
+./diu setup
+./diu scan
+./diu list
 ./diu stats
 ```
 
 ### Running with Docker
 
-1. Build and start services:
+Run Docker E2E tests:
 ```bash
-docker-compose up --build
-```
-
-2. Run E2E tests:
-```bash
-docker-compose --profile e2e up e2e-tests
-```
-
-3. Access the API:
-```bash
-curl http://localhost:8081/api/v1/health
+docker compose run --build --rm e2e
 ```
 
 ## Adding a New Monitor
@@ -161,12 +155,7 @@ func (m *NewPMMonitor) GetInstalledPackages() ([]*core.PackageInfo, error) {
 
 ### 2. Register the Monitor
 
-Update `internal/daemon/daemon.go`:
-
-```go
-case "newpm":
-    monitor = monitors.NewNewPMMonitor()
-```
+Update the CLI scan wiring in `cmd/diu/main.go` so the new monitor is included in discovery flows.
 
 ### 3. Add Configuration
 
@@ -209,19 +198,14 @@ go tool cover -html=coverage.out
 
 Run integration tests:
 ```bash
-go test ./internal/monitors -tags=integration
+go test ./integration/...
 ```
 
 ### E2E Tests
 
-Run E2E tests with Docker:
+Run Docker E2E tests:
 ```bash
-docker-compose --profile e2e up --build e2e-tests
-```
-
-Run E2E tests locally (requires running daemon):
-```bash
-go test ./e2e/...
+docker compose run --build --rm e2e
 ```
 
 ### Test Data
@@ -256,68 +240,30 @@ go test ./...
 
 ## Debugging
 
-### Enable Debug Logging
-
-Set log level in config:
-```json
-{
-  "daemon": {
-    "log_level": "debug"
-  }
-}
-```
-
-Or via environment variable:
-```bash
-DIU_LOG_LEVEL=debug diu daemon start
-```
-
 ### Inspecting Storage
 
-View storage file:
+View the current storage file:
 ```bash
-cat ~/.local/share/diu/executions.json | jq .
+cat ~/.local/share/diu/diu.json | jq .
 ```
 
-Query specific executions:
+### Inspecting Config
+
+View the current config:
 ```bash
-diu query --format json | jq '.[] | select(.tool == "npm")'
+diu config list
 ```
 
-### API Debugging
+### Inspecting Shell Hooks
 
-Use curl with verbose output:
+Check hook status:
 ```bash
-curl -v http://localhost:8081/api/v1/health
+diu status
 ```
 
-Monitor API logs:
+Review injected shell config:
 ```bash
-docker-compose logs -f diu
-```
-
-## Performance Profiling
-
-### CPU Profiling
-
-```go
-import _ "net/http/pprof"
-
-// In daemon.go
-go func() {
-    log.Println(http.ListenAndServe("localhost:6060", nil))
-}()
-```
-
-Then profile:
-```bash
-go tool pprof http://localhost:6060/debug/pprof/profile
-```
-
-### Memory Profiling
-
-```bash
-go tool pprof http://localhost:6060/debug/pprof/heap
+sed -n '/# diu shell hooks/,/# end diu shell hooks/p' ~/.zshrc
 ```
 
 ## Building for Release
@@ -400,20 +346,19 @@ Closes #123
 
 ### Common Issues
 
-#### Daemon won't start
-- Check if port 8080/8081 is already in use
-- Verify PID file doesn't exist: `rm /tmp/diu.pid`
-- Check logs: `diu daemon start --log-level=debug`
+#### Hooks not recording commands
+- Restart or re-source the shell after `diu setup`
+- Confirm the shell config contains the `# diu shell hooks` block
+- Verify `diu` is on `PATH` inside the interactive shell session
 
-#### Wrappers not working
-- Ensure wrapper directory is in PATH
-- Check wrapper permissions: `ls -la ~/.local/bin/diu-wrappers/`
-- Regenerate wrappers: `diu setup wrappers`
+#### Scan not finding packages
+- Check the underlying tool is on `PATH`
+- Run `diu scan --tool <tool>` to isolate one monitor at a time
+- Inspect `diu config list` to confirm the tool is enabled
 
-#### Storage corruption
-- Backup current data: `diu backup`
-- Reset storage: `rm ~/.local/share/diu/executions.json`
-- Restore from backup if needed: `diu restore <backup-file>`
+#### Storage looks wrong
+- Inspect `~/.local/share/diu/diu.json`
+- Remove the file and rerun `diu scan` to rebuild local state
 
 ### Getting Help
 

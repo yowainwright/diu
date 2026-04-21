@@ -81,6 +81,7 @@ func (j *JSONStorage) load() error {
 	}
 
 	j.data = &storage
+	j.normalizePackageTools()
 	return nil
 }
 
@@ -102,6 +103,65 @@ func (j *JSONStorage) save() error {
 	}
 
 	return nil
+}
+
+func (j *JSONStorage) normalizePackageTools() {
+	if j.data == nil || j.data.Packages == nil {
+		return
+	}
+
+	aliases := map[string]string{
+		"brew":          "homebrew",
+		"homebrew-cask": "homebrew",
+		"go-binary":     "go",
+	}
+
+	for oldTool, newTool := range aliases {
+		oldPackages := j.data.Packages[oldTool]
+		if len(oldPackages) == 0 {
+			continue
+		}
+
+		if j.data.Packages[newTool] == nil {
+			j.data.Packages[newTool] = make(map[string]core.PackageInfo)
+		}
+
+		for name, pkg := range oldPackages {
+			pkg.Tool = newTool
+			if existing, ok := j.data.Packages[newTool][name]; ok {
+				j.data.Packages[newTool][name] = mergePackageInfo(existing, pkg)
+				continue
+			}
+			j.data.Packages[newTool][name] = pkg
+		}
+
+		delete(j.data.Packages, oldTool)
+	}
+}
+
+func mergePackageInfo(dst, src core.PackageInfo) core.PackageInfo {
+	if dst.Version == "" {
+		dst.Version = src.Version
+	}
+	if dst.InstallDate.IsZero() || (!src.InstallDate.IsZero() && src.InstallDate.Before(dst.InstallDate)) {
+		dst.InstallDate = src.InstallDate
+	}
+	if src.LastUpdated.After(dst.LastUpdated) {
+		dst.LastUpdated = src.LastUpdated
+	}
+	if src.LastUsed.After(dst.LastUsed) {
+		dst.LastUsed = src.LastUsed
+	}
+	if src.UsageCount > dst.UsageCount {
+		dst.UsageCount = src.UsageCount
+	}
+	if dst.Path == "" {
+		dst.Path = src.Path
+	}
+	if len(dst.Dependencies) == 0 {
+		dst.Dependencies = src.Dependencies
+	}
+	return dst
 }
 
 func (j *JSONStorage) AddExecution(record *core.ExecutionRecord) error {
@@ -222,6 +282,7 @@ func (j *JSONStorage) updatePackageInternal(tool, name string, timestamp time.Ti
 			Name:        name,
 			Tool:        tool,
 			InstallDate: timestamp,
+			LastUpdated: timestamp,
 			LastUsed:    timestamp,
 			UsageCount:  1,
 		}
