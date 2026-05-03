@@ -32,7 +32,7 @@ func (m *ProcessMonitor) Initialize(config *core.Config) error {
 		return err
 	}
 
-	m.wrapperPath = filepath.Join(config.Monitoring.Process.WrapperDir, m.name)
+	m.wrapperPath = filepath.Join(config.Monitoring.Process.WrapperDir, filepath.Base(m.binaryPath))
 	m.originalPath = m.findOriginalBinary()
 
 	if config.Monitoring.Process.AutoInstallWrappers {
@@ -73,32 +73,69 @@ func (m *ProcessMonitor) InstallWrapper() error {
 }
 
 func (m *ProcessMonitor) generateWrapperScript() string {
+	diuPath, _ := os.Executable()
 	return fmt.Sprintf(`#!/bin/bash
 DIU_SOCKET="%s"
+DIU_BINARY="%s"
 ORIGINAL_BINARY="%s"
-START_TIME=$(date +%%s%%N)
+DIU_TOOL="%s"
+START_TIME=$(date +%%s)
 
 "$ORIGINAL_BINARY" "$@"
 EXIT_CODE=$?
 
-END_TIME=$(date +%%s%%N)
-DURATION=$((($END_TIME - $START_TIME) / 1000000))
+END_TIME=$(date +%%s)
+DURATION=$(( (END_TIME - START_TIME) * 1000 ))
 
-if [ -S "$DIU_SOCKET" ]; then
-    echo "{
-        \"tool\": \"%s\",
-        \"command\": \"$ORIGINAL_BINARY $*\",
-        \"args\": \"$@\",
-        \"exit_code\": $EXIT_CODE,
-        \"duration_ms\": $DURATION,
-        \"timestamp\": \"$(date -u +%%Y-%%m-%%dT%%H:%%M:%%SZ)\",
-        \"working_dir\": \"$(pwd)\",
-        \"user\": \"$(whoami)\"
-    }" | nc -U "$DIU_SOCKET" 2>/dev/null || true
+json_escape() {
+    local value="$1"
+    value="${value//\\/\\\\}"
+    value="${value//\"/\\\"}"
+    value="${value//$'\n'/\\n}"
+    value="${value//$'\r'/\\r}"
+    value="${value//$'\t'/\\t}"
+    printf '%%s' "$value"
+}
+
+args_json="["
+first=true
+for arg in "$@"; do
+    if [ "$first" = true ]; then
+        first=false
+    else
+        args_json="$args_json,"
+    fi
+    args_json="$args_json\"$(json_escape "$arg")\""
+done
+args_json="$args_json]"
+
+payload=$(cat <<EOF
+{
+        "tool": "$DIU_TOOL",
+        "command": "$(json_escape "$ORIGINAL_BINARY $*")",
+        "args": $args_json,
+        "exit_code": $EXIT_CODE,
+        "duration_ms": $DURATION,
+        "timestamp": "$(date -u +%%Y-%%m-%%dT%%H:%%M:%%SZ)",
+        "working_dir": "$(json_escape "$(pwd)")",
+        "user": "$(json_escape "$(whoami)")"
+}
+EOF
+)
+
+sent=false
+if [ -S "$DIU_SOCKET" ] && command -v nc >/dev/null 2>&1; then
+    if printf '%%s\n' "$payload" | nc -U "$DIU_SOCKET" 2>/dev/null; then
+        sent=true
+    fi
+fi
+
+if [ "$sent" != true ] && [ -x "$DIU_BINARY" ]; then
+    printf '%%s\n' "$payload" | "$DIU_BINARY" record >/dev/null 2>&1 || true
 fi
 
 exit $EXIT_CODE
-`, core.DefaultSocketPath, m.originalPath, m.name)
+`, core.DefaultSocketPath, diuPath, m.originalPath, m.name)
 }
 
 func (m *ProcessMonitor) updateShellConfig() error {
@@ -196,16 +233,16 @@ func (m *ProcessMonitor) ParseCommand(cmd string, args []string) (*core.Executio
 func CreateWrapperScript(tool, originalPath, wrapperDir string) string {
 	return fmt.Sprintf(`#!/bin/bash
 # DIU wrapper for %s
-DIU_DAEMON_URL="http://localhost:8080/api/v1/executions"
+DIU_DAEMON_URL="http://localhost:8081/api/v1/executions"
 ORIGINAL="%s"
-START_TIME=$(date +%%s%%N)
+START_TIME=$(date +%%s)
 
 # Execute original command
 "$ORIGINAL" "$@"
 EXIT_CODE=$?
 
-END_TIME=$(date +%%s%%N)
-DURATION=$((($END_TIME - $START_TIME) / 1000000))
+END_TIME=$(date +%%s)
+DURATION=$((($END_TIME - $START_TIME) * 1000))
 
 # Send to DIU daemon (non-blocking)
 {

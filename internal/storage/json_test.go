@@ -45,14 +45,14 @@ func TestAddExecution(t *testing.T) {
 	defer storage.Close()
 
 	record := &core.ExecutionRecord{
-		Tool:       "test",
-		Command:    "test command",
-		Args:       []string{"arg1", "arg2"},
-		Timestamp:  time.Now(),
-		Duration:   5 * time.Second,
-		ExitCode:   0,
-		WorkingDir: "/tmp",
-		User:       "testuser",
+		Tool:             "test",
+		Command:          "test command",
+		Args:             []string{"arg1", "arg2"},
+		Timestamp:        time.Now(),
+		Duration:         5 * time.Second,
+		ExitCode:         0,
+		WorkingDir:       "/tmp",
+		User:             "testuser",
 		PackagesAffected: []string{"package1"},
 	}
 
@@ -588,6 +588,38 @@ func TestPackageNotFound(t *testing.T) {
 	_, err = storage.GetPackage("nonexistent-tool", "pkg")
 	if err == nil {
 		t.Error("Expected error for nonexistent tool")
+	}
+}
+
+func TestDeletePackage(t *testing.T) {
+	const (
+		packageName = "test-package"
+		toolName    = "npm"
+	)
+
+	tempDir := t.TempDir()
+	config := &core.Config{
+		Storage: core.StorageConfig{
+			JSONFile: filepath.Join(tempDir, "test.json"),
+		},
+	}
+
+	storage, err := NewJSONStorage(config)
+	if err != nil {
+		t.Fatalf("Failed to create storage: %v", err)
+	}
+	defer storage.Close()
+
+	if err := storage.UpdatePackage(&core.PackageInfo{Name: packageName, Tool: toolName}); err != nil {
+		t.Fatalf("Failed to update package: %v", err)
+	}
+
+	if err := storage.DeletePackage(toolName, packageName); err != nil {
+		t.Fatalf("Failed to delete package: %v", err)
+	}
+
+	if _, err := storage.GetPackage(toolName, packageName); err == nil {
+		t.Fatal("Expected package to be deleted")
 	}
 }
 

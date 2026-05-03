@@ -138,6 +138,19 @@ func (m *mockStorage) GetAllPackages() (map[string]map[string]*core.PackageInfo,
 	return result, nil
 }
 
+func (m *mockStorage) DeletePackage(tool, name string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	pkgs := m.packages[tool]
+	for i, pkg := range pkgs {
+		if pkg.Name == name {
+			m.packages[tool] = append(pkgs[:i], pkgs[i+1:]...)
+			break
+		}
+	}
+	return nil
+}
+
 func (m *mockStorage) GetStatistics() (*core.StorageStatistics, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -329,6 +342,52 @@ func TestDaemonEventProcessing(t *testing.T) {
 
 	if mockStore.getExecutionCount() != 1 {
 		t.Errorf("Expected 1 execution, got %d", mockStore.getExecutionCount())
+	}
+}
+
+func TestDaemonEnrichExecution(t *testing.T) {
+	const (
+		rawToolName           = "brew"
+		commandName           = "brew install wget"
+		installSubcommand     = "install"
+		packageName           = "wget"
+		subcommandMetadataKey = "subcommand"
+		expectedPackageCount  = 1
+	)
+
+	cfg := testConfig(t)
+	cfg.Monitoring.EnabledTools = []string{core.ToolHomebrew}
+	cfg.Monitoring.Process.WrapperDir = t.TempDir()
+	cfg.Monitoring.Process.AutoInstallWrappers = false
+
+	d, err := NewDaemon(cfg)
+	if err != nil {
+		t.Fatalf("NewDaemon failed: %v", err)
+	}
+	defer d.storage.Close()
+
+	record := &core.ExecutionRecord{
+		Tool:    rawToolName,
+		Command: commandName,
+		Args:    []string{installSubcommand, packageName},
+	}
+
+	d.enrichExecution(record)
+
+	if record.Tool != core.ToolHomebrew {
+		t.Errorf("Expected normalized tool %q, got %q", core.ToolHomebrew, record.Tool)
+	}
+
+	if len(record.PackagesAffected) != expectedPackageCount || record.PackagesAffected[0] != packageName {
+		t.Errorf("Expected package %q to be extracted, got %v", packageName, record.PackagesAffected)
+	}
+
+	if record.Metadata[subcommandMetadataKey] != installSubcommand {
+		t.Errorf("Expected %s metadata %q, got %v", subcommandMetadataKey, installSubcommand, record.Metadata)
+	}
+
+	if record.Timestamp.IsZero() {
+		t.Error("Expected missing timestamp to be filled")
 	}
 }
 

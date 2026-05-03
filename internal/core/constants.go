@@ -1,9 +1,12 @@
 package core
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 const (
-	Version    = "0.1.0"
+	Version       = "0.1.0"
 	ConfigVersion = "1.0"
 
 	ToolHomebrew = "homebrew"
@@ -14,12 +17,12 @@ const (
 	ToolCargo    = "cargo"
 	ToolGoBinary = "go-binary"
 
-	DefaultDaemonPort     = 8080
-	DefaultAPIPort        = 8081
-	DefaultAPIHost        = "127.0.0.1"
-	DefaultLogLevel       = "info"
-	DefaultRetentionDays  = 365
-	DefaultEventBuffer    = 100
+	DefaultDaemonPort      = 8080
+	DefaultAPIPort         = 8081
+	DefaultAPIHost         = "127.0.0.1"
+	DefaultLogLevel        = "info"
+	DefaultRetentionDays   = 365
+	DefaultEventBuffer     = 100
 	DefaultShutdownTimeout = 5 * time.Second
 
 	DefaultPIDFile    = "/tmp/diu.pid"
@@ -36,14 +39,10 @@ var (
 		ToolHomebrew,
 		ToolNPM,
 		ToolGo,
-		ToolPip,
-		ToolGem,
-		ToolCargo,
 	}
 
 	DefaultMonitorMethods = []string{
 		MonitorMethodProcess,
-		MonitorMethodFilesystem,
 	}
 
 	HomebrewCellarPaths = []string{
@@ -56,3 +55,14 @@ var (
 		"/opt/homebrew/bin",
 	}
 )
+
+func NormalizeToolName(tool string) string {
+	switch strings.ToLower(strings.TrimSpace(tool)) {
+	case "brew":
+		return ToolHomebrew
+	case "golang":
+		return ToolGo
+	default:
+		return strings.ToLower(strings.TrimSpace(tool))
+	}
+}

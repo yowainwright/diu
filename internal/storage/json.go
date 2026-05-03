@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sort"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/yowainwright/diu/internal/core"
@@ -64,9 +65,7 @@ func (j *JSONStorage) Initialize(config *core.Config) error {
 }
 
 func (j *JSONStorage) Close() error {
-	j.mu.Lock()
-	defer j.mu.Unlock()
-	return j.save()
+	return nil
 }
 
 func (j *JSONStorage) load() error {
@@ -108,26 +107,32 @@ func (j *JSONStorage) AddExecution(record *core.ExecutionRecord) error {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 
-	if record.ID == "" {
-		record.ID = fmt.Sprintf("exec_%s_%s", time.Now().Format("20060102_150405"), generateID())
-	}
-
-	j.data.Executions = append(j.data.Executions, *record)
-	j.data.Statistics.TotalExecutions++
-
-	if _, exists := j.data.Statistics.ExecutionFrequency[record.Tool]; !exists {
-		j.data.Statistics.ExecutionFrequency[record.Tool] = 0
-		j.data.Statistics.ToolsUsed = append(j.data.Statistics.ToolsUsed, record.Tool)
-	}
-	j.data.Statistics.ExecutionFrequency[record.Tool]++
-
-	for _, pkg := range record.PackagesAffected {
-		if err := j.updatePackageInternal(record.Tool, pkg, record.Timestamp); err != nil {
+	return j.withFileLock(func() error {
+		if err := j.reload(); err != nil {
 			return err
 		}
-	}
 
-	return j.save()
+		if record.ID == "" {
+			record.ID = fmt.Sprintf("exec_%s_%s", time.Now().Format("20060102_150405"), generateID())
+		}
+
+		j.data.Executions = append(j.data.Executions, *record)
+		j.data.Statistics.TotalExecutions++
+
+		if _, exists := j.data.Statistics.ExecutionFrequency[record.Tool]; !exists {
+			j.data.Statistics.ExecutionFrequency[record.Tool] = 0
+			j.data.Statistics.ToolsUsed = append(j.data.Statistics.ToolsUsed, record.Tool)
+		}
+		j.data.Statistics.ExecutionFrequency[record.Tool]++
+
+		for _, pkg := range record.PackagesAffected {
+			if err := j.updatePackageInternal(record.Tool, pkg, record.Timestamp); err != nil {
+				return err
+			}
+		}
+
+		return j.save()
+	})
 }
 
 func (j *JSONStorage) GetExecutions(opts QueryOptions) ([]*core.ExecutionRecord, error) {
@@ -195,16 +200,22 @@ func (j *JSONStorage) UpdatePackage(pkg *core.PackageInfo) error {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 
-	if j.data.Packages == nil {
-		j.data.Packages = make(map[string]map[string]core.PackageInfo)
-	}
+	return j.withFileLock(func() error {
+		if err := j.reload(); err != nil {
+			return err
+		}
 
-	if j.data.Packages[pkg.Tool] == nil {
-		j.data.Packages[pkg.Tool] = make(map[string]core.PackageInfo)
-	}
+		if j.data.Packages == nil {
+			j.data.Packages = make(map[string]map[string]core.PackageInfo)
+		}
 
-	j.data.Packages[pkg.Tool][pkg.Name] = *pkg
-	return j.save()
+		if j.data.Packages[pkg.Tool] == nil {
+			j.data.Packages[pkg.Tool] = make(map[string]core.PackageInfo)
+		}
+
+		j.data.Packages[pkg.Tool][pkg.Name] = *pkg
+		return j.save()
+	})
 }
 
 func (j *JSONStorage) updatePackageInternal(tool, name string, timestamp time.Time) error {
@@ -291,6 +302,25 @@ func (j *JSONStorage) GetAllPackages() (map[string]map[string]*core.PackageInfo,
 	return result, nil
 }
 
+func (j *JSONStorage) DeletePackage(tool, name string) error {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+
+	return j.withFileLock(func() error {
+		if err := j.reload(); err != nil {
+			return err
+		}
+		if j.data.Packages == nil || j.data.Packages[tool] == nil {
+			return nil
+		}
+		delete(j.data.Packages[tool], name)
+		if len(j.data.Packages[tool]) == 0 {
+			delete(j.data.Packages, tool)
+		}
+		return j.save()
+	})
+}
+
 func (j *JSONStorage) GetStatistics() (*core.StorageStatistics, error) {
 	j.mu.RLock()
 	defer j.mu.RUnlock()
@@ -362,17 +392,46 @@ func (j *JSONStorage) Cleanup(before time.Time) error {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 
-	var kept []core.ExecutionRecord
-	for _, exec := range j.data.Executions {
-		if exec.Timestamp.After(before) {
-			kept = append(kept, exec)
+	return j.withFileLock(func() error {
+		if err := j.reload(); err != nil {
+			return err
 		}
+
+		var kept []core.ExecutionRecord
+		for _, exec := range j.data.Executions {
+			if exec.Timestamp.After(before) {
+				kept = append(kept, exec)
+			}
+		}
+
+		j.data.Executions = kept
+		j.data.Statistics.TotalExecutions = len(kept)
+
+		return j.save()
+	})
+}
+
+func (j *JSONStorage) reload() error {
+	if _, err := os.Stat(j.filepath); err != nil {
+		return err
 	}
+	return j.load()
+}
 
-	j.data.Executions = kept
-	j.data.Statistics.TotalExecutions = len(kept)
+func (j *JSONStorage) withFileLock(fn func() error) error {
+	lockPath := j.filepath + ".lock"
+	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0644)
+	if err != nil {
+		return fmt.Errorf("failed to open storage lock: %w", err)
+	}
+	defer lockFile.Close()
 
-	return j.save()
+	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX); err != nil {
+		return fmt.Errorf("failed to lock storage: %w", err)
+	}
+	defer syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
+
+	return fn()
 }
 
 func generateID() string {

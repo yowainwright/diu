@@ -1,5 +1,5 @@
 # Build stage
-FROM golang:1.22-alpine AS builder
+FROM golang:1.25-alpine AS builder
 
 WORKDIR /build
 
@@ -39,6 +39,8 @@ RUN addgroup -g 1000 diu && \
     chown -R diu:diu /var/lib/diu /var/log/diu /etc/diu
 
 USER diu
+
+ENV DIU_DAEMON_FOREGROUND=1
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \

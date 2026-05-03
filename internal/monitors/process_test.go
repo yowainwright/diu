@@ -41,6 +41,26 @@ func TestProcessMonitorInitialize(t *testing.T) {
 	}
 }
 
+func TestProcessMonitorInitializeUsesBinaryNameForWrapper(t *testing.T) {
+	const wrapperBinaryName = "brew"
+
+	tmpDir := t.TempDir()
+
+	config := core.DefaultConfig()
+	config.Monitoring.Process.WrapperDir = tmpDir
+	config.Monitoring.Process.AutoInstallWrappers = false
+
+	monitor := NewProcessMonitor(core.ToolHomebrew, wrapperBinaryName)
+	if err := monitor.Initialize(config); err != nil {
+		t.Fatalf("Initialize failed: %v", err)
+	}
+
+	expectedWrapperPath := filepath.Join(tmpDir, wrapperBinaryName)
+	if monitor.wrapperPath != expectedWrapperPath {
+		t.Errorf("Expected wrapperPath %s, got %s", expectedWrapperPath, monitor.wrapperPath)
+	}
+}
+
 func TestProcessMonitorParseCommand(t *testing.T) {
 	monitor := NewProcessMonitor("mytool", "/usr/bin/mytool")
 
@@ -76,12 +96,22 @@ func TestProcessMonitorGetInstalledPackages(t *testing.T) {
 }
 
 func TestProcessMonitorGenerateWrapperScript(t *testing.T) {
-	monitor := NewProcessMonitor("brew", "/usr/local/bin/brew")
-	monitor.originalPath = "/usr/local/bin/brew"
+	const (
+		wrapperToolName       = "brew"
+		originalBinaryPath    = "/usr/local/bin/brew"
+		shebangText           = "#!/bin/bash"
+		toolAssignment        = `DIU_TOOL="brew"`
+		toolJSONField         = `"tool": "$DIU_TOOL"`
+		argsJSONField         = `"args": $args_json`
+		exitCodeForwardingCmd = "exit $EXIT_CODE"
+	)
+
+	monitor := NewProcessMonitor(wrapperToolName, originalBinaryPath)
+	monitor.originalPath = originalBinaryPath
 
 	script := monitor.generateWrapperScript()
 
-	if !strings.Contains(script, "#!/bin/bash") {
+	if !strings.Contains(script, shebangText) {
 		t.Error("Script should start with shebang")
 	}
 
@@ -89,15 +119,23 @@ func TestProcessMonitorGenerateWrapperScript(t *testing.T) {
 		t.Errorf("Script should contain socket path %s", core.DefaultSocketPath)
 	}
 
-	if !strings.Contains(script, "/usr/local/bin/brew") {
+	if !strings.Contains(script, originalBinaryPath) {
 		t.Error("Script should contain original binary path")
 	}
 
-	if !strings.Contains(script, `"tool": "brew"`) && !strings.Contains(script, `\"tool\": \"brew\"`) {
-		t.Error("Script should contain tool name in JSON")
+	if !strings.Contains(script, toolAssignment) {
+		t.Error("Script should assign the tool name")
 	}
 
-	if !strings.Contains(script, "exit $EXIT_CODE") {
+	if !strings.Contains(script, toolJSONField) {
+		t.Error("Script should include the tool field in JSON")
+	}
+
+	if !strings.Contains(script, argsJSONField) {
+		t.Error("Script should send args as a JSON array")
+	}
+
+	if !strings.Contains(script, exitCodeForwardingCmd) {
 		t.Error("Script should exit with original exit code")
 	}
 }

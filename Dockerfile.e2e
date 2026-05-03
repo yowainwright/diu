@@ -1,5 +1,5 @@
 # E2E Test Runner Dockerfile
-FROM golang:1.22-alpine
+FROM golang:1.25-alpine
 
 WORKDIR /app
 
@@ -21,4 +21,4 @@ RUN go install github.com/onsi/ginkgo/v2/ginkgo@latest && \
     go install github.com/onsi/gomega/...@latest
 
 # Run tests
-CMD ["go", "test", "-v", "./e2e/..."]
+CMD ["go", "test", "-tags=e2e", "-v", "./e2e/..."]

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"sync"
 	"syscall"
@@ -43,6 +44,7 @@ func NewDaemon(config *core.Config) (*Daemon, error) {
 	registry := monitors.NewMonitorRegistry()
 
 	for _, tool := range config.Monitoring.EnabledTools {
+		tool = core.NormalizeToolName(tool)
 		var monitor monitors.Monitor
 		switch tool {
 		case core.ToolHomebrew:
@@ -148,6 +150,10 @@ func (d *Daemon) Stop() error {
 	return stopErr
 }
 
+func (d *Daemon) Wait() {
+	d.wg.Wait()
+}
+
 func (d *Daemon) IsStopped() bool {
 	return d.stopped
 }
@@ -161,12 +167,47 @@ func (d *Daemon) processEvents() {
 			if !ok {
 				return
 			}
+			d.enrichExecution(event)
 			if err := d.storage.AddExecution(event); err != nil {
 				log.Printf("Failed to store execution: %v", err)
 			}
 
 		case <-d.ctx.Done():
 			return
+		}
+	}
+}
+
+func (d *Daemon) enrichExecution(record *core.ExecutionRecord) {
+	record.Tool = core.NormalizeToolName(record.Tool)
+	if record.Timestamp.IsZero() {
+		record.Timestamp = time.Now()
+	}
+
+	monitor, ok := d.registry.Get(record.Tool)
+	if !ok {
+		return
+	}
+
+	parsed, err := monitor.ParseCommand(record.Command, record.Args)
+	if err != nil {
+		log.Printf("Failed to parse %s command: %v", record.Tool, err)
+		return
+	}
+
+	if len(record.PackagesAffected) == 0 {
+		record.PackagesAffected = parsed.PackagesAffected
+	}
+
+	if len(parsed.Metadata) == 0 {
+		return
+	}
+	if record.Metadata == nil {
+		record.Metadata = make(map[string]interface{})
+	}
+	for key, value := range parsed.Metadata {
+		if _, exists := record.Metadata[key]; !exists {
+			record.Metadata[key] = value
 		}
 	}
 }
@@ -236,11 +277,16 @@ func (d *Daemon) startHTTPServer() error {
 		Handler: mux,
 	}
 
+	listener, err := net.Listen("tcp", addr)
+	if err != nil {
+		return fmt.Errorf("failed to listen on %s: %w", addr, err)
+	}
+
 	d.wg.Add(1)
 	go func() {
 		defer d.wg.Done()
 		log.Printf("HTTP API server listening on %s", addr)
-		if err := d.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := d.httpServer.Serve(listener); err != nil && err != http.ErrServerClosed {
 			log.Printf("HTTP server error: %v", err)
 		}
 	}()
@@ -252,7 +298,7 @@ func (d *Daemon) handleExecutions(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
 		opts := storage.QueryOptions{
-			Tool:    r.URL.Query().Get("tool"),
+			Tool:    core.NormalizeToolName(r.URL.Query().Get("tool")),
 			Package: r.URL.Query().Get("package"),
 		}
 
@@ -296,7 +342,7 @@ func (d *Daemon) handlePackages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tool := r.URL.Query().Get("tool")
+	tool := core.NormalizeToolName(r.URL.Query().Get("tool"))
 	packages, err := d.storage.GetPackages(tool)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -342,6 +388,9 @@ func (d *Daemon) handleHealth(w http.ResponseWriter, r *http.Request) {
 
 func (d *Daemon) writePIDFile() error {
 	pid := os.Getpid()
+	if err := os.MkdirAll(filepath.Dir(d.config.Daemon.PIDFile), 0755); err != nil {
+		return err
+	}
 	return os.WriteFile(d.config.Daemon.PIDFile, []byte(strconv.Itoa(pid)), 0644)
 }
 
@@ -352,10 +401,15 @@ func (d *Daemon) handleSignals() {
 	d.wg.Add(1)
 	go func() {
 		defer d.wg.Done()
+		defer signal.Stop(sigChan)
 		select {
 		case sig := <-sigChan:
 			log.Printf("Received signal: %v", sig)
-			d.Stop()
+			go func() {
+				if err := d.Stop(); err != nil {
+					log.Printf("Error stopping daemon: %v", err)
+				}
+			}()
 		case <-d.ctx.Done():
 			return
 		}
