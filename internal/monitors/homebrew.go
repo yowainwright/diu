@@ -12,6 +12,20 @@ import (
 	"time"
 
 	"github.com/yowainwright/diu/internal/core"
+	"github.com/yowainwright/diu/internal/safefs"
+)
+
+const (
+	homebrewCommandName = "brew"
+
+	homebrewCellarFlag = "--cellar"
+	homebrewPrefixFlag = "--prefix"
+	homebrewListCmd    = "list"
+	homebrewFormulaArg = "--formula"
+	homebrewCaskArg    = "--cask"
+	homebrewJSONV2Arg  = "--json=v2"
+
+	homebrewCaskTool = "homebrew-cask"
 )
 
 type HomebrewMonitor struct {
@@ -42,21 +56,22 @@ func (m *HomebrewMonitor) Initialize(config *core.Config) error {
 
 func (m *HomebrewMonitor) detectCellarPaths() []string {
 	var paths []string
+	homeDir, _ := os.UserHomeDir()
 
 	candidates := []string{
 		"/opt/homebrew/Cellar",
 		"/usr/local/Cellar",
-		filepath.Join(os.Getenv("HOME"), "homebrew/Cellar"),
+		filepath.Join(homeDir, "homebrew/Cellar"),
 	}
 
 	for _, path := range candidates {
-		if info, err := os.Stat(path); err == nil && info.IsDir() {
+		if info, err := safefs.Stat(path); err == nil && info.IsDir() {
 			paths = append(paths, path)
 		}
 	}
 
-	if brewPath, err := exec.LookPath("brew"); err == nil {
-		if output, err := exec.Command(brewPath, "--cellar").Output(); err == nil {
+	if _, err := exec.LookPath(homebrewCommandName); err == nil {
+		if output, err := exec.Command(homebrewCommandName, homebrewCellarFlag).Output(); err == nil {
 			cellar := strings.TrimSpace(string(output))
 			if cellar != "" && !contains(paths, cellar) {
 				paths = append(paths, cellar)
@@ -68,23 +83,24 @@ func (m *HomebrewMonitor) detectCellarPaths() []string {
 }
 
 func (m *HomebrewMonitor) detectCaskroom() string {
+	homeDir, _ := os.UserHomeDir()
 	candidates := []string{
 		"/opt/homebrew/Caskroom",
 		"/usr/local/Caskroom",
-		filepath.Join(os.Getenv("HOME"), "homebrew/Caskroom"),
+		filepath.Join(homeDir, "homebrew/Caskroom"),
 	}
 
 	for _, path := range candidates {
-		if info, err := os.Stat(path); err == nil && info.IsDir() {
+		if info, err := safefs.Stat(path); err == nil && info.IsDir() {
 			return path
 		}
 	}
 
-	if brewPath, err := exec.LookPath("brew"); err == nil {
-		if output, err := exec.Command(brewPath, "--prefix").Output(); err == nil {
+	if _, err := exec.LookPath(homebrewCommandName); err == nil {
+		if output, err := exec.Command(homebrewCommandName, homebrewPrefixFlag).Output(); err == nil {
 			prefix := strings.TrimSpace(string(output))
 			caskroom := filepath.Join(prefix, "Caskroom")
-			if info, err := os.Stat(caskroom); err == nil && info.IsDir() {
+			if info, err := safefs.Stat(caskroom); err == nil && info.IsDir() {
 				return caskroom
 			}
 		}
@@ -203,13 +219,12 @@ func (m *HomebrewMonitor) GetInstalledPackages() ([]*core.PackageInfo, error) {
 }
 
 func (m *HomebrewMonitor) getFormulae() ([]*core.PackageInfo, error) {
-	brewPath, err := exec.LookPath("brew")
-	if err != nil {
+	if _, err := exec.LookPath(homebrewCommandName); err != nil {
 		return nil, fmt.Errorf("brew not found: %w", err)
 	}
 
 	// Get JSON info for all installed formulae
-	cmd := exec.Command(brewPath, "list", "--formula", "--json=v2")
+	cmd := exec.Command(homebrewCommandName, homebrewListCmd, homebrewFormulaArg, homebrewJSONV2Arg)
 	output, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("failed to list formulae: %w", err)
@@ -248,12 +263,11 @@ func (m *HomebrewMonitor) getFormulae() ([]*core.PackageInfo, error) {
 }
 
 func (m *HomebrewMonitor) getFormulaeSimple() ([]*core.PackageInfo, error) {
-	brewPath, err := exec.LookPath("brew")
-	if err != nil {
+	if _, err := exec.LookPath(homebrewCommandName); err != nil {
 		return nil, err
 	}
 
-	cmd := exec.Command(brewPath, "list", "--formula")
+	cmd := exec.Command(homebrewCommandName, homebrewListCmd, homebrewFormulaArg)
 	output, err := cmd.Output()
 	if err != nil {
 		return nil, err
@@ -277,12 +291,11 @@ func (m *HomebrewMonitor) getFormulaeSimple() ([]*core.PackageInfo, error) {
 }
 
 func (m *HomebrewMonitor) getCasks() ([]*core.PackageInfo, error) {
-	brewPath, err := exec.LookPath("brew")
-	if err != nil {
+	if _, err := exec.LookPath(homebrewCommandName); err != nil {
 		return nil, err
 	}
 
-	cmd := exec.Command(brewPath, "list", "--cask")
+	cmd := exec.Command(homebrewCommandName, homebrewListCmd, homebrewCaskArg)
 	output, err := cmd.Output()
 	if err != nil {
 		return nil, err
@@ -295,7 +308,7 @@ func (m *HomebrewMonitor) getCasks() ([]*core.PackageInfo, error) {
 		if name != "" {
 			pkg := &core.PackageInfo{
 				Name:        name,
-				Tool:        "homebrew-cask",
+				Tool:        homebrewCaskTool,
 				InstallDate: time.Now(),
 			}
 			packages = append(packages, pkg)

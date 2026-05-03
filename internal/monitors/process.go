@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/yowainwright/diu/internal/core"
+	"github.com/yowainwright/diu/internal/safefs"
 )
 
 type ProcessMonitor struct {
@@ -43,15 +44,16 @@ func (m *ProcessMonitor) Initialize(config *core.Config) error {
 }
 
 func (m *ProcessMonitor) findOriginalBinary() string {
-	paths := strings.Split(os.Getenv("PATH"), ":")
+	paths := filepath.SplitList(os.Getenv("PATH"))
+	wrapperDir := filepath.Clean(m.config.Monitoring.Process.WrapperDir)
 	for _, path := range paths {
-		if path == m.config.Monitoring.Process.WrapperDir {
+		if path == "" || !filepath.IsAbs(path) || filepath.Clean(path) == wrapperDir {
 			continue
 		}
 
 		candidate := filepath.Join(path, filepath.Base(m.binaryPath))
-		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
-			if info.Mode()&0111 != 0 {
+		if info, err := safefs.Stat(candidate); err == nil && !info.IsDir() {
+			if info.Mode()&core.ExecutableModeMask != 0 {
 				return candidate
 			}
 		}
@@ -60,16 +62,33 @@ func (m *ProcessMonitor) findOriginalBinary() string {
 }
 
 func (m *ProcessMonitor) InstallWrapper() error {
-	if err := os.MkdirAll(m.config.Monitoring.Process.WrapperDir, 0755); err != nil {
+	if err := os.MkdirAll(m.config.Monitoring.Process.WrapperDir, core.OwnerDirectoryMode); err != nil {
 		return fmt.Errorf("failed to create wrapper directory: %w", err)
 	}
 
 	wrapperContent := m.generateWrapperScript()
-	if err := os.WriteFile(m.wrapperPath, []byte(wrapperContent), 0755); err != nil {
+	if err := writeOwnerExecutableFile(m.wrapperPath, []byte(wrapperContent)); err != nil {
 		return fmt.Errorf("failed to write wrapper script: %w", err)
 	}
 
 	return m.updateShellConfig()
+}
+
+func writeOwnerExecutableFile(path string, data []byte) (err error) {
+	file, err := safefs.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, core.PrivateFileMode)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if closeErr := file.Close(); err == nil && closeErr != nil {
+			err = closeErr
+		}
+	}()
+
+	if _, err := file.Write(data); err != nil {
+		return err
+	}
+	return file.Chmod(core.OwnerExecutableMode)
 }
 
 func (m *ProcessMonitor) generateWrapperScript() string {
@@ -151,25 +170,39 @@ func (m *ProcessMonitor) updateShellConfig() error {
 	exportLine := fmt.Sprintf("export PATH=\"%s:$PATH\"", m.config.Monitoring.Process.WrapperDir)
 
 	for _, configFile := range shellConfigs {
-		if _, err := os.Stat(configFile); err == nil {
-			content, err := os.ReadFile(configFile)
+		if _, err := safefs.Stat(configFile); err == nil {
+			content, err := safefs.ReadFile(configFile)
 			if err != nil {
 				continue
 			}
 
 			if !strings.Contains(string(content), exportLine) {
-				file, err := os.OpenFile(configFile, os.O_APPEND|os.O_WRONLY, 0644)
-				if err != nil {
+				if err := appendShellConfigLines(configFile, "\n# DIU path configuration\n", exportLine+"\n"); err != nil {
 					continue
 				}
-				defer file.Close()
-
-				file.WriteString("\n# DIU path configuration\n")
-				file.WriteString(exportLine + "\n")
 			}
 		}
 	}
 
+	return nil
+}
+
+func appendShellConfigLines(path string, lines ...string) (err error) {
+	file, err := safefs.OpenFile(path, os.O_APPEND|os.O_WRONLY, core.PrivateFileMode)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if closeErr := file.Close(); err == nil && closeErr != nil {
+			err = closeErr
+		}
+	}()
+
+	for _, line := range lines {
+		if _, err := file.WriteString(line); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -181,12 +214,18 @@ func (m *ProcessMonitor) Start(ctx context.Context, eventChan chan<- *core.Execu
 func (m *ProcessMonitor) ExecuteAndTrack(cmd string, args []string) (*core.ExecutionRecord, error) {
 	startTime := time.Now()
 
-	command := exec.Command(m.originalPath, args...)
+	originalPath, err := validateExecutablePath(m.originalPath)
+	if err != nil {
+		return nil, err
+	}
+
+	// #nosec G204 -- originalPath is resolved from PATH, validated as an absolute executable, and args are forwarded intentionally.
+	command := exec.Command(originalPath, args...)
 	command.Stdout = os.Stdout
 	command.Stderr = os.Stderr
 	command.Stdin = os.Stdin
 
-	err := command.Run()
+	err = command.Run()
 	exitCode := 0
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
@@ -216,6 +255,30 @@ func (m *ProcessMonitor) ExecuteAndTrack(cmd string, args []string) (*core.Execu
 	}
 
 	return record, nil
+}
+
+func validateExecutablePath(path string) (string, error) {
+	if strings.TrimSpace(path) == "" {
+		return "", fmt.Errorf("executable path cannot be empty")
+	}
+
+	cleanPath := filepath.Clean(path)
+	if !filepath.IsAbs(cleanPath) {
+		return "", fmt.Errorf("executable path must be absolute: %s", path)
+	}
+
+	info, err := safefs.Stat(cleanPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to inspect executable %s: %w", cleanPath, err)
+	}
+	if info.IsDir() {
+		return "", fmt.Errorf("executable path is a directory: %s", cleanPath)
+	}
+	if info.Mode()&core.ExecutableModeMask == 0 {
+		return "", fmt.Errorf("executable path is not executable: %s", cleanPath)
+	}
+
+	return cleanPath, nil
 }
 
 func (m *ProcessMonitor) GetInstalledPackages() ([]*core.PackageInfo, error) {

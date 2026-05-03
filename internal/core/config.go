@@ -6,16 +6,18 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/yowainwright/diu/internal/safefs"
 )
 
 type Config struct {
-	Version    string            `json:"version"`
-	Daemon     DaemonConfig      `json:"daemon"`
-	Storage    StorageConfig     `json:"storage"`
-	Monitoring MonitoringConfig  `json:"monitoring"`
-	Tools      ToolsConfig       `json:"tools"`
-	API        APIConfig         `json:"api"`
-	Reporting  ReportingConfig   `json:"reporting"`
+	Version    string           `json:"version"`
+	Daemon     DaemonConfig     `json:"daemon"`
+	Storage    StorageConfig    `json:"storage"`
+	Monitoring MonitoringConfig `json:"monitoring"`
+	Tools      ToolsConfig      `json:"tools"`
+	API        APIConfig        `json:"api"`
+	Reporting  ReportingConfig  `json:"reporting"`
 }
 
 type DaemonConfig struct {
@@ -34,10 +36,10 @@ type StorageConfig struct {
 }
 
 type MonitoringConfig struct {
-	EnabledTools []string          `json:"enabled_tools"`
-	Methods      []string          `json:"methods"`
-	Process      ProcessConfig     `json:"process"`
-	Filesystem   FilesystemConfig  `json:"filesystem"`
+	EnabledTools []string         `json:"enabled_tools"`
+	Methods      []string         `json:"methods"`
+	Process      ProcessConfig    `json:"process"`
+	Filesystem   FilesystemConfig `json:"filesystem"`
 }
 
 type ProcessConfig struct {
@@ -46,8 +48,8 @@ type ProcessConfig struct {
 }
 
 type FilesystemConfig struct {
-	ScanInterval time.Duration            `json:"scan_interval"`
-	WatchPaths   map[string][]string      `json:"watch_paths"`
+	ScanInterval time.Duration       `json:"scan_interval"`
+	WatchPaths   map[string][]string `json:"watch_paths"`
 }
 
 type ToolsConfig struct {
@@ -154,7 +156,7 @@ func LoadConfig(path string) (*Config, error) {
 		path = filepath.Join(homeDir, ".config", "diu", "config.json")
 	}
 
-	data, err := os.ReadFile(path)
+	data, err := safefs.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return DefaultConfig(), nil
@@ -178,7 +180,7 @@ func (c *Config) Save() error {
 
 func (c *Config) SaveTo(path string) error {
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, OwnerDirectoryMode); err != nil {
 		return fmt.Errorf("failed to create config directory: %w", err)
 	}
 
@@ -187,7 +189,7 @@ func (c *Config) SaveTo(path string) error {
 		return fmt.Errorf("failed to marshal config: %w", err)
 	}
 
-	if err := os.WriteFile(path, data, 0644); err != nil {
+	if err := os.WriteFile(path, data, PrivateFileMode); err != nil {
 		return fmt.Errorf("failed to write config: %w", err)
 	}
 
@@ -203,7 +205,7 @@ func (c *Config) EnsureDirectories() error {
 
 	for _, dir := range dirs {
 		if dir != "" {
-			if err := os.MkdirAll(dir, 0755); err != nil {
+			if err := os.MkdirAll(dir, OwnerDirectoryMode); err != nil {
 				return fmt.Errorf("failed to create directory %s: %w", dir, err)
 			}
 		}

@@ -249,8 +249,8 @@ func TestNewDaemon(t *testing.T) {
 		t.Error("Event channel not initialized")
 	}
 
-	if cap(d.eventChan) != 100 {
-		t.Errorf("Event channel capacity: got %d, want 100", cap(d.eventChan))
+	if cap(d.eventChan) != core.DefaultEventBuffer {
+		t.Errorf("Event channel capacity: got %d, want %d", cap(d.eventChan), core.DefaultEventBuffer)
 	}
 }
 
@@ -266,8 +266,12 @@ func TestDaemonStartStop(t *testing.T) {
 		t.Fatalf("Start failed: %v", err)
 	}
 
-	if _, err := os.Stat(cfg.Daemon.PIDFile); os.IsNotExist(err) {
+	info, err := os.Stat(cfg.Daemon.PIDFile)
+	if os.IsNotExist(err) {
 		t.Error("PID file not created")
+	}
+	if err == nil && info.Mode().Perm() != core.PrivateFileMode {
+		t.Errorf("PID file mode: got %v, want %v", info.Mode().Perm(), core.PrivateFileMode)
 	}
 
 	if d.IsStopped() {
@@ -636,7 +640,7 @@ func TestIsRunning(t *testing.T) {
 		t.Error("Should return false when PID file doesn't exist")
 	}
 
-	if err := os.WriteFile(cfg.Daemon.PIDFile, []byte("invalid"), 0644); err != nil {
+	if err := os.WriteFile(cfg.Daemon.PIDFile, []byte("invalid"), core.PrivateFileMode); err != nil {
 		t.Fatalf("Failed to write PID file: %v", err)
 	}
 
@@ -644,7 +648,7 @@ func TestIsRunning(t *testing.T) {
 		t.Error("Should return false for invalid PID")
 	}
 
-	if err := os.WriteFile(cfg.Daemon.PIDFile, []byte("999999999"), 0644); err != nil {
+	if err := os.WriteFile(cfg.Daemon.PIDFile, []byte("999999999"), core.PrivateFileMode); err != nil {
 		t.Fatalf("Failed to write PID file: %v", err)
 	}
 

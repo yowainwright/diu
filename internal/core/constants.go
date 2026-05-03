@@ -25,6 +25,11 @@ const (
 	DefaultEventBuffer     = 100
 	DefaultShutdownTimeout = 5 * time.Second
 
+	OwnerDirectoryMode  = 0o700
+	PrivateFileMode     = 0o600
+	OwnerExecutableMode = 0o700
+	ExecutableModeMask  = 0o111
+
 	DefaultPIDFile    = "/tmp/diu.pid"
 	DefaultSocketPath = "/tmp/diu.sock"
 

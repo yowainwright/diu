@@ -21,6 +21,7 @@ import (
 	"github.com/yowainwright/diu/internal/core"
 	"github.com/yowainwright/diu/internal/daemon"
 	"github.com/yowainwright/diu/internal/monitors"
+	"github.com/yowainwright/diu/internal/safefs"
 	"github.com/yowainwright/diu/internal/storage"
 )
 
@@ -51,13 +52,30 @@ const (
 	formatJSON  = "json"
 	formatCSV   = "csv"
 
+	homebrewCommandName = "brew"
+	npmCommandName      = "npm"
+
+	homebrewCaskTool = "homebrew-cask"
+	homebrewCaskFlag = "--cask"
+	npmGlobalFlag    = "-g"
+
+	configSubcommand    = "config"
+	getSubcommand       = "get"
+	npmPrefixConfigName = "prefix"
+	uninstallSubcommand = "uninstall"
+
 	actionQuit      = "q"
 	actionNext      = "n"
 	actionPrevious  = "p"
 	actionSearch    = "/"
 	actionUninstall = "u"
 
-	removeFilePlan = "remove-file"
+	removeFilePlan               = "remove-file"
+	packageNameAllowedCharacters = "@._+-/"
+	packageIndexColumnWidth      = 3
+	packageToolColumnWidth       = 14
+	packageNameColumnWidth       = 34
+	packageUsageColumnWidth      = 4
 )
 
 func main() {
@@ -298,6 +316,10 @@ func startDaemon(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return fmt.Errorf("failed to get executable path: %w", err)
 		}
+		execPath, err = validateExecutablePath(execPath)
+		if err != nil {
+			return fmt.Errorf("invalid daemon executable path: %w", err)
+		}
 
 		args := []string{execPath, "daemon", "start"}
 		env := append(os.Environ(), "DIU_DAEMON_FOREGROUND=1")
@@ -305,7 +327,11 @@ func startDaemon(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return fmt.Errorf("failed to open %s: %w", os.DevNull, err)
 		}
-		defer devNull.Close()
+		defer func() {
+			if err := devNull.Close(); err != nil {
+				fmt.Fprintf(os.Stderr, "failed to close %s: %v\n", os.DevNull, err)
+			}
+		}()
 
 		procAttr := &syscall.ProcAttr{
 			Env:   env,
@@ -315,6 +341,7 @@ func startDaemon(cmd *cobra.Command, args []string) error {
 			},
 		}
 
+		// #nosec G204 -- execPath is the current executable path and is validated before forking.
 		_, err = syscall.ForkExec(execPath, args, procAttr)
 		if err != nil {
 			return fmt.Errorf("failed to fork daemon: %w", err)
@@ -967,10 +994,14 @@ func printBrowserScreen(packages []*core.PackageInfo, offset int, search string,
 
 func printPackageRows(packages []*core.PackageInfo, offset int) {
 	for index, pkg := range packages {
-		fmt.Printf("%3d  %-14s %-34s used %-4d last %s\n",
+		fmt.Printf("%*d  %-*s %-*s used %-*d last %s\n",
+			packageIndexColumnWidth,
 			offset+index+1,
+			packageToolColumnWidth,
 			pkg.Tool,
-			truncate(pkg.Name, 34),
+			packageNameColumnWidth,
+			truncate(pkg.Name, packageNameColumnWidth),
+			packageUsageColumnWidth,
 			pkg.UsageCount,
 			formatLastUsed(pkg.LastUsed),
 		)
@@ -1077,48 +1108,85 @@ func uninstallPackage(pkg *core.PackageInfo, assumeYes bool) error {
 		return fmt.Errorf("uninstall is not supported for %s packages", pkg.Tool)
 	}
 
-	plan, err := uninstallPlan(pkg)
-	if err != nil {
+	if err := runUninstall(pkg); err != nil {
 		return err
 	}
 
-	if len(plan) == 1 && plan[0] == removeFilePlan {
-		if err := os.Remove(pkg.Path); err != nil {
-			return fmt.Errorf("failed to remove %s: %w", pkg.Path, err)
-		}
-	} else {
-		command := exec.Command(plan[0], plan[1:]...)
-		command.Stdout = os.Stdout
-		command.Stderr = os.Stderr
-		command.Stdin = os.Stdin
-		if err := command.Run(); err != nil {
-			return fmt.Errorf("uninstall failed: %w", err)
-		}
-	}
-
-	config, err := core.LoadConfig("")
-	if err == nil {
-		if wrapperName := wrapperNameForPackage(pkg); wrapperName != "" {
-			_ = os.Remove(filepath.Join(config.Monitoring.Process.WrapperDir, wrapperName))
-		}
-		if store, err := storage.NewJSONStorage(config); err == nil {
-			_ = store.DeletePackage(pkg.Tool, pkg.Name)
-			_ = store.Close()
-		}
+	if err := removeUninstalledPackageState(pkg); err != nil {
+		return err
 	}
 
 	fmt.Printf("%s %s uninstalled\n", successStyle.Render("✓"), pkg.Name)
 	return nil
 }
 
+func runUninstall(pkg *core.PackageInfo) error {
+	plan, err := uninstallPlan(pkg)
+	if err != nil {
+		return err
+	}
+
+	if len(plan) == 1 && plan[0] == removeFilePlan {
+		return removeGoBinary(pkg)
+	}
+
+	switch pkg.Tool {
+	case core.ToolHomebrew:
+		return runHomebrewUninstall(pkg.Name, false)
+	case homebrewCaskTool:
+		return runHomebrewUninstall(pkg.Name, true)
+	case core.ToolNPM:
+		return runNPMUninstall(pkg.Name)
+	default:
+		return fmt.Errorf("uninstall is not supported for %s packages", pkg.Tool)
+	}
+}
+
+func removeUninstalledPackageState(pkg *core.PackageInfo) error {
+	config, err := core.LoadConfig("")
+	if err == nil {
+		if wrapperName := wrapperNameForPackage(pkg); wrapperName != "" {
+			wrapperPath, pathErr := executableWrapperPath(config.Monitoring.Process.WrapperDir, wrapperName)
+			if pathErr == nil {
+				if removeErr := os.Remove(wrapperPath); removeErr != nil && !os.IsNotExist(removeErr) {
+					return fmt.Errorf("failed to remove wrapper %s: %w", wrapperPath, removeErr)
+				}
+			}
+		}
+		if store, err := storage.NewJSONStorage(config); err == nil {
+			if deleteErr := store.DeletePackage(pkg.Tool, pkg.Name); deleteErr != nil {
+				closeErr := store.Close()
+				if closeErr != nil {
+					return fmt.Errorf("failed to delete package state: %w; additionally failed to close storage: %v", deleteErr, closeErr)
+				}
+				return fmt.Errorf("failed to delete package state: %w", deleteErr)
+			}
+			if closeErr := store.Close(); closeErr != nil {
+				return fmt.Errorf("failed to close storage: %w", closeErr)
+			}
+		}
+	}
+
+	return nil
+}
+
 func uninstallPlan(pkg *core.PackageInfo) ([]string, error) {
 	switch pkg.Tool {
 	case core.ToolHomebrew:
-		return []string{"brew", "uninstall", pkg.Name}, nil
-	case "homebrew-cask":
-		return []string{"brew", "uninstall", "--cask", pkg.Name}, nil
+		if err := validatePackageManagerName(pkg.Name); err != nil {
+			return nil, err
+		}
+		return []string{homebrewCommandName, uninstallSubcommand, pkg.Name}, nil
+	case homebrewCaskTool:
+		if err := validatePackageManagerName(pkg.Name); err != nil {
+			return nil, err
+		}
+		return []string{homebrewCommandName, uninstallSubcommand, homebrewCaskFlag, pkg.Name}, nil
 	case core.ToolNPM:
-		return []string{"npm", "uninstall", "-g", pkg.Name}, nil
+		if err := validatePackageManagerName(pkg.Name); err != nil {
+			return nil, err
+		}
+		return []string{npmCommandName, uninstallSubcommand, npmGlobalFlag, pkg.Name}, nil
 	case core.ToolGo, core.ToolGoBinary:
 		if pkg.Path == "" {
 			return nil, fmt.Errorf("go package %s has no executable path to remove", pkg.Name)
@@ -1137,8 +1205,154 @@ func printableUninstallPlan(pkg *core.PackageInfo, plan []string) []string {
 }
 
 func supportsUninstall(pkg *core.PackageInfo) bool {
-	_, err := uninstallPlan(pkg)
-	return err == nil
+	switch pkg.Tool {
+	case core.ToolHomebrew, homebrewCaskTool, core.ToolNPM, core.ToolGo, core.ToolGoBinary:
+		return true
+	default:
+		return false
+	}
+}
+
+func runHomebrewUninstall(name string, cask bool) error {
+	if err := validatePackageManagerName(name); err != nil {
+		return err
+	}
+
+	var command *exec.Cmd
+	if cask {
+		// #nosec G204 -- command is allowlisted and package name is validated before execution.
+		command = exec.Command(homebrewCommandName, uninstallSubcommand, homebrewCaskFlag, name)
+	} else {
+		// #nosec G204 -- command is allowlisted and package name is validated before execution.
+		command = exec.Command(homebrewCommandName, uninstallSubcommand, name)
+	}
+	return runPreparedCommand(command)
+}
+
+func runNPMUninstall(name string) error {
+	if err := validatePackageManagerName(name); err != nil {
+		return err
+	}
+
+	// #nosec G204 -- command is allowlisted and package name is validated before execution.
+	command := exec.Command(npmCommandName, uninstallSubcommand, npmGlobalFlag, name)
+	return runPreparedCommand(command)
+}
+
+func runPreparedCommand(command *exec.Cmd) error {
+	command.Stdout = os.Stdout
+	command.Stderr = os.Stderr
+	command.Stdin = os.Stdin
+	if err := command.Run(); err != nil {
+		return fmt.Errorf("uninstall failed: %w", err)
+	}
+	return nil
+}
+
+func validatePackageManagerName(name string) error {
+	if strings.TrimSpace(name) == "" {
+		return fmt.Errorf("package name cannot be empty")
+	}
+	if strings.TrimSpace(name) != name {
+		return fmt.Errorf("package name cannot contain leading or trailing whitespace")
+	}
+	if strings.HasPrefix(name, "-") {
+		return fmt.Errorf("package name cannot start with a flag prefix: %s", name)
+	}
+	if strings.HasPrefix(name, "/") || strings.HasSuffix(name, "/") {
+		return fmt.Errorf("package name cannot be an absolute or incomplete path: %s", name)
+	}
+	if strings.Contains(name, "..") || strings.Contains(name, "//") {
+		return fmt.Errorf("package name contains an unsafe path segment: %s", name)
+	}
+
+	hasAlnum := false
+	for _, char := range name {
+		if char >= 'a' && char <= 'z' {
+			hasAlnum = true
+			continue
+		}
+		if char >= 'A' && char <= 'Z' {
+			hasAlnum = true
+			continue
+		}
+		if char >= '0' && char <= '9' {
+			hasAlnum = true
+			continue
+		}
+		if strings.ContainsRune(packageNameAllowedCharacters, char) {
+			continue
+		}
+		return fmt.Errorf("package name contains unsupported character %q", char)
+	}
+	if !hasAlnum {
+		return fmt.Errorf("package name must contain a letter or number")
+	}
+	return nil
+}
+
+func removeGoBinary(pkg *core.PackageInfo) error {
+	binaryPath, err := validateRemovableExecutablePath(pkg.Path)
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(binaryPath); err != nil {
+		return fmt.Errorf("failed to remove %s: %w", binaryPath, err)
+	}
+	return nil
+}
+
+func validateRemovableExecutablePath(path string) (string, error) {
+	if strings.TrimSpace(path) == "" {
+		return "", fmt.Errorf("executable path cannot be empty")
+	}
+	for _, segment := range strings.Split(filepath.ToSlash(path), "/") {
+		if segment == ".." {
+			return "", fmt.Errorf("executable path contains an unsafe path segment: %s", path)
+		}
+	}
+
+	cleanPath := filepath.Clean(path)
+	if !filepath.IsAbs(cleanPath) {
+		return "", fmt.Errorf("executable path must be absolute: %s", path)
+	}
+
+	info, err := os.Stat(cleanPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to inspect executable %s: %w", cleanPath, err)
+	}
+	if info.IsDir() {
+		return "", fmt.Errorf("refusing to remove directory: %s", cleanPath)
+	}
+	if info.Mode()&core.ExecutableModeMask == 0 {
+		return "", fmt.Errorf("refusing to remove non-executable file: %s", cleanPath)
+	}
+
+	return cleanPath, nil
+}
+
+func validateExecutablePath(path string) (string, error) {
+	if strings.TrimSpace(path) == "" {
+		return "", fmt.Errorf("executable path cannot be empty")
+	}
+
+	cleanPath := filepath.Clean(path)
+	if !filepath.IsAbs(cleanPath) {
+		return "", fmt.Errorf("executable path must be absolute: %s", path)
+	}
+
+	info, err := safefs.Stat(cleanPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to inspect executable %s: %w", cleanPath, err)
+	}
+	if info.IsDir() {
+		return "", fmt.Errorf("executable path is a directory: %s", cleanPath)
+	}
+	if info.Mode()&core.ExecutableModeMask == 0 {
+		return "", fmt.Errorf("executable path is not executable: %s", cleanPath)
+	}
+
+	return cleanPath, nil
 }
 
 func wrapperNameForPackage(pkg *core.PackageInfo) string {
@@ -1476,7 +1690,7 @@ func discoverExecutableWrappers(config *core.Config) []executableWrapper {
 			}
 			path := filepath.Join(dir, name)
 			info, err := os.Stat(path)
-			if err != nil || info.IsDir() || info.Mode()&0111 == 0 {
+			if err != nil || info.IsDir() || info.Mode()&core.ExecutableModeMask == 0 {
 				continue
 			}
 			if _, exists := targets[name]; exists {
@@ -1569,11 +1783,11 @@ func npmPackageFromPath(path string) string {
 }
 
 func npmGlobalBinDir() string {
-	npmPath, err := exec.LookPath(core.ToolNPM)
-	if err != nil {
+	if _, err := exec.LookPath(npmCommandName); err != nil {
 		return ""
 	}
-	output, err := exec.Command(npmPath, "config", "get", "prefix").Output()
+	// #nosec G204 -- npm command and arguments are fixed constants used only to locate the global bin directory.
+	output, err := exec.Command(npmCommandName, configSubcommand, getSubcommand, npmPrefixConfigName).Output()
 	if err != nil {
 		return ""
 	}
@@ -1611,7 +1825,11 @@ func writeExecutableWrapper(config *core.Config, target executableWrapper) error
 		return fmt.Errorf("failed to resolve diu executable: %w", err)
 	}
 
-	wrapperPath := filepath.Join(config.Monitoring.Process.WrapperDir, target.Name)
+	wrapperPath, err := executableWrapperPath(config.Monitoring.Process.WrapperDir, target.Name)
+	if err != nil {
+		return err
+	}
+
 	script := fmt.Sprintf(`#!/bin/bash
 DIU_SOCKET="%s"
 DIU_BINARY="%s"
@@ -1682,7 +1900,48 @@ fi
 exit $EXIT_CODE
 `, core.DefaultSocketPath, diuPath, target.OriginalPath, target.Tool, target.Package, target.Name)
 
-	return os.WriteFile(wrapperPath, []byte(script), 0755)
+	return writeOwnerExecutableFile(wrapperPath, []byte(script))
+}
+
+func executableWrapperPath(wrapperDir, name string) (string, error) {
+	if strings.TrimSpace(wrapperDir) == "" {
+		return "", fmt.Errorf("wrapper directory cannot be empty")
+	}
+	if shouldSkipExecutableWrapper(name) || filepath.Base(name) != name {
+		return "", fmt.Errorf("invalid wrapper name: %s", name)
+	}
+
+	cleanDir := filepath.Clean(wrapperDir)
+	wrapperPath := filepath.Join(cleanDir, name)
+	relativePath, err := filepath.Rel(cleanDir, wrapperPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to validate wrapper path: %w", err)
+	}
+	if relativePath == "." || strings.HasPrefix(relativePath, "..") {
+		return "", fmt.Errorf("wrapper path escapes wrapper directory: %s", wrapperPath)
+	}
+
+	return wrapperPath, nil
+}
+
+func writeOwnerExecutableFile(path string, data []byte) (err error) {
+	file, err := safefs.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, core.PrivateFileMode)
+	if err != nil {
+		return fmt.Errorf("failed to create executable file: %w", err)
+	}
+	defer func() {
+		if closeErr := file.Close(); err == nil && closeErr != nil {
+			err = fmt.Errorf("failed to close executable file: %w", closeErr)
+		}
+	}()
+
+	if _, err := file.Write(data); err != nil {
+		return fmt.Errorf("failed to write executable file: %w", err)
+	}
+	if err := file.Chmod(core.OwnerExecutableMode); err != nil {
+		return fmt.Errorf("failed to set executable permissions: %w", err)
+	}
+	return nil
 }
 
 func enrichExecutionRecord(config *core.Config, record *core.ExecutionRecord) {

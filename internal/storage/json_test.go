@@ -10,10 +10,12 @@ import (
 )
 
 func TestJSONStorage(t *testing.T) {
+	const storageFileName = "test.json"
+
 	tempDir := t.TempDir()
 	config := &core.Config{
 		Storage: core.StorageConfig{
-			JSONFile:      filepath.Join(tempDir, "test.json"),
+			JSONFile:      filepath.Join(tempDir, storageFileName),
 			RetentionDays: 30,
 		},
 	}
@@ -27,6 +29,14 @@ func TestJSONStorage(t *testing.T) {
 	// Test file creation
 	if _, err := os.Stat(config.Storage.JSONFile); os.IsNotExist(err) {
 		t.Error("Storage file was not created")
+	}
+
+	info, err := os.Stat(config.Storage.JSONFile)
+	if err != nil {
+		t.Fatalf("Failed to stat storage file: %v", err)
+	}
+	if got := info.Mode().Perm(); got != core.PrivateFileMode {
+		t.Errorf("Storage file mode = %v, want %v", got, core.PrivateFileMode)
 	}
 }
 
@@ -173,10 +183,12 @@ func TestPackageManagement(t *testing.T) {
 }
 
 func TestBackupRestore(t *testing.T) {
+	const storageFileName = "test.json"
+
 	tempDir := t.TempDir()
 	config := &core.Config{
 		Storage: core.StorageConfig{
-			JSONFile: filepath.Join(tempDir, "test.json"),
+			JSONFile: filepath.Join(tempDir, storageFileName),
 		},
 	}
 
@@ -203,6 +215,15 @@ func TestBackupRestore(t *testing.T) {
 	files, _ := filepath.Glob(config.Storage.JSONFile + ".backup.*")
 	if len(files) == 0 {
 		t.Error("Backup file was not created")
+	}
+	if len(files) > 0 {
+		info, err := os.Stat(files[0])
+		if err != nil {
+			t.Fatalf("Failed to stat backup file: %v", err)
+		}
+		if got := info.Mode().Perm(); got != core.PrivateFileMode {
+			t.Errorf("Backup file mode = %v, want %v", got, core.PrivateFileMode)
+		}
 	}
 
 	storage.Close()
@@ -624,10 +645,12 @@ func TestDeletePackage(t *testing.T) {
 }
 
 func TestRestoreNonexistentFile(t *testing.T) {
+	const storageFileName = "test.json"
+
 	tempDir := t.TempDir()
 	config := &core.Config{
 		Storage: core.StorageConfig{
-			JSONFile: filepath.Join(tempDir, "test.json"),
+			JSONFile: filepath.Join(tempDir, storageFileName),
 		},
 	}
 
@@ -637,17 +660,22 @@ func TestRestoreNonexistentFile(t *testing.T) {
 	}
 	defer storage.Close()
 
-	err = storage.Restore("/nonexistent/path/file.json")
+	err = storage.Restore(filepath.Join(tempDir, storageFileName+".backup.missing"))
 	if err == nil {
 		t.Error("Expected error for nonexistent restore file")
 	}
 }
 
 func TestRestoreInvalidJSON(t *testing.T) {
+	const (
+		storageFileName     = "test.json"
+		invalidBackupSuffix = ".backup.invalid"
+	)
+
 	tempDir := t.TempDir()
 	config := &core.Config{
 		Storage: core.StorageConfig{
-			JSONFile: filepath.Join(tempDir, "test.json"),
+			JSONFile: filepath.Join(tempDir, storageFileName),
 		},
 	}
 
@@ -657,8 +685,10 @@ func TestRestoreInvalidJSON(t *testing.T) {
 	}
 	defer storage.Close()
 
-	invalidFile := filepath.Join(tempDir, "invalid.json")
-	os.WriteFile(invalidFile, []byte("not valid json"), 0644)
+	invalidFile := filepath.Join(tempDir, storageFileName+invalidBackupSuffix)
+	if err := os.WriteFile(invalidFile, []byte("not valid json"), core.PrivateFileMode); err != nil {
+		t.Fatalf("Failed to write invalid restore file: %v", err)
+	}
 
 	err = storage.Restore(invalidFile)
 	if err == nil {

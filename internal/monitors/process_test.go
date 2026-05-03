@@ -171,7 +171,7 @@ func TestProcessMonitorInstallWrapper(t *testing.T) {
 	}
 
 	info, _ := os.Stat(monitor.wrapperPath)
-	if info.Mode()&0111 == 0 {
+	if info.Mode()&core.ExecutableModeMask == 0 {
 		t.Error("Wrapper should be executable")
 	}
 }
@@ -204,8 +204,11 @@ func TestProcessMonitorFindOriginalBinarySkipsWrapperDir(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	wrapperBinary := filepath.Join(tmpDir, "mytool")
-	if err := os.WriteFile(wrapperBinary, []byte("#!/bin/bash"), 0755); err != nil {
+	if err := os.WriteFile(wrapperBinary, []byte("#!/bin/bash"), core.PrivateFileMode); err != nil {
 		t.Fatalf("Failed to create wrapper: %v", err)
+	}
+	if err := os.Chmod(wrapperBinary, core.OwnerExecutableMode); err != nil {
+		t.Fatalf("Failed to mark wrapper executable: %v", err)
 	}
 
 	config := core.DefaultConfig()

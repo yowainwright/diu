@@ -71,7 +71,7 @@ func NewDaemon(config *core.Config) (*Daemon, error) {
 		config:    config,
 		storage:   store,
 		registry:  registry,
-		eventChan: make(chan *core.ExecutionRecord, 100),
+		eventChan: make(chan *core.ExecutionRecord, core.DefaultEventBuffer),
 		ctx:       ctx,
 		cancel:    cancel,
 		startTime: time.Now(),
@@ -122,7 +122,7 @@ func (d *Daemon) Stop() error {
 		}
 
 		if d.httpServer != nil {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), core.DefaultShutdownTimeout)
 			defer cancel()
 			if err := d.httpServer.Shutdown(ctx); err != nil {
 				log.Printf("Error shutting down HTTP server: %v", err)
@@ -130,7 +130,9 @@ func (d *Daemon) Stop() error {
 		}
 
 		if d.socketListener != nil {
-			d.socketListener.Close()
+			if err := d.socketListener.Close(); err != nil {
+				log.Printf("Error closing socket listener: %v", err)
+			}
 		}
 
 		close(d.eventChan)
@@ -215,7 +217,9 @@ func (d *Daemon) enrichExecution(record *core.ExecutionRecord) {
 func (d *Daemon) startSocketListener() error {
 	socketPath := core.DefaultSocketPath
 
-	os.Remove(socketPath)
+	if err := os.Remove(socketPath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("failed to remove stale socket: %w", err)
+	}
 
 	listener, err := net.Listen("unix", socketPath)
 	if err != nil {
@@ -247,7 +251,11 @@ func (d *Daemon) startSocketListener() error {
 }
 
 func (d *Daemon) handleSocketConnection(conn net.Conn) {
-	defer conn.Close()
+	defer func() {
+		if err := conn.Close(); err != nil {
+			log.Printf("Error closing socket connection: %v", err)
+		}
+	}()
 
 	decoder := json.NewDecoder(conn)
 	var record core.ExecutionRecord
@@ -273,8 +281,9 @@ func (d *Daemon) startHTTPServer() error {
 
 	addr := fmt.Sprintf("%s:%d", d.config.API.Host, d.config.API.Port)
 	d.httpServer = &http.Server{
-		Addr:    addr,
-		Handler: mux,
+		Addr:              addr,
+		Handler:           mux,
+		ReadHeaderTimeout: core.DefaultShutdownTimeout,
 	}
 
 	listener, err := net.Listen("tcp", addr)
@@ -315,7 +324,9 @@ func (d *Daemon) handleExecutions(w http.ResponseWriter, r *http.Request) {
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(executions)
+		if err := json.NewEncoder(w).Encode(executions); err != nil {
+			log.Printf("Failed to encode executions response: %v", err)
+		}
 
 	case http.MethodPost:
 		var record core.ExecutionRecord
@@ -350,7 +361,9 @@ func (d *Daemon) handlePackages(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(packages)
+	if err := json.NewEncoder(w).Encode(packages); err != nil {
+		log.Printf("Failed to encode packages response: %v", err)
+	}
 }
 
 func (d *Daemon) handleStats(w http.ResponseWriter, r *http.Request) {
@@ -366,7 +379,9 @@ func (d *Daemon) handleStats(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(stats)
+	if err := json.NewEncoder(w).Encode(stats); err != nil {
+		log.Printf("Failed to encode stats response: %v", err)
+	}
 }
 
 func (d *Daemon) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -383,15 +398,17 @@ func (d *Daemon) handleHealth(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(health)
+	if err := json.NewEncoder(w).Encode(health); err != nil {
+		log.Printf("Failed to encode health response: %v", err)
+	}
 }
 
 func (d *Daemon) writePIDFile() error {
 	pid := os.Getpid()
-	if err := os.MkdirAll(filepath.Dir(d.config.Daemon.PIDFile), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(d.config.Daemon.PIDFile), core.OwnerDirectoryMode); err != nil {
 		return err
 	}
-	return os.WriteFile(d.config.Daemon.PIDFile, []byte(strconv.Itoa(pid)), 0644)
+	return os.WriteFile(d.config.Daemon.PIDFile, []byte(strconv.Itoa(pid)), core.PrivateFileMode)
 }
 
 func (d *Daemon) handleSignals() {

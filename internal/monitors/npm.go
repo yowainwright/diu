@@ -17,8 +17,19 @@ import (
 type NPMMonitor struct {
 	*ProcessMonitor
 	globalPath string
-	npmPath    string
 }
+
+const (
+	npmCommandName       = "npm"
+	npmConfigCommand     = "config"
+	npmGetCommand        = "get"
+	npmPrefixConfigName  = "prefix"
+	npmListCommand       = "list"
+	npmGlobalFlag        = "-g"
+	npmDepthZeroFlag     = "--depth=0"
+	npmJSONFlag          = "--json"
+	npmNodeModulesMarker = "node_modules"
+)
 
 func NewNPMMonitor() Monitor {
 	return &NPMMonitor{
@@ -32,11 +43,9 @@ func (m *NPMMonitor) Initialize(config *core.Config) error {
 	}
 
 	// Find npm binary
-	npmPath, err := exec.LookPath("npm")
-	if err != nil {
+	if _, err := exec.LookPath(npmCommandName); err != nil {
 		return fmt.Errorf("npm not found: %w", err)
 	}
-	m.npmPath = npmPath
 
 	// Get global packages path
 	m.globalPath = m.getGlobalPath()
@@ -45,7 +54,7 @@ func (m *NPMMonitor) Initialize(config *core.Config) error {
 }
 
 func (m *NPMMonitor) getGlobalPath() string {
-	cmd := exec.Command(m.npmPath, "config", "get", "prefix")
+	cmd := exec.Command(npmCommandName, npmConfigCommand, npmGetCommand, npmPrefixConfigName)
 	output, err := cmd.Output()
 	if err != nil {
 		// Fallback to common locations
@@ -218,7 +227,7 @@ func (m *NPMMonitor) GetInstalledPackages() ([]*core.PackageInfo, error) {
 }
 
 func (m *NPMMonitor) getGlobalPackages() ([]*core.PackageInfo, error) {
-	cmd := exec.Command(m.npmPath, "list", "-g", "--depth=0", "--json")
+	cmd := exec.Command(npmCommandName, npmListCommand, npmGlobalFlag, npmDepthZeroFlag, npmJSONFlag)
 	output, err := cmd.Output()
 	if err != nil {
 		// npm list might return non-zero on some warnings
@@ -265,7 +274,7 @@ func (m *NPMMonitor) getGlobalPackages() ([]*core.PackageInfo, error) {
 }
 
 func (m *NPMMonitor) getGlobalPackagesSimple() ([]*core.PackageInfo, error) {
-	cmd := exec.Command(m.npmPath, "list", "-g", "--depth=0")
+	cmd := exec.Command(npmCommandName, npmListCommand, npmGlobalFlag, npmDepthZeroFlag)
 	output, err := cmd.Output()
 	if err != nil && len(output) == 0 {
 		return nil, err
@@ -277,7 +286,7 @@ func (m *NPMMonitor) getGlobalPackagesSimple() ([]*core.PackageInfo, error) {
 	for scanner.Scan() {
 		line := scanner.Text()
 		// Skip the first line (npm path) and tree characters
-		if strings.Contains(line, "node_modules") || strings.HasPrefix(line, "├") || strings.HasPrefix(line, "└") {
+		if strings.Contains(line, npmNodeModulesMarker) || strings.HasPrefix(line, "├") || strings.HasPrefix(line, "└") {
 			// Extract package name from lines like "├── package@version"
 			line = strings.TrimPrefix(line, "├── ")
 			line = strings.TrimPrefix(line, "└── ")

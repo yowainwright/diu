@@ -273,7 +273,7 @@ func (m *GoMonitor) getBinaries() ([]*core.PackageInfo, error) {
 		}
 
 		// Check if executable
-		if info.Mode()&0111 == 0 {
+		if info.Mode()&core.ExecutableModeMask == 0 {
 			continue
 		}
 

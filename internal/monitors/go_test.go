@@ -420,17 +420,20 @@ func TestGoGetBinaries(t *testing.T) {
 	monitor.Initialize(config)
 
 	executablePath := filepath.Join(tmpDir, "testbin")
-	if err := os.WriteFile(executablePath, []byte("#!/bin/bash\necho test"), 0755); err != nil {
+	if err := os.WriteFile(executablePath, []byte("#!/bin/bash\necho test"), core.PrivateFileMode); err != nil {
 		t.Fatalf("Failed to create test executable: %v", err)
+	}
+	if err := os.Chmod(executablePath, core.OwnerExecutableMode); err != nil {
+		t.Fatalf("Failed to mark test executable: %v", err)
 	}
 
 	nonExecPath := filepath.Join(tmpDir, "nonexec")
-	if err := os.WriteFile(nonExecPath, []byte("not executable"), 0644); err != nil {
+	if err := os.WriteFile(nonExecPath, []byte("not executable"), core.PrivateFileMode); err != nil {
 		t.Fatalf("Failed to create non-executable: %v", err)
 	}
 
 	subDir := filepath.Join(tmpDir, "subdir")
-	if err := os.Mkdir(subDir, 0755); err != nil {
+	if err := os.Mkdir(subDir, core.OwnerDirectoryMode); err != nil {
 		t.Fatalf("Failed to create subdir: %v", err)
 	}
 
@@ -496,8 +499,11 @@ func TestGoGetInstalledPackages(t *testing.T) {
 	monitor.Initialize(config)
 
 	executablePath := filepath.Join(tmpDir, "mytool")
-	if err := os.WriteFile(executablePath, []byte("#!/bin/bash"), 0755); err != nil {
+	if err := os.WriteFile(executablePath, []byte("#!/bin/bash"), core.PrivateFileMode); err != nil {
 		t.Fatalf("Failed to create executable: %v", err)
+	}
+	if err := os.Chmod(executablePath, core.OwnerExecutableMode); err != nil {
+		t.Fatalf("Failed to mark executable: %v", err)
 	}
 
 	packages, err := monitor.GetInstalledPackages()
