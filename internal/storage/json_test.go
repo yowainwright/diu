@@ -9,6 +9,27 @@ import (
 	"github.com/yowainwright/diu/internal/core"
 )
 
+func closeStorage(t *testing.T, store Storage) {
+	t.Helper()
+	if err := store.Close(); err != nil {
+		t.Fatalf("Failed to close storage: %v", err)
+	}
+}
+
+func addExecution(t *testing.T, store Storage, record *core.ExecutionRecord) {
+	t.Helper()
+	if err := store.AddExecution(record); err != nil {
+		t.Fatalf("Failed to add execution: %v", err)
+	}
+}
+
+func updatePackage(t *testing.T, store Storage, pkg *core.PackageInfo) {
+	t.Helper()
+	if err := store.UpdatePackage(pkg); err != nil {
+		t.Fatalf("Failed to update package: %v", err)
+	}
+}
+
 func TestJSONStorage(t *testing.T) {
 	const storageFileName = "test.json"
 
@@ -24,7 +45,7 @@ func TestJSONStorage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create storage: %v", err)
 	}
-	defer storage.Close()
+	defer closeStorage(t, storage)
 
 	// Test file creation
 	if _, err := os.Stat(config.Storage.JSONFile); os.IsNotExist(err) {
@@ -52,7 +73,7 @@ func TestAddExecution(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create storage: %v", err)
 	}
-	defer storage.Close()
+	defer closeStorage(t, storage)
 
 	record := &core.ExecutionRecord{
 		Tool:             "test",
@@ -98,7 +119,7 @@ func TestGetExecutions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create storage: %v", err)
 	}
-	defer storage.Close()
+	defer closeStorage(t, storage)
 
 	// Add multiple executions
 	tools := []string{"brew", "npm", "go"}
@@ -109,7 +130,7 @@ func TestGetExecutions(t *testing.T) {
 			Timestamp: time.Now().Add(time.Duration(-i) * time.Hour),
 			ExitCode:  0,
 		}
-		storage.AddExecution(record)
+		addExecution(t, storage, record)
 	}
 
 	// Test filtering by tool
@@ -145,7 +166,7 @@ func TestPackageManagement(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create storage: %v", err)
 	}
-	defer storage.Close()
+	defer closeStorage(t, storage)
 
 	pkg := &core.PackageInfo{
 		Name:        "test-package",
@@ -203,7 +224,7 @@ func TestBackupRestore(t *testing.T) {
 		Command:   "test backup",
 		Timestamp: time.Now(),
 	}
-	storage.AddExecution(record)
+	addExecution(t, storage, record)
 
 	// Create backup
 	err = storage.Backup()
@@ -226,11 +247,11 @@ func TestBackupRestore(t *testing.T) {
 		}
 	}
 
-	storage.Close()
+	closeStorage(t, storage)
 
 	// Create new storage and restore
 	storage2, _ := NewJSONStorage(config)
-	defer storage2.Close()
+	defer closeStorage(t, storage2)
 
 	if len(files) > 0 {
 		err = storage2.Restore(files[0])
@@ -257,7 +278,7 @@ func TestCleanup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create storage: %v", err)
 	}
-	defer storage.Close()
+	defer closeStorage(t, storage)
 
 	// Add old and new executions
 	oldRecord := &core.ExecutionRecord{
@@ -269,8 +290,8 @@ func TestCleanup(t *testing.T) {
 		Timestamp: time.Now(),
 	}
 
-	storage.AddExecution(oldRecord)
-	storage.AddExecution(newRecord)
+	addExecution(t, storage, oldRecord)
+	addExecution(t, storage, newRecord)
 
 	// Cleanup records older than 24 hours
 	err = storage.Cleanup(time.Now().Add(-24 * time.Hour))
@@ -300,7 +321,7 @@ func TestGetExecutionByID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create storage: %v", err)
 	}
-	defer storage.Close()
+	defer closeStorage(t, storage)
 
 	record := &core.ExecutionRecord{
 		ID:        "test-id-123",
@@ -309,7 +330,7 @@ func TestGetExecutionByID(t *testing.T) {
 		Timestamp: time.Now(),
 	}
 
-	storage.AddExecution(record)
+	addExecution(t, storage, record)
 
 	retrieved, err := storage.GetExecutionByID("test-id-123")
 	if err != nil {
@@ -338,7 +359,7 @@ func TestGetAllPackages(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create storage: %v", err)
 	}
-	defer storage.Close()
+	defer closeStorage(t, storage)
 
 	pkg1 := &core.PackageInfo{
 		Name:        "package1",
@@ -353,8 +374,8 @@ func TestGetAllPackages(t *testing.T) {
 		InstallDate: time.Now(),
 	}
 
-	storage.UpdatePackage(pkg1)
-	storage.UpdatePackage(pkg2)
+	updatePackage(t, storage, pkg1)
+	updatePackage(t, storage, pkg2)
 
 	allPackages, err := storage.GetAllPackages()
 	if err != nil {
@@ -385,11 +406,11 @@ func TestGetStatistics(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create storage: %v", err)
 	}
-	defer storage.Close()
+	defer closeStorage(t, storage)
 
-	storage.AddExecution(&core.ExecutionRecord{Tool: "npm", Timestamp: time.Now()})
-	storage.AddExecution(&core.ExecutionRecord{Tool: "npm", Timestamp: time.Now()})
-	storage.AddExecution(&core.ExecutionRecord{Tool: "go", Timestamp: time.Now()})
+	addExecution(t, storage, &core.ExecutionRecord{Tool: "npm", Timestamp: time.Now()})
+	addExecution(t, storage, &core.ExecutionRecord{Tool: "npm", Timestamp: time.Now()})
+	addExecution(t, storage, &core.ExecutionRecord{Tool: "go", Timestamp: time.Now()})
 
 	stats, err := storage.GetStatistics()
 	if err != nil {
@@ -421,15 +442,15 @@ func TestUpdateStatistics(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create storage: %v", err)
 	}
-	defer storage.Close()
+	defer closeStorage(t, storage)
 
 	today := time.Now()
 	yesterday := time.Now().Add(-24 * time.Hour)
 
-	storage.AddExecution(&core.ExecutionRecord{Tool: "npm", Timestamp: today})
-	storage.AddExecution(&core.ExecutionRecord{Tool: "npm", Timestamp: today})
-	storage.AddExecution(&core.ExecutionRecord{Tool: "npm", Timestamp: today})
-	storage.AddExecution(&core.ExecutionRecord{Tool: "go", Timestamp: yesterday})
+	addExecution(t, storage, &core.ExecutionRecord{Tool: "npm", Timestamp: today})
+	addExecution(t, storage, &core.ExecutionRecord{Tool: "npm", Timestamp: today})
+	addExecution(t, storage, &core.ExecutionRecord{Tool: "npm", Timestamp: today})
+	addExecution(t, storage, &core.ExecutionRecord{Tool: "go", Timestamp: yesterday})
 
 	err = storage.UpdateStatistics()
 	if err != nil {
@@ -444,6 +465,12 @@ func TestUpdateStatistics(t *testing.T) {
 }
 
 func TestConcurrentAccess(t *testing.T) {
+	const (
+		concurrentWorkers      = 10
+		recordsPerWorker       = 10
+		expectedExecutionCount = concurrentWorkers * recordsPerWorker
+	)
+
 	tempDir := t.TempDir()
 	config := &core.Config{
 		Storage: core.StorageConfig{
@@ -455,25 +482,30 @@ func TestConcurrentAccess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create storage: %v", err)
 	}
-	defer storage.Close()
+	defer closeStorage(t, storage)
 
-	done := make(chan bool)
-	for i := 0; i < 10; i++ {
+	errs := make(chan error, concurrentWorkers)
+	for i := 0; i < concurrentWorkers; i++ {
 		go func(id int) {
-			for j := 0; j < 10; j++ {
+			for j := 0; j < recordsPerWorker; j++ {
 				record := &core.ExecutionRecord{
 					Tool:      "test",
 					Command:   "concurrent test",
 					Timestamp: time.Now(),
 				}
-				storage.AddExecution(record)
+				if err := storage.AddExecution(record); err != nil {
+					errs <- err
+					return
+				}
 			}
-			done <- true
+			errs <- nil
 		}(i)
 	}
 
-	for i := 0; i < 10; i++ {
-		<-done
+	for i := 0; i < concurrentWorkers; i++ {
+		if err := <-errs; err != nil {
+			t.Fatalf("Failed to add concurrent execution: %v", err)
+		}
 	}
 
 	executions, err := storage.GetExecutions(QueryOptions{})
@@ -481,8 +513,8 @@ func TestConcurrentAccess(t *testing.T) {
 		t.Fatalf("Failed to get executions: %v", err)
 	}
 
-	if len(executions) != 100 {
-		t.Errorf("Expected 100 executions, got %d", len(executions))
+	if len(executions) != expectedExecutionCount {
+		t.Errorf("Expected %d executions, got %d", expectedExecutionCount, len(executions))
 	}
 }
 
@@ -498,12 +530,12 @@ func TestQueryOptionsTimeFiltering(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create storage: %v", err)
 	}
-	defer storage.Close()
+	defer closeStorage(t, storage)
 
 	now := time.Now()
-	storage.AddExecution(&core.ExecutionRecord{Tool: "old", Timestamp: now.Add(-48 * time.Hour)})
-	storage.AddExecution(&core.ExecutionRecord{Tool: "yesterday", Timestamp: now.Add(-24 * time.Hour)})
-	storage.AddExecution(&core.ExecutionRecord{Tool: "today", Timestamp: now})
+	addExecution(t, storage, &core.ExecutionRecord{Tool: "old", Timestamp: now.Add(-48 * time.Hour)})
+	addExecution(t, storage, &core.ExecutionRecord{Tool: "yesterday", Timestamp: now.Add(-24 * time.Hour)})
+	addExecution(t, storage, &core.ExecutionRecord{Tool: "today", Timestamp: now})
 
 	since := now.Add(-30 * time.Hour)
 	results, _ := storage.GetExecutions(QueryOptions{Since: &since})
@@ -535,14 +567,14 @@ func TestQueryOptionsPackageFiltering(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create storage: %v", err)
 	}
-	defer storage.Close()
+	defer closeStorage(t, storage)
 
-	storage.AddExecution(&core.ExecutionRecord{
+	addExecution(t, storage, &core.ExecutionRecord{
 		Tool:             "npm",
 		Timestamp:        time.Now(),
 		PackagesAffected: []string{"express", "lodash"},
 	})
-	storage.AddExecution(&core.ExecutionRecord{
+	addExecution(t, storage, &core.ExecutionRecord{
 		Tool:             "npm",
 		Timestamp:        time.Now(),
 		PackagesAffected: []string{"react"},
@@ -571,11 +603,11 @@ func TestGetPackagesAllTools(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create storage: %v", err)
 	}
-	defer storage.Close()
+	defer closeStorage(t, storage)
 
-	storage.UpdatePackage(&core.PackageInfo{Name: "pkg1", Tool: "npm"})
-	storage.UpdatePackage(&core.PackageInfo{Name: "pkg2", Tool: "go"})
-	storage.UpdatePackage(&core.PackageInfo{Name: "pkg3", Tool: "npm"})
+	updatePackage(t, storage, &core.PackageInfo{Name: "pkg1", Tool: "npm"})
+	updatePackage(t, storage, &core.PackageInfo{Name: "pkg2", Tool: "go"})
+	updatePackage(t, storage, &core.PackageInfo{Name: "pkg3", Tool: "npm"})
 
 	results, err := storage.GetPackages("")
 	if err != nil {
@@ -599,7 +631,7 @@ func TestPackageNotFound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create storage: %v", err)
 	}
-	defer storage.Close()
+	defer closeStorage(t, storage)
 
 	_, err = storage.GetPackage("npm", "nonexistent")
 	if err == nil {
@@ -629,7 +661,7 @@ func TestDeletePackage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create storage: %v", err)
 	}
-	defer storage.Close()
+	defer closeStorage(t, storage)
 
 	if err := storage.UpdatePackage(&core.PackageInfo{Name: packageName, Tool: toolName}); err != nil {
 		t.Fatalf("Failed to update package: %v", err)
@@ -658,7 +690,7 @@ func TestRestoreNonexistentFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create storage: %v", err)
 	}
-	defer storage.Close()
+	defer closeStorage(t, storage)
 
 	err = storage.Restore(filepath.Join(tempDir, storageFileName+".backup.missing"))
 	if err == nil {
@@ -683,7 +715,7 @@ func TestRestoreInvalidJSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create storage: %v", err)
 	}
-	defer storage.Close()
+	defer closeStorage(t, storage)
 
 	invalidFile := filepath.Join(tempDir, storageFileName+invalidBackupSuffix)
 	if err := os.WriteFile(invalidFile, []byte("not valid json"), core.PrivateFileMode); err != nil {

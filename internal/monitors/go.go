@@ -154,17 +154,7 @@ func (m *GoMonitor) extractGoPackages(args []string) []string {
 		}
 		// Go packages typically look like domain.com/user/package
 		if strings.Contains(arg, "/") || strings.Contains(arg, ".") {
-			// Extract package name from full path
-			parts := strings.Split(arg, "/")
-			if len(parts) > 0 {
-				// Use the last part as the package name
-				pkgName := parts[len(parts)-1]
-				// Remove version suffix if present
-				if idx := strings.Index(pkgName, "@"); idx > 0 {
-					pkgName = pkgName[:idx]
-				}
-				packages = append(packages, arg)
-			}
+			packages = append(packages, arg)
 		} else if arg == "." || arg == "./..." || arg == "..." {
 			// Current directory packages
 			continue

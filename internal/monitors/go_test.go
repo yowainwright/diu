@@ -417,7 +417,9 @@ func TestGoGetBinaries(t *testing.T) {
 	config.Tools.Go.GoBin = tmpDir
 
 	monitor := NewGoMonitor().(*GoMonitor)
-	monitor.Initialize(config)
+	if err := monitor.Initialize(config); err != nil {
+		t.Fatalf("Initialize failed: %v", err)
+	}
 
 	executablePath := filepath.Join(tmpDir, "testbin")
 	if err := os.WriteFile(executablePath, []byte("#!/bin/bash\necho test"), core.PrivateFileMode); err != nil {
@@ -462,14 +464,16 @@ func TestGoGetBinariesNonExistentDir(t *testing.T) {
 	config.Tools.Go.GoBin = "/nonexistent/path/that/does/not/exist"
 
 	monitor := NewGoMonitor().(*GoMonitor)
-	monitor.Initialize(config)
+	if err := monitor.Initialize(config); err != nil {
+		t.Fatalf("Initialize failed: %v", err)
+	}
 
 	packages, err := monitor.getBinaries()
 	if err != nil {
 		t.Fatalf("getBinaries should not error for non-existent dir: %v", err)
 	}
 
-	if packages != nil && len(packages) != 0 {
+	if len(packages) != 0 {
 		t.Errorf("Expected nil or empty packages, got %v", packages)
 	}
 }
@@ -496,7 +500,9 @@ func TestGoGetInstalledPackages(t *testing.T) {
 	config.Tools.Go.GoBin = tmpDir
 
 	monitor := NewGoMonitor().(*GoMonitor)
-	monitor.Initialize(config)
+	if err := monitor.Initialize(config); err != nil {
+		t.Fatalf("Initialize failed: %v", err)
+	}
 
 	executablePath := filepath.Join(tmpDir, "mytool")
 	if err := os.WriteFile(executablePath, []byte("#!/bin/bash"), core.PrivateFileMode); err != nil {

@@ -430,7 +430,7 @@ func queryExecutions(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to open storage: %w", err)
 	}
-	defer store.Close()
+	defer closeStore(store)
 
 	opts := storage.QueryOptions{
 		Tool:    core.NormalizeToolName(cmd.Flag("tool").Value.String()),
@@ -522,7 +522,7 @@ func showStats(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to open storage: %w", err)
 	}
-	defer store.Close()
+	defer closeStore(store)
 
 	daily, _ := cmd.Flags().GetBool("daily")
 	weekly, _ := cmd.Flags().GetBool("weekly")
@@ -615,7 +615,7 @@ func listPackages(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to open storage: %w", err)
 	}
-	defer store.Close()
+	defer closeStore(store)
 
 	tool, _ := cmd.Flags().GetString("tool")
 	tool = core.NormalizeToolName(tool)
@@ -778,6 +778,12 @@ func flagBool(cmd *cobra.Command, name string) bool {
 	return value
 }
 
+func closeStore(store storage.Storage) {
+	if err := store.Close(); err != nil {
+		fmt.Fprintf(os.Stderr, "failed to close storage: %v\n", err)
+	}
+}
+
 func isTerminal() bool {
 	info, err := os.Stdin.Stat()
 	if err != nil {
@@ -796,7 +802,7 @@ func loadFilteredPackages(opts packageListOptions) ([]*core.PackageInfo, error) 
 	if err != nil {
 		return nil, fmt.Errorf("failed to open storage: %w", err)
 	}
-	defer store.Close()
+	defer closeStore(store)
 
 	packages, err := store.GetPackages(core.NormalizeToolName(opts.Tool))
 	if err != nil {
@@ -1481,7 +1487,7 @@ func cleanup(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to open storage: %w", err)
 	}
-	defer store.Close()
+	defer closeStore(store)
 
 	before := time.Now().AddDate(0, 0, -config.Storage.RetentionDays)
 	if err := store.Cleanup(before); err != nil {
@@ -1502,7 +1508,7 @@ func backup(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to open storage: %w", err)
 	}
-	defer store.Close()
+	defer closeStore(store)
 
 	if err := store.Backup(); err != nil {
 		return fmt.Errorf("backup failed: %w", err)
@@ -1551,7 +1557,7 @@ func scanPackages(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to open storage: %w", err)
 	}
-	defer store.Close()
+	defer closeStore(store)
 
 	scanConfig := *config
 	scanConfig.Monitoring.Process.AutoInstallWrappers = false
@@ -1634,7 +1640,7 @@ func recordExecution(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to open storage: %w", err)
 	}
-	defer store.Close()
+	defer closeStore(store)
 
 	if err := store.AddExecution(&record); err != nil {
 		return fmt.Errorf("failed to record execution: %w", err)

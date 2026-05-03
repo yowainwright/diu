@@ -221,6 +221,57 @@ func testConfig(t *testing.T) *core.Config {
 	}
 }
 
+func stopDaemonForTest(t *testing.T, d *Daemon) {
+	t.Helper()
+	if err := d.Stop(); err != nil {
+		t.Fatalf("Stop failed: %v", err)
+	}
+}
+
+func closeStorageForTest(t *testing.T, store storage.Storage) {
+	t.Helper()
+	if err := store.Close(); err != nil {
+		t.Fatalf("Storage close failed: %v", err)
+	}
+}
+
+func closeForTest(t *testing.T, closer io.Closer) {
+	t.Helper()
+	if err := closer.Close(); err != nil {
+		t.Fatalf("Close failed: %v", err)
+	}
+}
+
+func addMockExecution(t *testing.T, store *mockStorage, record *core.ExecutionRecord) {
+	t.Helper()
+	if err := store.AddExecution(record); err != nil {
+		t.Fatalf("AddExecution failed: %v", err)
+	}
+}
+
+func updateMockPackage(t *testing.T, store *mockStorage, pkg *core.PackageInfo) {
+	t.Helper()
+	if err := store.UpdatePackage(pkg); err != nil {
+		t.Fatalf("UpdatePackage failed: %v", err)
+	}
+}
+
+func removeFileForTest(t *testing.T, path string) {
+	t.Helper()
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		t.Fatalf("Remove failed: %v", err)
+	}
+}
+
+func decodeRecorderJSON(t *testing.T, recorder *httptest.ResponseRecorder, target interface{}) {
+	t.Helper()
+	response := recorder.Result()
+	defer closeForTest(t, response.Body)
+	if err := json.NewDecoder(response.Body).Decode(target); err != nil {
+		t.Fatalf("Failed to decode response: %v", err)
+	}
+}
+
 func TestNewDaemon(t *testing.T) {
 	cfg := testConfig(t)
 
@@ -326,7 +377,7 @@ func TestDaemonEventProcessing(t *testing.T) {
 	if err := d.Start(); err != nil {
 		t.Fatalf("Start failed: %v", err)
 	}
-	defer d.Stop()
+	defer stopDaemonForTest(t, d)
 
 	record := &core.ExecutionRecord{
 		ID:        "test-1",
@@ -368,7 +419,7 @@ func TestDaemonEnrichExecution(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewDaemon failed: %v", err)
 	}
-	defer d.storage.Close()
+	defer closeStorageForTest(t, d.storage)
 
 	record := &core.ExecutionRecord{
 		Tool:    rawToolName,
@@ -408,7 +459,7 @@ func TestDaemonHTTPAPI(t *testing.T) {
 	mockStore := newMockStorage()
 	d.storage = mockStore
 
-	mockStore.AddExecution(&core.ExecutionRecord{
+	addMockExecution(t, mockStore, &core.ExecutionRecord{
 		ID:        "test-1",
 		Tool:      "homebrew",
 		Command:   "install",
@@ -443,7 +494,7 @@ func TestDaemonHTTPAPI(t *testing.T) {
 		d.handleExecutions(w, req)
 
 		var executions []*core.ExecutionRecord
-		json.NewDecoder(w.Result().Body).Decode(&executions)
+		decodeRecorderJSON(t, w, &executions)
 
 		if len(executions) != 0 {
 			t.Errorf("Expected 0 executions for npm, got %d", len(executions))
@@ -506,7 +557,7 @@ func TestDaemonPackagesAPI(t *testing.T) {
 	mockStore := newMockStorage()
 	d.storage = mockStore
 
-	mockStore.UpdatePackage(&core.PackageInfo{
+	updateMockPackage(t, mockStore, &core.PackageInfo{
 		Name: "wget",
 		Tool: "homebrew",
 	})
@@ -605,7 +656,7 @@ func TestDaemonSocketListener(t *testing.T) {
 	if err := d.Start(); err != nil {
 		t.Fatalf("Start failed: %v", err)
 	}
-	defer d.Stop()
+	defer stopDaemonForTest(t, d)
 
 	time.Sleep(100 * time.Millisecond)
 
@@ -613,7 +664,7 @@ func TestDaemonSocketListener(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to connect to socket: %v", err)
 	}
-	defer conn.Close()
+	defer closeForTest(t, conn)
 
 	record := core.ExecutionRecord{
 		ID:        "socket-test-1",
@@ -656,7 +707,7 @@ func TestIsRunning(t *testing.T) {
 		t.Error("Should return false for non-existent process")
 	}
 
-	os.Remove(cfg.Daemon.PIDFile)
+	removeFileForTest(t, cfg.Daemon.PIDFile)
 }
 
 func TestDaemonWithMonitors(t *testing.T) {
@@ -711,7 +762,7 @@ func TestDaemonContextCancellation(t *testing.T) {
 		t.Error("Context should be cancelled")
 	}
 
-	d.Stop()
+	stopDaemonForTest(t, d)
 }
 
 func TestDaemonConcurrentEvents(t *testing.T) {
@@ -728,7 +779,7 @@ func TestDaemonConcurrentEvents(t *testing.T) {
 	if err := d.Start(); err != nil {
 		t.Fatalf("Start failed: %v", err)
 	}
-	defer d.Stop()
+	defer stopDaemonForTest(t, d)
 
 	var wg sync.WaitGroup
 	eventCount := 50
@@ -776,7 +827,7 @@ func TestDaemonHTTPServerWithAPI(t *testing.T) {
 	if err := d.Start(); err != nil {
 		t.Fatalf("Start failed: %v", err)
 	}
-	defer d.Stop()
+	defer stopDaemonForTest(t, d)
 
 	time.Sleep(100 * time.Millisecond)
 
@@ -784,7 +835,7 @@ func TestDaemonHTTPServerWithAPI(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to make HTTP request: %v", err)
 	}
-	defer resp.Body.Close()
+	defer closeForTest(t, resp.Body)
 
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("Expected status 200, got %d", resp.StatusCode)
@@ -803,7 +854,7 @@ func TestHandleExecutionsWithLimit(t *testing.T) {
 	d.storage = mockStore
 
 	for i := 0; i < 10; i++ {
-		mockStore.AddExecution(&core.ExecutionRecord{
+		addMockExecution(t, mockStore, &core.ExecutionRecord{
 			ID:        string(rune(i)),
 			Tool:      "homebrew",
 			Timestamp: time.Now(),
@@ -816,7 +867,7 @@ func TestHandleExecutionsWithLimit(t *testing.T) {
 	d.handleExecutions(w, req)
 
 	var executions []*core.ExecutionRecord
-	json.NewDecoder(w.Result().Body).Decode(&executions)
+	decodeRecorderJSON(t, w, &executions)
 
 	if len(executions) != 5 {
 		t.Errorf("Expected 5 executions with limit, got %d", len(executions))

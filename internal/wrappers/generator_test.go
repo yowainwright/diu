@@ -221,7 +221,9 @@ func TestUpdatePATH(t *testing.T) {
 	config.Monitoring.Process.WrapperDir = tmpDir
 
 	gen := NewWrapperGenerator(config)
-	gen.updatePATH()
+	if err := gen.updatePATH(); err != nil {
+		t.Fatalf("updatePATH failed: %v", err)
+	}
 }
 
 func TestContainsHelper(t *testing.T) {

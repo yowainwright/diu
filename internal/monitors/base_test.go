@@ -11,7 +11,6 @@ import (
 type mockMonitor struct {
 	*BaseMonitor
 	startCalled bool
-	stopCalled  bool
 }
 
 func newMockMonitor(name string) *mockMonitor {
@@ -202,8 +201,12 @@ func TestMonitorRegistryStartAll(t *testing.T) {
 	monitor1 := newMockMonitor("monitor1")
 	monitor2 := newMockMonitor("monitor2")
 
-	monitor1.Initialize(config)
-	monitor2.Initialize(config)
+	if err := monitor1.Initialize(config); err != nil {
+		t.Fatalf("monitor1 Initialize failed: %v", err)
+	}
+	if err := monitor2.Initialize(config); err != nil {
+		t.Fatalf("monitor2 Initialize failed: %v", err)
+	}
 
 	registry.Register(monitor1)
 	registry.Register(monitor2)

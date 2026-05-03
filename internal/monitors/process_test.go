@@ -148,7 +148,7 @@ func TestProcessMonitorInstallWrapper(t *testing.T) {
 	config.Monitoring.Process.AutoInstallWrappers = false
 
 	monitor := NewProcessMonitor("testtool", "/usr/bin/testtool")
-	monitor.BaseMonitor.config = config
+	monitor.config = config
 	monitor.wrapperPath = filepath.Join(tmpDir, "testtool")
 	monitor.originalPath = "/usr/bin/testtool"
 
@@ -183,7 +183,7 @@ func TestProcessMonitorFindOriginalBinary(t *testing.T) {
 	config.Monitoring.Process.WrapperDir = tmpDir
 
 	monitor := NewProcessMonitor("ls", "ls")
-	monitor.BaseMonitor.config = config
+	monitor.config = config
 
 	original := monitor.findOriginalBinary()
 
@@ -215,7 +215,7 @@ func TestProcessMonitorFindOriginalBinarySkipsWrapperDir(t *testing.T) {
 	config.Monitoring.Process.WrapperDir = tmpDir
 
 	monitor := NewProcessMonitor("mytool", "mytool")
-	monitor.BaseMonitor.config = config
+	monitor.config = config
 
 	original := monitor.findOriginalBinary()
 
@@ -256,7 +256,9 @@ func TestProcessMonitorStart(t *testing.T) {
 	config.Monitoring.Process.AutoInstallWrappers = false
 
 	monitor := NewProcessMonitor("test", "/usr/bin/test")
-	monitor.Initialize(config)
+	if err := monitor.Initialize(config); err != nil {
+		t.Fatalf("Initialize failed: %v", err)
+	}
 
 	ctx := context.Background()
 	eventChan := make(chan *core.ExecutionRecord, 10)
