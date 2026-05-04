@@ -61,6 +61,13 @@ var (
 	}
 )
 
+func ShellEscapeString(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, `"`, `\"`)
+	s = strings.ReplaceAll(s, `$`, `\$`)
+	return s
+}
+
 func NormalizeToolName(tool string) string {
 	switch strings.ToLower(strings.TrimSpace(tool)) {
 	case "brew":

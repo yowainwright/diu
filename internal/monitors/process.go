@@ -154,7 +154,7 @@ if [ "$sent" != true ] && [ -x "$DIU_BINARY" ]; then
 fi
 
 exit $EXIT_CODE
-`, core.DefaultSocketPath, diuPath, m.originalPath, m.name)
+`, core.DefaultSocketPath, core.ShellEscapeString(diuPath), core.ShellEscapeString(m.originalPath), m.name)
 }
 
 func (m *ProcessMonitor) updateShellConfig() error {
