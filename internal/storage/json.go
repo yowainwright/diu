@@ -1,15 +1,19 @@
 package storage
 
 import (
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/yowainwright/diu/internal/core"
+	"github.com/yowainwright/diu/internal/safefs"
 )
 
 type JSONStorage struct {
@@ -20,9 +24,14 @@ type JSONStorage struct {
 }
 
 func NewJSONStorage(config *core.Config) (Storage, error) {
+	storagePath, err := cleanManagedPath(config.Storage.JSONFile)
+	if err != nil {
+		return nil, fmt.Errorf("invalid storage path: %w", err)
+	}
+
 	js := &JSONStorage{
 		config:   config,
-		filepath: config.Storage.JSONFile,
+		filepath: storagePath,
 	}
 	return js, js.Initialize(config)
 }
@@ -32,11 +41,14 @@ func (j *JSONStorage) Initialize(config *core.Config) error {
 	defer j.mu.Unlock()
 
 	dir := filepath.Dir(j.filepath)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, core.OwnerDirectoryMode); err != nil {
 		return fmt.Errorf("failed to create storage directory: %w", err)
 	}
 
-	if _, err := os.Stat(j.filepath); os.IsNotExist(err) {
+	if _, err := os.Stat(j.filepath); err != nil {
+		if !os.IsNotExist(err) {
+			return fmt.Errorf("failed to stat storage file: %w", err)
+		}
 		hostname, _ := os.Hostname()
 		user, _ := os.UserHomeDir()
 		j.data = &core.StorageData{
@@ -64,13 +76,11 @@ func (j *JSONStorage) Initialize(config *core.Config) error {
 }
 
 func (j *JSONStorage) Close() error {
-	j.mu.Lock()
-	defer j.mu.Unlock()
-	return j.save()
+	return nil
 }
 
 func (j *JSONStorage) load() error {
-	data, err := os.ReadFile(j.filepath)
+	data, err := readManagedFile(j.filepath)
 	if err != nil {
 		return fmt.Errorf("failed to read storage file: %w", err)
 	}
@@ -93,7 +103,7 @@ func (j *JSONStorage) save() error {
 	}
 
 	tempFile := j.filepath + ".tmp"
-	if err := os.WriteFile(tempFile, data, 0644); err != nil {
+	if err := os.WriteFile(tempFile, data, core.PrivateFileMode); err != nil {
 		return fmt.Errorf("failed to write storage file: %w", err)
 	}
 
@@ -108,26 +118,32 @@ func (j *JSONStorage) AddExecution(record *core.ExecutionRecord) error {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 
-	if record.ID == "" {
-		record.ID = fmt.Sprintf("exec_%s_%s", time.Now().Format("20060102_150405"), generateID())
-	}
-
-	j.data.Executions = append(j.data.Executions, *record)
-	j.data.Statistics.TotalExecutions++
-
-	if _, exists := j.data.Statistics.ExecutionFrequency[record.Tool]; !exists {
-		j.data.Statistics.ExecutionFrequency[record.Tool] = 0
-		j.data.Statistics.ToolsUsed = append(j.data.Statistics.ToolsUsed, record.Tool)
-	}
-	j.data.Statistics.ExecutionFrequency[record.Tool]++
-
-	for _, pkg := range record.PackagesAffected {
-		if err := j.updatePackageInternal(record.Tool, pkg, record.Timestamp); err != nil {
+	return j.withFileLock(func() error {
+		if err := j.reload(); err != nil {
 			return err
 		}
-	}
 
-	return j.save()
+		if record.ID == "" {
+			record.ID = fmt.Sprintf("exec_%s_%s", time.Now().Format("20060102_150405"), generateID())
+		}
+
+		j.data.Executions = append(j.data.Executions, *record)
+		j.data.Statistics.TotalExecutions++
+
+		if _, exists := j.data.Statistics.ExecutionFrequency[record.Tool]; !exists {
+			j.data.Statistics.ExecutionFrequency[record.Tool] = 0
+			j.data.Statistics.ToolsUsed = append(j.data.Statistics.ToolsUsed, record.Tool)
+		}
+		j.data.Statistics.ExecutionFrequency[record.Tool]++
+
+		for _, pkg := range record.PackagesAffected {
+			if err := j.updatePackageInternal(record.Tool, pkg, record.Timestamp); err != nil {
+				return err
+			}
+		}
+
+		return j.save()
+	})
 }
 
 func (j *JSONStorage) GetExecutions(opts QueryOptions) ([]*core.ExecutionRecord, error) {
@@ -195,16 +211,22 @@ func (j *JSONStorage) UpdatePackage(pkg *core.PackageInfo) error {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 
-	if j.data.Packages == nil {
-		j.data.Packages = make(map[string]map[string]core.PackageInfo)
-	}
+	return j.withFileLock(func() error {
+		if err := j.reload(); err != nil {
+			return err
+		}
 
-	if j.data.Packages[pkg.Tool] == nil {
-		j.data.Packages[pkg.Tool] = make(map[string]core.PackageInfo)
-	}
+		if j.data.Packages == nil {
+			j.data.Packages = make(map[string]map[string]core.PackageInfo)
+		}
 
-	j.data.Packages[pkg.Tool][pkg.Name] = *pkg
-	return j.save()
+		if j.data.Packages[pkg.Tool] == nil {
+			j.data.Packages[pkg.Tool] = make(map[string]core.PackageInfo)
+		}
+
+		j.data.Packages[pkg.Tool][pkg.Name] = *pkg
+		return j.save()
+	})
 }
 
 func (j *JSONStorage) updatePackageInternal(tool, name string, timestamp time.Time) error {
@@ -291,6 +313,25 @@ func (j *JSONStorage) GetAllPackages() (map[string]map[string]*core.PackageInfo,
 	return result, nil
 }
 
+func (j *JSONStorage) DeletePackage(tool, name string) error {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+
+	return j.withFileLock(func() error {
+		if err := j.reload(); err != nil {
+			return err
+		}
+		if j.data.Packages == nil || j.data.Packages[tool] == nil {
+			return nil
+		}
+		delete(j.data.Packages[tool], name)
+		if len(j.data.Packages[tool]) == 0 {
+			delete(j.data.Packages, tool)
+		}
+		return j.save()
+	})
+}
+
 func (j *JSONStorage) GetStatistics() (*core.StorageStatistics, error) {
 	j.mu.RLock()
 	defer j.mu.RUnlock()
@@ -333,7 +374,7 @@ func (j *JSONStorage) Backup() error {
 		return fmt.Errorf("failed to marshal backup data: %w", err)
 	}
 
-	if err := os.WriteFile(backupPath, data, 0644); err != nil {
+	if err := os.WriteFile(backupPath, data, core.PrivateFileMode); err != nil {
 		return fmt.Errorf("failed to write backup file: %w", err)
 	}
 
@@ -344,7 +385,12 @@ func (j *JSONStorage) Restore(path string) error {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 
-	data, err := os.ReadFile(path)
+	restorePath, err := j.cleanRestorePath(path)
+	if err != nil {
+		return err
+	}
+
+	data, err := readManagedFile(restorePath)
 	if err != nil {
 		return fmt.Errorf("failed to read restore file: %w", err)
 	}
@@ -362,24 +408,127 @@ func (j *JSONStorage) Cleanup(before time.Time) error {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 
-	var kept []core.ExecutionRecord
-	for _, exec := range j.data.Executions {
-		if exec.Timestamp.After(before) {
-			kept = append(kept, exec)
+	return j.withFileLock(func() error {
+		if err := j.reload(); err != nil {
+			return err
 		}
+
+		var kept []core.ExecutionRecord
+		for _, exec := range j.data.Executions {
+			if exec.Timestamp.After(before) {
+				kept = append(kept, exec)
+			}
+		}
+
+		j.data.Executions = kept
+		j.data.Statistics.TotalExecutions = len(kept)
+
+		return j.save()
+	})
+}
+
+func (j *JSONStorage) reload() error {
+	if _, err := os.Stat(j.filepath); err != nil {
+		return err
+	}
+	return j.load()
+}
+
+func (j *JSONStorage) withFileLock(fn func() error) (err error) {
+	lockPath := j.filepath + ".lock"
+	lockFile, err := safefs.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, core.PrivateFileMode)
+	if err != nil {
+		return fmt.Errorf("failed to open storage lock: %w", err)
+	}
+	defer func() {
+		if closeErr := lockFile.Close(); err == nil && closeErr != nil {
+			err = fmt.Errorf("failed to close storage lock: %w", closeErr)
+		}
+	}()
+
+	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX); err != nil {
+		return fmt.Errorf("failed to lock storage: %w", err)
 	}
 
-	j.data.Executions = kept
-	j.data.Statistics.TotalExecutions = len(kept)
+	if err := fn(); err != nil {
+		unlockErr := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
+		if unlockErr != nil {
+			return fmt.Errorf("%w; additionally failed to unlock storage: %v", err, unlockErr)
+		}
+		return err
+	}
 
-	return j.save()
+	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN); err != nil {
+		return fmt.Errorf("failed to unlock storage: %w", err)
+	}
+
+	return nil
+}
+
+func cleanManagedPath(path string) (string, error) {
+	if strings.TrimSpace(path) == "" {
+		return "", fmt.Errorf("path cannot be empty")
+	}
+
+	cleanPath := filepath.Clean(path)
+	if !filepath.IsAbs(cleanPath) {
+		absPath, err := filepath.Abs(cleanPath)
+		if err != nil {
+			return "", err
+		}
+		cleanPath = absPath
+	}
+	return cleanPath, nil
+}
+
+func readManagedFile(path string) ([]byte, error) {
+	cleanPath, err := cleanManagedPath(path)
+	if err != nil {
+		return nil, err
+	}
+
+	info, err := safefs.Lstat(cleanPath)
+	if err != nil {
+		return nil, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("path cannot be a symlink: %s", cleanPath)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("path is not a regular file: %s", cleanPath)
+	}
+
+	// #nosec G304 -- DIU normalizes the path and verifies it is a regular managed file before reading.
+	return safefs.ReadFile(cleanPath)
+}
+
+func (j *JSONStorage) cleanRestorePath(path string) (string, error) {
+	restorePath, err := cleanManagedPath(path)
+	if err != nil {
+		return "", err
+	}
+
+	storageDir := filepath.Dir(j.filepath)
+	if filepath.Dir(restorePath) != storageDir {
+		return "", fmt.Errorf("restore file must be in storage directory: %s", storageDir)
+	}
+
+	backupPrefix := filepath.Base(j.filepath) + ".backup."
+	if !strings.HasPrefix(filepath.Base(restorePath), backupPrefix) {
+		return "", fmt.Errorf("restore file must be a backup for %s", filepath.Base(j.filepath))
+	}
+
+	return restorePath, nil
 }
 
 func generateID() string {
 	const charset = "abcdefghijklmnopqrstuvwxyz0123456789"
 	b := make([]byte, 6)
-	for i := range b {
-		b[i] = charset[time.Now().UnixNano()%int64(len(charset))]
+	if _, err := rand.Read(b); err == nil {
+		for i, v := range b {
+			b[i] = charset[int(v)%len(charset)]
+		}
+		return string(b)
 	}
-	return string(b)
+	return fmt.Sprintf("%06x", time.Now().UnixNano()&0xFFFFFF)
 }

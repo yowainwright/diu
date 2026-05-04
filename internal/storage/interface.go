@@ -18,6 +18,7 @@ type Storage interface {
 	GetPackage(tool, name string) (*core.PackageInfo, error)
 	GetPackages(tool string) ([]*core.PackageInfo, error)
 	GetAllPackages() (map[string]map[string]*core.PackageInfo, error)
+	DeletePackage(tool, name string) error
 
 	GetStatistics() (*core.StorageStatistics, error)
 	UpdateStatistics() error

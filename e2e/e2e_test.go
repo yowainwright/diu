@@ -1,3 +1,5 @@
+//go:build e2e
+
 package e2e
 
 import (
@@ -9,6 +11,8 @@ import (
 	"os/exec"
 	"testing"
 	"time"
+
+	"github.com/yowainwright/diu/internal/core"
 )
 
 var (
@@ -19,7 +23,7 @@ func getAPIURL() string {
 	if url := os.Getenv("DIU_API_URL"); url != "" {
 		return url
 	}
-	return "http://localhost:8081"
+	return fmt.Sprintf("http://%s:%d", core.DefaultAPIHost, core.DefaultAPIPort)
 }
 
 func TestE2EDaemonHealth(t *testing.T) {
@@ -60,14 +64,14 @@ func TestE2EExecutionTracking(t *testing.T) {
 
 	// Send a test execution
 	execution := map[string]interface{}{
-		"tool":       "test",
-		"command":    "test command",
-		"args":       []string{"arg1", "arg2"},
-		"exit_code":  0,
-		"duration_ms": 100,
-		"timestamp":  time.Now().Format(time.RFC3339),
-		"working_dir": "/tmp",
-		"user":       "e2e-test",
+		"tool":              "test",
+		"command":           "test command",
+		"args":              []string{"arg1", "arg2"},
+		"exit_code":         0,
+		"duration_ms":       100,
+		"timestamp":         time.Now().Format(time.RFC3339),
+		"working_dir":       "/tmp",
+		"user":              "e2e-test",
 		"packages_affected": []string{"test-package"},
 	}
 
@@ -117,16 +121,15 @@ func TestE2EExecutionTracking(t *testing.T) {
 func TestE2EPackageTracking(t *testing.T) {
 	client := &http.Client{Timeout: 10 * time.Second}
 
-	// Send execution that affects a package
 	execution := map[string]interface{}{
-		"tool":       "npm",
-		"command":    "npm install express",
-		"args":       []string{"install", "express"},
-		"exit_code":  0,
-		"duration_ms": 5000,
-		"timestamp":  time.Now().Format(time.RFC3339),
-		"working_dir": "/tmp",
-		"user":       "e2e-test",
+		"tool":              core.ToolNPM,
+		"command":           "npm install express",
+		"args":              []string{"install", "express"},
+		"exit_code":         0,
+		"duration_ms":       5000,
+		"timestamp":         time.Now().Format(time.RFC3339),
+		"working_dir":       "/tmp",
+		"user":              "e2e-test",
 		"packages_affected": []string{"express"},
 	}
 
@@ -140,8 +143,7 @@ func TestE2EPackageTracking(t *testing.T) {
 	// Wait for processing
 	time.Sleep(2 * time.Second)
 
-	// Query packages
-	resp, err := client.Get(apiURL + "/api/v1/packages?tool=npm")
+	resp, err := client.Get(apiURL + "/api/v1/packages?tool=" + core.ToolNPM)
 	if err != nil {
 		t.Fatalf("Failed to query packages: %v", err)
 	}
@@ -168,18 +170,17 @@ func TestE2EPackageTracking(t *testing.T) {
 func TestE2EStatistics(t *testing.T) {
 	client := &http.Client{Timeout: 10 * time.Second}
 
-	// Add multiple executions
-	tools := []string{"homebrew", "npm", "go"}
+	tools := []string{core.ToolHomebrew, core.ToolNPM, core.ToolGo}
 	for _, tool := range tools {
 		execution := map[string]interface{}{
-			"tool":       tool,
-			"command":    fmt.Sprintf("%s test", tool),
-			"args":       []string{"test"},
-			"exit_code":  0,
+			"tool":        tool,
+			"command":     fmt.Sprintf("%s test", tool),
+			"args":        []string{"test"},
+			"exit_code":   0,
 			"duration_ms": 100,
-			"timestamp":  time.Now().Format(time.RFC3339),
+			"timestamp":   time.Now().Format(time.RFC3339),
 			"working_dir": "/tmp",
-			"user":       "e2e-test",
+			"user":        "e2e-test",
 		}
 
 		jsonData, _ := json.Marshal(execution)
@@ -221,33 +222,33 @@ func TestE2ECLICommands(t *testing.T) {
 	}
 
 	tests := []struct {
-		name string
-		args []string
+		name          string
+		args          []string
 		expectSuccess bool
 	}{
 		{
-			name: "daemon status",
-			args: []string{"daemon", "status"},
+			name:          "daemon status",
+			args:          []string{"daemon", "status"},
 			expectSuccess: true,
 		},
 		{
-			name: "query executions",
-			args: []string{"query", "--limit", "10"},
+			name:          "query executions",
+			args:          []string{"query", "--limit", "10"},
 			expectSuccess: true,
 		},
 		{
-			name: "show stats",
-			args: []string{"stats"},
+			name:          "show stats",
+			args:          []string{"stats"},
 			expectSuccess: true,
 		},
 		{
-			name: "list packages",
-			args: []string{"packages"},
+			name:          "list packages",
+			args:          []string{"packages"},
 			expectSuccess: true,
 		},
 		{
-			name: "config list",
-			args: []string{"config", "list"},
+			name:          "config list",
+			args:          []string{"config", "list"},
 			expectSuccess: true,
 		},
 	}
@@ -273,14 +274,14 @@ func TestE2EWrapperExecution(t *testing.T) {
 
 	// Simulate wrapper sending execution data
 	wrapperData := map[string]interface{}{
-		"tool":       "brew",
-		"command":    "brew install wget",
-		"args":       []string{"install", "wget"},
-		"exit_code":  0,
-		"duration_ms": 45230,
-		"timestamp":  time.Now().Format(time.RFC3339),
-		"working_dir": "/Users/test/projects",
-		"user":       "wrapper-test",
+		"tool":              "brew",
+		"command":           "brew install wget",
+		"args":              []string{"install", "wget"},
+		"exit_code":         0,
+		"duration_ms":       45230,
+		"timestamp":         time.Now().Format(time.RFC3339),
+		"working_dir":       "/Users/test/projects",
+		"user":              "wrapper-test",
 		"packages_affected": []string{"wget"},
 		"metadata": map[string]interface{}{
 			"brew_version":     "4.1.15",

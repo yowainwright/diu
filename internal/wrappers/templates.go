@@ -11,7 +11,7 @@ ORIGINAL="{{.OriginalPath}}"
 DIU_API="{{.APIEndpoint}}"
 
 # Capture start time
-START_TIME=$(date +%s%N)
+START_TIME=$(date +%s)
 WORKING_DIR=$(pwd)
 
 # Execute the original command
@@ -19,8 +19,8 @@ WORKING_DIR=$(pwd)
 EXIT_CODE=$?
 
 # Capture end time and calculate duration
-END_TIME=$(date +%s%N)
-DURATION=$(( ($END_TIME - $START_TIME) / 1000000 ))
+END_TIME=$(date +%s)
+DURATION=$(( ($END_TIME - $START_TIME) * 1000 ))
 
 # Build JSON payload
 build_json() {

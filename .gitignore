@@ -2,6 +2,7 @@
 # https://github.com/github/gitignore/blob/main/community/Golang/Go.AllowList.gitignore
 #
 # Binaries for programs and plugins
+diu
 *.exe
 *.exe~
 *.dll
@@ -30,6 +31,8 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+.claude/
+CLAUDE.md
 
 # Node.js
 node_modules/
@@ -51,3 +54,5 @@ coverage/
 *.tsbuildinfo
 dist/
 build/
+tmp
+.idea

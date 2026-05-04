@@ -6,16 +6,18 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/yowainwright/diu/internal/safefs"
 )
 
 type Config struct {
-	Version    string            `json:"version"`
-	Daemon     DaemonConfig      `json:"daemon"`
-	Storage    StorageConfig     `json:"storage"`
-	Monitoring MonitoringConfig  `json:"monitoring"`
-	Tools      ToolsConfig       `json:"tools"`
-	API        APIConfig         `json:"api"`
-	Reporting  ReportingConfig   `json:"reporting"`
+	Version    string           `json:"version"`
+	Daemon     DaemonConfig     `json:"daemon"`
+	Storage    StorageConfig    `json:"storage"`
+	Monitoring MonitoringConfig `json:"monitoring"`
+	Tools      ToolsConfig      `json:"tools"`
+	API        APIConfig        `json:"api"`
+	Reporting  ReportingConfig  `json:"reporting"`
 }
 
 type DaemonConfig struct {
@@ -34,10 +36,10 @@ type StorageConfig struct {
 }
 
 type MonitoringConfig struct {
-	EnabledTools []string          `json:"enabled_tools"`
-	Methods      []string          `json:"methods"`
-	Process      ProcessConfig     `json:"process"`
-	Filesystem   FilesystemConfig  `json:"filesystem"`
+	EnabledTools []string         `json:"enabled_tools"`
+	Methods      []string         `json:"methods"`
+	Process      ProcessConfig    `json:"process"`
+	Filesystem   FilesystemConfig `json:"filesystem"`
 }
 
 type ProcessConfig struct {
@@ -46,8 +48,8 @@ type ProcessConfig struct {
 }
 
 type FilesystemConfig struct {
-	ScanInterval time.Duration            `json:"scan_interval"`
-	WatchPaths   map[string][]string      `json:"watch_paths"`
+	ScanInterval time.Duration       `json:"scan_interval"`
+	WatchPaths   map[string][]string `json:"watch_paths"`
 }
 
 type ToolsConfig struct {
@@ -90,23 +92,23 @@ func DefaultConfig() *Config {
 	dataDir := filepath.Join(homeDir, ".local", "share", "diu")
 
 	return &Config{
-		Version: "1.0",
+		Version: ConfigVersion,
 		Daemon: DaemonConfig{
-			Port:     8080,
-			LogLevel: "info",
+			Port:     DefaultDaemonPort,
+			LogLevel: DefaultLogLevel,
 			DataDir:  dataDir,
-			PIDFile:  "/tmp/diu.pid",
+			PIDFile:  DefaultPIDFile,
 		},
 		Storage: StorageConfig{
-			Backend:        "json",
+			Backend:        StorageBackendJSON,
 			JSONFile:       filepath.Join(dataDir, "executions.json"),
 			BackupEnabled:  true,
 			BackupInterval: 24 * time.Hour,
-			RetentionDays:  365,
+			RetentionDays:  DefaultRetentionDays,
 		},
 		Monitoring: MonitoringConfig{
-			EnabledTools: []string{"homebrew", "npm", "go", "pip", "gem", "cargo"},
-			Methods:      []string{"process", "filesystem"},
+			EnabledTools: DefaultEnabledTools,
+			Methods:      DefaultMonitorMethods,
 			Process: ProcessConfig{
 				WrapperDir:          filepath.Join(homeDir, ".local", "bin", "diu-wrappers"),
 				AutoInstallWrappers: true,
@@ -114,14 +116,14 @@ func DefaultConfig() *Config {
 			Filesystem: FilesystemConfig{
 				ScanInterval: 30 * time.Second,
 				WatchPaths: map[string][]string{
-					"homebrew": {"/usr/local/bin", "/opt/homebrew/bin"},
-					"npm":      {filepath.Join(homeDir, ".npm", "bin"), "/usr/local/lib/node_modules"},
+					ToolHomebrew: HomebrewBinPaths,
+					ToolNPM:      {filepath.Join(homeDir, ".npm", "bin"), "/usr/local/lib/node_modules"},
 				},
 			},
 		},
 		Tools: ToolsConfig{
 			Homebrew: HomebrewConfig{
-				CellarPaths:   []string{"/usr/local/Cellar", "/opt/homebrew/Cellar"},
+				CellarPaths:   HomebrewCellarPaths,
 				TrackCasks:    true,
 				TrackServices: true,
 			},
@@ -136,8 +138,8 @@ func DefaultConfig() *Config {
 		},
 		API: APIConfig{
 			Enabled:     true,
-			Host:        "127.0.0.1",
-			Port:        8081,
+			Host:        DefaultAPIHost,
+			Port:        DefaultAPIPort,
 			CORSEnabled: false,
 		},
 		Reporting: ReportingConfig{
@@ -154,7 +156,7 @@ func LoadConfig(path string) (*Config, error) {
 		path = filepath.Join(homeDir, ".config", "diu", "config.json")
 	}
 
-	data, err := os.ReadFile(path)
+	data, err := safefs.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return DefaultConfig(), nil
@@ -173,9 +175,12 @@ func LoadConfig(path string) (*Config, error) {
 func (c *Config) Save() error {
 	homeDir, _ := os.UserHomeDir()
 	path := filepath.Join(homeDir, ".config", "diu", "config.json")
+	return c.SaveTo(path)
+}
 
+func (c *Config) SaveTo(path string) error {
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, OwnerDirectoryMode); err != nil {
 		return fmt.Errorf("failed to create config directory: %w", err)
 	}
 
@@ -184,7 +189,7 @@ func (c *Config) Save() error {
 		return fmt.Errorf("failed to marshal config: %w", err)
 	}
 
-	if err := os.WriteFile(path, data, 0644); err != nil {
+	if err := os.WriteFile(path, data, PrivateFileMode); err != nil {
 		return fmt.Errorf("failed to write config: %w", err)
 	}
 
@@ -200,7 +205,7 @@ func (c *Config) EnsureDirectories() error {
 
 	for _, dir := range dirs {
 		if dir != "" {
-			if err := os.MkdirAll(dir, 0755); err != nil {
+			if err := os.MkdirAll(dir, OwnerDirectoryMode); err != nil {
 				return fmt.Errorf("failed to create directory %s: %w", dir, err)
 			}
 		}

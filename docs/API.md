@@ -6,6 +6,8 @@ The DIU daemon exposes a RESTful API for interacting with execution data, packag
 
 **Base URL:** `http://localhost:8081/api/v1`
 
+Currently implemented endpoints are `GET /health`, `GET /executions`, `POST /executions`, `GET /packages`, and `GET /stats`.
+
 ## Authentication
 
 Currently, the API does not require authentication. Future versions may include token-based authentication.
@@ -25,7 +27,7 @@ Check the health status of the DIU daemon.
   "version": "0.1.0",
   "uptime": "2h15m30s",
   "last_execution": "2025-09-15T10:30:00Z",
-  "monitors_active": ["homebrew", "npm", "go"]
+  "monitors_active": 3
 }
 ```
 
@@ -40,10 +42,7 @@ Get a list of tracked executions.
 **Query Parameters:**
 - `tool` (string): Filter by tool name
 - `package` (string): Filter by package name
-- `since` (string): ISO 8601 timestamp
-- `until` (string): ISO 8601 timestamp
 - `limit` (integer): Maximum number of results (default: 100)
-- `offset` (integer): Pagination offset
 
 **Example Request:**
 ```
@@ -72,7 +71,7 @@ GET /api/v1/executions?tool=homebrew&limit=10
 ]
 ```
 
-#### Get Execution by ID
+#### Get Execution by ID (planned)
 
 Get details of a specific execution.
 
@@ -122,9 +121,6 @@ Get a list of tracked packages.
 
 **Query Parameters:**
 - `tool` (string): Filter by tool name
-- `unused_since` (string): ISO 8601 timestamp
-- `sort` (string): Sort field (name, last_used, usage_count)
-- `order` (string): Sort order (asc, desc)
 
 **Response:**
 ```json
@@ -142,7 +138,7 @@ Get a list of tracked packages.
 ]
 ```
 
-#### Get Package Details
+#### Get Package Details (planned)
 
 Get details of a specific package.
 
@@ -158,11 +154,7 @@ Get usage statistics.
 
 **Endpoint:** `GET /stats`
 
-**Query Parameters:**
-- `period` (string): Time period (daily, weekly, monthly)
-- `tool` (string): Filter by tool
-- `from` (string): Start date (ISO 8601)
-- `to` (string): End date (ISO 8601)
+**Query Parameters:** none
 
 **Response:**
 ```json
@@ -174,28 +166,11 @@ Get usage statistics.
     "homebrew": 523,
     "npm": 876,
     "go": 124
-  },
-  "top_packages": [
-    {
-      "name": "webpack",
-      "tool": "npm",
-      "usage_count": 234
-    }
-  ],
-  "daily_breakdown": [
-    {
-      "date": "2025-09-15",
-      "executions": 45,
-      "tools": {
-        "homebrew": 12,
-        "npm": 33
-      }
-    }
-  ]
+  }
 }
 ```
 
-### Tools
+### Tools (planned)
 
 #### List Monitored Tools
 

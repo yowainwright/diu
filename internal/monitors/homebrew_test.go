@@ -130,6 +130,7 @@ func TestHomebrewParseCommand(t *testing.T) {
 
 func TestHomebrewInitialize(t *testing.T) {
 	config := core.DefaultConfig()
+	config.Monitoring.Process.AutoInstallWrappers = false
 	monitor := NewHomebrewMonitor()
 
 	err := monitor.Initialize(config)

@@ -18,13 +18,9 @@ monitoring:
     - homebrew
     - npm
     - go
-    - pip
-    - gem
-    - cargo
 
   methods:
     - process
-    - filesystem
 
   process:
     wrapper_dir: ~/.local/bin/diu-wrappers

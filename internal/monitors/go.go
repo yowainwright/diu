@@ -21,7 +21,7 @@ type GoMonitor struct {
 
 func NewGoMonitor() Monitor {
 	return &GoMonitor{
-		ProcessMonitor: NewProcessMonitor("go", "go"),
+		ProcessMonitor: NewProcessMonitor(core.ToolGo, "go"),
 	}
 }
 
@@ -52,7 +52,7 @@ func (m *GoMonitor) Initialize(config *core.Config) error {
 
 func (m *GoMonitor) ParseCommand(cmd string, args []string) (*core.ExecutionRecord, error) {
 	record := &core.ExecutionRecord{
-		Tool:     "go",
+		Tool:     core.ToolGo,
 		Command:  cmd,
 		Args:     args,
 		Metadata: make(map[string]interface{}),
@@ -154,17 +154,7 @@ func (m *GoMonitor) extractGoPackages(args []string) []string {
 		}
 		// Go packages typically look like domain.com/user/package
 		if strings.Contains(arg, "/") || strings.Contains(arg, ".") {
-			// Extract package name from full path
-			parts := strings.Split(arg, "/")
-			if len(parts) > 0 {
-				// Use the last part as the package name
-				pkgName := parts[len(parts)-1]
-				// Remove version suffix if present
-				if idx := strings.Index(pkgName, "@"); idx > 0 {
-					pkgName = pkgName[:idx]
-				}
-				packages = append(packages, arg)
-			}
+			packages = append(packages, arg)
 		} else if arg == "." || arg == "./..." || arg == "..." {
 			// Current directory packages
 			continue
@@ -239,7 +229,7 @@ func (m *GoMonitor) getModules() ([]*core.PackageInfo, error) {
 		pkg := &core.PackageInfo{
 			Name:        name,
 			Version:     version,
-			Tool:        "go",
+			Tool:        core.ToolGo,
 			InstallDate: time.Now(),
 		}
 		packages = append(packages, pkg)
@@ -273,13 +263,13 @@ func (m *GoMonitor) getBinaries() ([]*core.PackageInfo, error) {
 		}
 
 		// Check if executable
-		if info.Mode()&0111 == 0 {
+		if info.Mode()&core.ExecutableModeMask == 0 {
 			continue
 		}
 
 		pkg := &core.PackageInfo{
 			Name:        entry.Name(),
-			Tool:        "go-binary",
+			Tool:        core.ToolGoBinary,
 			InstallDate: info.ModTime(),
 			Path:        filepath.Join(m.goBin, entry.Name()),
 		}

@@ -53,7 +53,7 @@ func TestConfigSave(t *testing.T) {
 	config := DefaultConfig()
 	config.Daemon.Port = 9090
 
-	err := config.Save(configPath)
+	err := config.SaveTo(configPath)
 	if err != nil {
 		t.Fatalf("Failed to save config: %v", err)
 	}

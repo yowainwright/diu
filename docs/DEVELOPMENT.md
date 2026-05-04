@@ -13,7 +13,7 @@ DIU follows a modular architecture with clear separation of concerns:
 │              (Event Processing, API)                  │
 ├──────────────────────────────────────────────────────┤
 │                Monitor Registry                       │
-│         (Homebrew, NPM, Go, Pip, etc.)               │
+│             (Homebrew, NPM, Go)                      │
 ├──────────────────────────────────────────────────────┤
 │                 Storage Layer                         │
 │              (JSON, SQLite future)                    │
@@ -44,7 +44,7 @@ diu/
 
 ### Prerequisites
 
-- Go 1.22 or higher
+- Go 1.25 or higher
 - Docker and Docker Compose (for E2E tests)
 - Make (optional, for convenience commands)
 
@@ -75,12 +75,13 @@ go test ./...
 
 ### Running Locally
 
-1. Start the daemon:
+1. Install wrappers and scan inventory:
 ```bash
-./diu daemon start
+./diu setup
+./diu scan
 ```
 
-2. In another terminal, interact with the CLI:
+2. Open a fresh shell, run normal commands, then inspect usage:
 ```bash
 ./diu query --last 24h
 ./diu stats
@@ -221,7 +222,7 @@ docker-compose --profile e2e up --build e2e-tests
 
 Run E2E tests locally (requires running daemon):
 ```bash
-go test ./e2e/...
+go test -tags=e2e ./e2e/...
 ```
 
 ### Test Data
@@ -403,12 +404,12 @@ Closes #123
 #### Daemon won't start
 - Check if port 8080/8081 is already in use
 - Verify PID file doesn't exist: `rm /tmp/diu.pid`
-- Check logs: `diu daemon start --log-level=debug`
+- Run `DIU_DAEMON_FOREGROUND=1 diu daemon start` to view logs
 
 #### Wrappers not working
 - Ensure wrapper directory is in PATH
 - Check wrapper permissions: `ls -la ~/.local/bin/diu-wrappers/`
-- Regenerate wrappers: `diu setup wrappers`
+- Regenerate wrappers: `diu setup`
 
 #### Storage corruption
 - Backup current data: `diu backup`
