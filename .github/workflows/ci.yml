@@ -154,6 +154,9 @@ jobs:
   security:
     name: Security Scan
     runs-on: macos-latest
+    permissions:
+      contents: read
+      security-events: write
     steps:
       - uses: actions/checkout@v4
 
@@ -168,7 +171,7 @@ jobs:
           gosec -fmt sarif -out gosec-results.sarif ./...
 
       - name: Upload security results
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         if: always()
         with:
           sarif_file: 'gosec-results.sarif'
