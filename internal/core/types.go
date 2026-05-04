@@ -74,9 +74,6 @@ func (r *ExecutionRecord) UnmarshalJSON(data []byte) error {
 }
 
 func durationFromJSONMilliseconds(value int64) time.Duration {
-	if value > int64((24*time.Hour)/time.Millisecond) {
-		return time.Duration(value)
-	}
 	return time.Duration(value) * time.Millisecond
 }
 

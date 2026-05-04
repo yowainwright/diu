@@ -233,7 +233,7 @@ func TestContainsHelper(t *testing.T) {
 		want   bool
 	}{
 		{"hello world", "world", true},
-		{"hello world", "hello", false},
+		{"hello world", "hello", true},
 		{"test", "test", true},
 		{"abc", "abcd", false},
 		{"", "", true},

@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -32,7 +33,7 @@ type Daemon struct {
 	wg             sync.WaitGroup
 	startTime      time.Time
 	stopOnce       sync.Once
-	stopped        bool
+	stopped        atomic.Bool
 }
 
 func NewDaemon(config *core.Config) (*Daemon, error) {
@@ -113,7 +114,7 @@ func (d *Daemon) Stop() error {
 	var stopErr error
 	d.stopOnce.Do(func() {
 		log.Println("Stopping DIU daemon...")
-		d.stopped = true
+		d.stopped.Store(true)
 
 		d.cancel()
 
@@ -157,7 +158,7 @@ func (d *Daemon) Wait() {
 }
 
 func (d *Daemon) IsStopped() bool {
-	return d.stopped
+	return d.stopped.Load()
 }
 
 func (d *Daemon) processEvents() {

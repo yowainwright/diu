@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -523,8 +524,11 @@ func (j *JSONStorage) cleanRestorePath(path string) (string, error) {
 func generateID() string {
 	const charset = "abcdefghijklmnopqrstuvwxyz0123456789"
 	b := make([]byte, 6)
-	for i := range b {
-		b[i] = charset[time.Now().UnixNano()%int64(len(charset))]
+	if _, err := rand.Read(b); err == nil {
+		for i, v := range b {
+			b[i] = charset[int(v)%len(charset)]
+		}
+		return string(b)
 	}
-	return string(b)
+	return fmt.Sprintf("%06x", time.Now().UnixNano()&0xFFFFFF)
 }

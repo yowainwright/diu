@@ -1825,6 +1825,13 @@ func goBinaryDir(config *core.Config) string {
 	return filepath.Join(goPath, "bin")
 }
 
+func shellEscapeString(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, `"`, `\"`)
+	s = strings.ReplaceAll(s, `$`, `\$`)
+	return s
+}
+
 func writeExecutableWrapper(config *core.Config, target executableWrapper) error {
 	diuPath, err := os.Executable()
 	if err != nil {
@@ -1904,7 +1911,7 @@ if [ "$sent" != true ] && [ -x "$DIU_BINARY" ]; then
 fi
 
 exit $EXIT_CODE
-`, core.DefaultSocketPath, diuPath, target.OriginalPath, target.Tool, target.Package, target.Name)
+`, core.DefaultSocketPath, shellEscapeString(diuPath), shellEscapeString(target.OriginalPath), shellEscapeString(target.Tool), shellEscapeString(target.Package), shellEscapeString(target.Name))
 
 	return writeOwnerExecutableFile(wrapperPath, []byte(script))
 }

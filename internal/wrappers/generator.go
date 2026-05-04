@@ -192,5 +192,5 @@ func executableWrapperPath(wrapperDir, name string) (string, error) {
 }
 
 func contains(s, substr string) bool {
-	return len(s) >= len(substr) && s[len(s)-len(substr):] == substr
+	return strings.Contains(s, substr)
 }
