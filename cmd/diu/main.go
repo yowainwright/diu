@@ -277,7 +277,7 @@ func main() {
 	)
 
 	if err := rootCmd.Execute(os.Args[1:]); err != nil {
-		fmt.Fprintln(os.Stderr, errorStyle.Render(err.Error()))
+		fmt.Fprintln(os.Stderr, errorStyle.RenderTo(err.Error(), os.Stderr))
 		os.Exit(1)
 	}
 }
@@ -1113,7 +1113,7 @@ func uninstallPackage(pkg *core.PackageInfo, assumeYes bool) error {
 		return err
 	}
 
-	fmt.Printf("%s uninstalled\n", pkg.Name)
+	fmt.Printf("%s\n", successStyle.Render(pkg.Name+" uninstalled"))
 	return nil
 }
 
@@ -1610,7 +1610,7 @@ func scanPackages(cmd *command, args []string) error {
 		total++
 	}
 
-	fmt.Printf("%d packages scanned\n", total)
+	fmt.Printf("%s\n", successStyle.Render(fmt.Sprintf("%d packages scanned", total)))
 	return nil
 }
 

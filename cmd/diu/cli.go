@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"strconv"
 	"strings"
@@ -65,6 +66,7 @@ func (c *command) execute(args []string) error {
 
 	if c.RunE == nil {
 		if len(remaining) > 0 {
+			c.printUsageTo(os.Stderr)
 			return fmt.Errorf("unknown command: %s", remaining[0])
 		}
 		c.printUsage()
@@ -106,34 +108,38 @@ func (c *command) printHelp(args []string) error {
 }
 
 func (c *command) printUsage() {
+	c.printUsageTo(os.Stdout)
+}
+
+func (c *command) printUsageTo(w io.Writer) {
 	if c.Long != "" {
-		fmt.Println(c.Long)
+		fmt.Fprintln(w, c.Long)
 	} else if c.Short != "" {
-		fmt.Println(c.Short)
+		fmt.Fprintln(w, c.Short)
 	}
-	fmt.Println()
-	fmt.Printf("Usage: %s\n", c.usagePath())
+	fmt.Fprintln(w)
+	fmt.Fprintf(w, "Usage: %s\n", c.usagePath())
 
 	if len(c.commands) > 0 {
-		fmt.Println()
-		fmt.Println("Commands:")
+		fmt.Fprintln(w)
+		fmt.Fprintln(w, "Commands:")
 		for _, child := range c.commands {
 			if child.Hidden {
 				continue
 			}
-			fmt.Printf("  %-14s %s\n", commandName(child.Use), child.Short)
+			fmt.Fprintf(w, "  %-14s %s\n", commandName(child.Use), child.Short)
 		}
 	}
 
 	if c.flags != nil && len(c.flags.order) > 0 {
-		fmt.Println()
-		fmt.Println("Flags:")
+		fmt.Fprintln(w)
+		fmt.Fprintln(w, "Flags:")
 		for _, flag := range c.flags.order {
 			short := ""
 			if flag.short != "" {
 				short = "-" + flag.short + ", "
 			}
-			fmt.Printf("  %s--%-16s %s\n", short, flag.name, flag.usage)
+			fmt.Fprintf(w, "  %s--%-16s %s\n", short, flag.name, flag.usage)
 		}
 	}
 }
@@ -408,7 +414,11 @@ func (s style) Foreground(value color) style {
 }
 
 func (s style) Render(text string) string {
-	if !shouldRenderColor() {
+	return s.RenderTo(text, os.Stdout)
+}
+
+func (s style) RenderTo(text string, f *os.File) string {
+	if !shouldRenderColor(f) {
 		return text
 	}
 
@@ -428,11 +438,11 @@ func (s style) Render(text string) string {
 	return "\x1b[" + strings.Join(codes, ";") + "m" + text + "\x1b[0m"
 }
 
-func shouldRenderColor() bool {
+func shouldRenderColor(f *os.File) bool {
 	if os.Getenv("NO_COLOR") != "" || os.Getenv("TERM") == "dumb" {
 		return false
 	}
-	info, err := os.Stdout.Stat()
+	info, err := f.Stat()
 	if err != nil {
 		return false
 	}
