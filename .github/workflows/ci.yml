@@ -67,11 +67,14 @@ jobs:
 
       - name: Upload coverage to Codecov
         if: matrix.go == '1.25'
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@v6
         with:
-          file: ./coverage.out
+          files: ./coverage.out
           flags: unittests
-          name: codecov-umbrella
+          name: diu-go
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: true
+          verbose: true
 
   build:
     name: Build

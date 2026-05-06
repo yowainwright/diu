@@ -1,0 +1,15 @@
+# Default owner for the repository.
+* @yowainwright
+
+# GitHub community, workflow, and release metadata.
+/.github/ @yowainwright
+
+# Core application code.
+/cmd/ @yowainwright
+/internal/ @yowainwright
+/pkg/ @yowainwright
+
+# Documentation and configuration.
+/docs/ @yowainwright
+/README.md @yowainwright
+/go.mod @yowainwright

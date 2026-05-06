@@ -2,6 +2,8 @@
 
 > Package Manager Execution Tracker for macOS - Know what you actually use
 
+[![Codecov](https://codecov.io/gh/yowainwright/diu/branch/main/graph/badge.svg)](https://codecov.io/gh/yowainwright/diu)
+
 DIU tracks when package managers and global development tools are executed on macOS, storing execution data for analysis and auditing.
 
 ## Features
