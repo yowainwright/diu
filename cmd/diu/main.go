@@ -277,7 +277,7 @@ func main() {
 	)
 
 	if err := rootCmd.Execute(os.Args[1:]); err != nil {
-		fmt.Fprintln(os.Stderr, errorStyle.Render(err.Error()))
+		fmt.Fprintln(os.Stderr, errorStyle.RenderTo(err.Error(), os.Stderr))
 		os.Exit(1)
 	}
 }

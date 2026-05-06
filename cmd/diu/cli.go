@@ -414,7 +414,11 @@ func (s style) Foreground(value color) style {
 }
 
 func (s style) Render(text string) string {
-	if !shouldRenderColor() {
+	return s.RenderTo(text, os.Stdout)
+}
+
+func (s style) RenderTo(text string, f *os.File) string {
+	if !shouldRenderColor(f) {
 		return text
 	}
 
@@ -434,11 +438,11 @@ func (s style) Render(text string) string {
 	return "\x1b[" + strings.Join(codes, ";") + "m" + text + "\x1b[0m"
 }
 
-func shouldRenderColor() bool {
+func shouldRenderColor(f *os.File) bool {
 	if os.Getenv("NO_COLOR") != "" || os.Getenv("TERM") == "dumb" {
 		return false
 	}
-	info, err := os.Stdout.Stat()
+	info, err := f.Stat()
 	if err != nil {
 		return false
 	}
