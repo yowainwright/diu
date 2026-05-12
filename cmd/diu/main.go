@@ -2,7 +2,6 @@ package main
 
 import (
 	"bufio"
-	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -14,10 +13,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/charmbracelet/fang"
-	"github.com/charmbracelet/lipgloss"
-	"github.com/spf13/cobra"
-	"github.com/spf13/pflag"
 	"github.com/yowainwright/diu/internal/core"
 	"github.com/yowainwright/diu/internal/daemon"
 	"github.com/yowainwright/diu/internal/monitors"
@@ -27,21 +22,21 @@ import (
 
 var (
 	// Styles
-	titleStyle = lipgloss.NewStyle().
+	titleStyle = newStyle().
 			Bold(true).
-			Foreground(lipgloss.Color("205"))
+			Foreground(color("205"))
 
-	subtitleStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("241"))
+	subtitleStyle = newStyle().
+			Foreground(color("241"))
 
-	successStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("42"))
+	successStyle = newStyle().
+			Foreground(color("42"))
 
-	errorStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("196"))
+	errorStyle = newStyle().
+			Foreground(color("196"))
 
-	infoStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("86"))
+	infoStyle = newStyle().
+			Foreground(color("86"))
 )
 
 const (
@@ -79,37 +74,37 @@ const (
 )
 
 func main() {
-	rootCmd := &cobra.Command{
+	rootCmd := &command{
 		Use:   "diu",
 		Short: "Do I Use - Package Manager Execution Tracker",
 		Long:  `DIU tracks when package managers and global development tools are executed, storing execution data for analysis and auditing.`,
 	}
 
 	// Daemon commands
-	daemonCmd := &cobra.Command{
+	daemonCmd := &command{
 		Use:   "daemon",
 		Short: "Manage the DIU daemon",
 	}
 
-	daemonStartCmd := &cobra.Command{
+	daemonStartCmd := &command{
 		Use:   "start",
 		Short: "Start the DIU daemon",
 		RunE:  startDaemon,
 	}
 
-	daemonStopCmd := &cobra.Command{
+	daemonStopCmd := &command{
 		Use:   "stop",
 		Short: "Stop the DIU daemon",
 		RunE:  stopDaemon,
 	}
 
-	daemonRestartCmd := &cobra.Command{
+	daemonRestartCmd := &command{
 		Use:   "restart",
 		Short: "Restart the DIU daemon",
 		RunE:  restartDaemon,
 	}
 
-	daemonStatusCmd := &cobra.Command{
+	daemonStatusCmd := &command{
 		Use:   "status",
 		Short: "Check daemon status",
 		RunE:  daemonStatus,
@@ -126,7 +121,7 @@ func main() {
 		queryFormat  string
 	)
 
-	queryCmd := &cobra.Command{
+	queryCmd := &command{
 		Use:   "query",
 		Short: "Query execution history",
 		RunE:  queryExecutions,
@@ -145,7 +140,7 @@ func main() {
 		statsTop    int
 	)
 
-	statsCmd := &cobra.Command{
+	statsCmd := &command{
 		Use:   "stats",
 		Short: "Show usage statistics",
 		RunE:  showStats,
@@ -161,7 +156,7 @@ func main() {
 		packagesUnused string
 	)
 
-	packagesCmd := &cobra.Command{
+	packagesCmd := &command{
 		Use:   "packages",
 		Short: "List tracked packages",
 		RunE:  listPackages,
@@ -177,7 +172,7 @@ func main() {
 		checkFormat string
 	)
 
-	checkCmd := &cobra.Command{
+	checkCmd := &command{
 		Use:   "check [search]",
 		Short: "Check installed package usage",
 		RunE:  checkPackages,
@@ -196,7 +191,7 @@ func main() {
 		manageDryRun    bool
 	)
 
-	manageCmd := &cobra.Command{
+	manageCmd := &command{
 		Use:   "manage [search]",
 		Short: "Search and uninstall installed packages",
 		RunE:  managePackages,
@@ -208,24 +203,24 @@ func main() {
 	manageCmd.Flags().BoolVar(&manageDryRun, "dry-run", false, "Print uninstall command without running it")
 
 	// Config command
-	configCmd := &cobra.Command{
+	configCmd := &command{
 		Use:   "config",
 		Short: "Manage configuration",
 	}
 
-	configGetCmd := &cobra.Command{
+	configGetCmd := &command{
 		Use:   "get [key]",
 		Short: "Get configuration value",
 		RunE:  getConfig,
 	}
 
-	configSetCmd := &cobra.Command{
+	configSetCmd := &command{
 		Use:   "set [key] [value]",
 		Short: "Set configuration value",
 		RunE:  setConfig,
 	}
 
-	configListCmd := &cobra.Command{
+	configListCmd := &command{
 		Use:   "list",
 		Short: "List all configuration",
 		RunE:  listConfig,
@@ -234,31 +229,31 @@ func main() {
 	configCmd.AddCommand(configGetCmd, configSetCmd, configListCmd)
 
 	// Maintenance commands
-	cleanupCmd := &cobra.Command{
+	cleanupCmd := &command{
 		Use:   "cleanup",
 		Short: "Clean old executions based on retention",
 		RunE:  cleanup,
 	}
 
-	backupCmd := &cobra.Command{
+	backupCmd := &command{
 		Use:   "backup",
 		Short: "Create manual backup",
 		RunE:  backup,
 	}
 
-	setupCmd := &cobra.Command{
+	setupCmd := &command{
 		Use:   "setup",
 		Short: "Install wrappers and initialize local storage",
 		RunE:  setupProject,
 	}
 
-	scanCmd := &cobra.Command{
+	scanCmd := &command{
 		Use:   "scan",
 		Short: "Scan installed packages into inventory",
 		RunE:  scanPackages,
 	}
 
-	recordCmd := &cobra.Command{
+	recordCmd := &command{
 		Use:    "record",
 		Short:  "Record an execution event from stdin",
 		Hidden: true,
@@ -281,17 +276,13 @@ func main() {
 		recordCmd,
 	)
 
-	// Execute with Fang styling
-	ctx := context.Background()
-	if err := fang.Execute(ctx, rootCmd,
-		fang.WithVersion("0.1.0"),
-		fang.WithColorSchemeFunc(fang.DefaultColorScheme),
-	); err != nil {
+	if err := rootCmd.Execute(os.Args[1:]); err != nil {
+		fmt.Fprintln(os.Stderr, errorStyle.RenderTo(err.Error(), os.Stderr))
 		os.Exit(1)
 	}
 }
 
-func startDaemon(cmd *cobra.Command, args []string) error {
+func startDaemon(cmd *command, args []string) error {
 	config, err := core.LoadConfig("")
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)
@@ -348,7 +339,7 @@ func startDaemon(cmd *cobra.Command, args []string) error {
 		}
 
 		time.Sleep(time.Second)
-		fmt.Println(successStyle.Render("✓ DIU daemon started"))
+		fmt.Println(successStyle.Render("DIU daemon started"))
 		return nil
 	}
 
@@ -359,7 +350,7 @@ func startDaemon(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func stopDaemon(cmd *cobra.Command, args []string) error {
+func stopDaemon(cmd *command, args []string) error {
 	config, err := core.LoadConfig("")
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)
@@ -389,11 +380,11 @@ func stopDaemon(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to stop daemon: %w", err)
 	}
 
-	fmt.Println(successStyle.Render("✓ DIU daemon stopped"))
+	fmt.Println(successStyle.Render("DIU daemon stopped"))
 	return nil
 }
 
-func restartDaemon(cmd *cobra.Command, args []string) error {
+func restartDaemon(cmd *command, args []string) error {
 	if err := stopDaemon(cmd, args); err != nil {
 		return err
 	}
@@ -401,26 +392,26 @@ func restartDaemon(cmd *cobra.Command, args []string) error {
 	return startDaemon(cmd, args)
 }
 
-func daemonStatus(cmd *cobra.Command, args []string) error {
+func daemonStatus(cmd *command, args []string) error {
 	config, err := core.LoadConfig("")
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
 
 	if isRunning(config) {
-		fmt.Println(successStyle.Render("✓ DIU daemon is running"))
+		fmt.Println(successStyle.Render("DIU daemon is running"))
 
 		pidBytes, _ := os.ReadFile(config.Daemon.PIDFile)
 		pid := strings.TrimSpace(string(pidBytes))
 		fmt.Println(subtitleStyle.Render("  PID:"), pid)
 	} else {
-		fmt.Println(errorStyle.Render("✗ DIU daemon is not running"))
+		fmt.Println(errorStyle.Render("DIU daemon is not running"))
 	}
 
 	return nil
 }
 
-func queryExecutions(cmd *cobra.Command, args []string) error {
+func queryExecutions(cmd *command, args []string) error {
 	config, err := core.LoadConfig("")
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)
@@ -484,7 +475,7 @@ func queryExecutions(cmd *cobra.Command, args []string) error {
 
 		for _, exec := range executions {
 			toolColor := getToolColor(exec.Tool)
-			toolStyle := lipgloss.NewStyle().Foreground(toolColor)
+			toolStyle := newStyle().Foreground(toolColor)
 
 			fmt.Printf("%s %s %s\n",
 				exec.Timestamp.Format("2006-01-02 15:04:05"),
@@ -512,7 +503,7 @@ func queryExecutions(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func showStats(cmd *cobra.Command, args []string) error {
+func showStats(cmd *command, args []string) error {
 	config, err := core.LoadConfig("")
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)
@@ -573,7 +564,7 @@ func showStats(cmd *cobra.Command, args []string) error {
 	fmt.Println(subtitleStyle.Render("Tool usage:"))
 	for tool, count := range toolCounts {
 		toolColor := getToolColor(tool)
-		toolStyle := lipgloss.NewStyle().Foreground(toolColor)
+		toolStyle := newStyle().Foreground(toolColor)
 		fmt.Printf("  %s %d\n", toolStyle.Render(tool+":"), count)
 	}
 
@@ -605,7 +596,7 @@ func showStats(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func listPackages(cmd *cobra.Command, args []string) error {
+func listPackages(cmd *command, args []string) error {
 	config, err := core.LoadConfig("")
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)
@@ -652,7 +643,7 @@ func listPackages(cmd *cobra.Command, args []string) error {
 		packages = filtered
 
 		if len(packages) == 0 {
-			fmt.Println(successStyle.Render("✓ No unused packages found"))
+			fmt.Println(successStyle.Render("No unused packages found"))
 			return nil
 		}
 	}
@@ -665,7 +656,7 @@ func listPackages(cmd *cobra.Command, args []string) error {
 		if pkg.Tool != currentTool {
 			currentTool = pkg.Tool
 			toolColor := getToolColor(pkg.Tool)
-			toolStyle := lipgloss.NewStyle().Bold(true).Foreground(toolColor)
+			toolStyle := newStyle().Bold(true).Foreground(toolColor)
 			fmt.Println()
 			fmt.Println(toolStyle.Render(pkg.Tool))
 		}
@@ -695,7 +686,7 @@ type packageListOptions struct {
 	Format string
 }
 
-func checkPackages(cmd *cobra.Command, args []string) error {
+func checkPackages(cmd *command, args []string) error {
 	opts := packageListOptions{
 		Tool:   flagString(cmd, "tool"),
 		Search: flagString(cmd, "search"),
@@ -718,7 +709,7 @@ func checkPackages(cmd *cobra.Command, args []string) error {
 	return printPackageList(packages, opts.Format)
 }
 
-func managePackages(cmd *cobra.Command, args []string) error {
+func managePackages(cmd *command, args []string) error {
 	tool := flagString(cmd, "tool")
 	search := flagString(cmd, "search")
 	uninstallName := flagString(cmd, "uninstall")
@@ -752,28 +743,28 @@ func managePackages(cmd *cobra.Command, args []string) error {
 	return printPackageList(packages, formatTable)
 }
 
-func shouldUseInteractive(cmd *cobra.Command, args []string) bool {
+func shouldUseInteractive(cmd *command, args []string) bool {
 	if len(args) > 0 || !isTerminal() {
 		return false
 	}
 	used := false
-	cmd.Flags().Visit(func(flag *pflag.Flag) {
+	cmd.Flags().Visit(func(flag *flag) {
 		used = true
 	})
 	return !used
 }
 
-func flagString(cmd *cobra.Command, name string) string {
+func flagString(cmd *command, name string) string {
 	value, _ := cmd.Flags().GetString(name)
 	return value
 }
 
-func flagInt(cmd *cobra.Command, name string) int {
+func flagInt(cmd *command, name string) int {
 	value, _ := cmd.Flags().GetInt(name)
 	return value
 }
 
-func flagBool(cmd *cobra.Command, name string) bool {
+func flagBool(cmd *command, name string) bool {
 	value, _ := cmd.Flags().GetBool(name)
 	return value
 }
@@ -1122,7 +1113,7 @@ func uninstallPackage(pkg *core.PackageInfo, assumeYes bool) error {
 		return err
 	}
 
-	fmt.Printf("%s %s uninstalled\n", successStyle.Render("✓"), pkg.Name)
+	fmt.Printf("%s\n", successStyle.Render(pkg.Name+" uninstalled"))
 	return nil
 }
 
@@ -1385,7 +1376,7 @@ func truncate(value string, maxLength int) string {
 	return value[:maxLength-1] + "."
 }
 
-func getConfig(cmd *cobra.Command, args []string) error {
+func getConfig(cmd *command, args []string) error {
 	if len(args) < 1 {
 		return fmt.Errorf("config key required")
 	}
@@ -1416,7 +1407,7 @@ func getConfig(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func setConfig(cmd *cobra.Command, args []string) error {
+func setConfig(cmd *command, args []string) error {
 	if len(args) < 2 {
 		return fmt.Errorf("config key and value required")
 	}
@@ -1462,11 +1453,11 @@ func setConfig(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to save config: %w", err)
 	}
 
-	fmt.Println(successStyle.Render("✓ Configuration updated"))
+	fmt.Println(successStyle.Render("Configuration updated"))
 	return nil
 }
 
-func listConfig(cmd *cobra.Command, args []string) error {
+func listConfig(cmd *command, args []string) error {
 	config, err := core.LoadConfig("")
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)
@@ -1477,7 +1468,7 @@ func listConfig(cmd *cobra.Command, args []string) error {
 	return enc.Encode(config)
 }
 
-func cleanup(cmd *cobra.Command, args []string) error {
+func cleanup(cmd *command, args []string) error {
 	config, err := core.LoadConfig("")
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)
@@ -1494,11 +1485,11 @@ func cleanup(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("cleanup failed: %w", err)
 	}
 
-	fmt.Println(successStyle.Render("✓ Cleanup completed"))
+	fmt.Println(successStyle.Render("Cleanup completed"))
 	return nil
 }
 
-func backup(cmd *cobra.Command, args []string) error {
+func backup(cmd *command, args []string) error {
 	config, err := core.LoadConfig("")
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)
@@ -1514,11 +1505,11 @@ func backup(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("backup failed: %w", err)
 	}
 
-	fmt.Println(successStyle.Render("✓ Backup created"))
+	fmt.Println(successStyle.Render("Backup created"))
 	return nil
 }
 
-func setupProject(cmd *cobra.Command, args []string) error {
+func setupProject(cmd *command, args []string) error {
 	config, err := core.LoadConfig("")
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)
@@ -1543,11 +1534,11 @@ func setupProject(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	fmt.Println(successStyle.Render("✓ DIU setup completed"))
+	fmt.Println(successStyle.Render("DIU setup completed"))
 	return nil
 }
 
-func scanPackages(cmd *cobra.Command, args []string) error {
+func scanPackages(cmd *command, args []string) error {
 	config, err := core.LoadConfig("")
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)
@@ -1619,11 +1610,11 @@ func scanPackages(cmd *cobra.Command, args []string) error {
 		total++
 	}
 
-	fmt.Printf("%s %d packages scanned\n", successStyle.Render("✓"), total)
+	fmt.Printf("%s\n", successStyle.Render(fmt.Sprintf("%d packages scanned", total)))
 	return nil
 }
 
-func recordExecution(cmd *cobra.Command, args []string) error {
+func recordExecution(cmd *command, args []string) error {
 	config, err := core.LoadConfig("")
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)
@@ -2035,21 +2026,21 @@ func parseDuration(s string) (time.Duration, error) {
 	return time.ParseDuration(s)
 }
 
-func getToolColor(tool string) lipgloss.Color {
+func getToolColor(tool string) color {
 	switch core.NormalizeToolName(tool) {
 	case "homebrew":
-		return lipgloss.Color("214") // Orange
+		return color("214") // Orange
 	case "npm":
-		return lipgloss.Color("196") // Red
+		return color("196") // Red
 	case "go":
-		return lipgloss.Color("86") // Cyan
+		return color("86") // Cyan
 	case "pip", "python":
-		return lipgloss.Color("226") // Yellow
+		return color("226") // Yellow
 	case "gem", "ruby":
-		return lipgloss.Color("160") // Red
+		return color("160") // Red
 	case "cargo", "rust":
-		return lipgloss.Color("208") // Orange
+		return color("208") // Orange
 	default:
-		return lipgloss.Color("250") // Gray
+		return color("250") // Gray
 	}
 }

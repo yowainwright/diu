@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/yowainwright/diu/security/advisories/new
+    about: Please report security vulnerabilities privately.
+  - name: Questions and discussion
+    url: https://github.com/yowainwright/diu/discussions
+    about: Use discussions for usage questions, ideas, and open-ended design topics.

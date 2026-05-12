@@ -2,6 +2,8 @@
 
 > Package Manager Execution Tracker for macOS - Know what you actually use
 
+[![Codecov](https://codecov.io/gh/yowainwright/diu/branch/main/graph/badge.svg)](https://codecov.io/gh/yowainwright/diu)
+
 DIU tracks when package managers and global development tools are executed on macOS, storing execution data for analysis and auditing.
 
 ## Features
@@ -9,9 +11,16 @@ DIU tracks when package managers and global development tools are executed on ma
 - Track package manager executions (Homebrew, npm, Go)
 - Usage statistics and analytics
 - JSON-based storage with automatic backups
+<<<<<<< HEAD
+- Pure Go CLI with local command parsing and ANSI styling
+- Lightweight daemon process
+- Extensible monitor system
+- No third-party Go module dependencies
+=======
 - Beautiful CLI with Charm styling via Fang
 - Lightweight daemon process
 - Extensible monitor system
+>>>>>>> main
 - **Native macOS support** (Intel & Apple Silicon)
 
 ## Requirements
@@ -153,6 +162,8 @@ DIU currently uses event-based wrapper monitoring:
 - mise (for task running)
 - Docker (optional, for E2E tests)
 
+DIU's Go code uses only the Go standard library. Development and release tools such as mise, Docker, and GoReleaser are optional external tooling, not application dependencies.
+
 ### Setup
 
 ```bash
@@ -160,7 +171,7 @@ DIU currently uses event-based wrapper monitoring:
 git clone https://github.com/yowainwright/diu
 cd diu
 
-# Install dependencies with mise
+# Install local development tools with mise
 mise install
 
 # Initialize the project
@@ -188,9 +199,8 @@ mise run release-snapshot     # Create a release snapshot
 
 Built with:
 - Go 1.25+
-- [Cobra](https://github.com/spf13/cobra) for CLI
-- [Fang](https://github.com/charmbracelet/fang) for beautiful CLI styling
-- [Lipgloss](https://github.com/charmbracelet/lipgloss) for terminal UI
+- Go standard library only; no third-party Go modules
+- Local command parsing and terminal styling
 - [mise](https://mise.jdx.dev) for task running
 - [GoReleaser](https://goreleaser.com) for releases
 

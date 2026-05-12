@@ -54,11 +54,15 @@ func (m *NPMMonitor) Initialize(config *core.Config) error {
 }
 
 func (m *NPMMonitor) getGlobalPath() string {
-	cmd := exec.Command(npmCommandName, npmConfigCommand, npmGetCommand, npmPrefixConfigName)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, npmCommandName, npmConfigCommand, npmGetCommand, npmPrefixConfigName)
 	output, err := cmd.Output()
 	if err != nil {
-		// Fallback to common locations
-		homeDir, _ := os.UserHomeDir()
+		homeDir := os.Getenv("HOME")
+		if dir, userErr := os.UserHomeDir(); userErr == nil {
+			homeDir = dir
+		}
 		return filepath.Join(homeDir, ".npm")
 	}
 

@@ -7,7 +7,7 @@ DIU follows a modular architecture with clear separation of concerns:
 ```
 ┌──────────────────────────────────────────────────────┐
 │                    CLI Interface                      │
-│                  (Cobra + Fang)                       │
+│          (local parser + ANSI styling)                │
 ├──────────────────────────────────────────────────────┤
 │                    Daemon Core                        │
 │              (Event Processing, API)                  │
@@ -425,7 +425,4 @@ Closes #123
 ## Resources
 
 - [Go Documentation](https://golang.org/doc/)
-- [Cobra Documentation](https://github.com/spf13/cobra)
-- [Fang Documentation](https://github.com/charmbracelet/fang)
-- [Lipgloss Documentation](https://github.com/charmbracelet/lipgloss)
 - [Docker Documentation](https://docs.docker.com/)

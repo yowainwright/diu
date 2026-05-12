@@ -1,0 +1,84 @@
+name: Bug report
+description: Report a reproducible problem in DIU.
+title: "bug: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug. Please include enough detail for someone else to reproduce the behavior.
+  - type: input
+    id: version
+    attributes:
+      label: DIU version
+      description: Run `diu --version` if available.
+      placeholder: "0.1.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: install_method
+    attributes:
+      label: Install method
+      options:
+        - Homebrew
+        - mise
+        - go install
+        - source build
+        - other
+    validations:
+      required: true
+  - type: input
+    id: macos_version
+    attributes:
+      label: macOS version
+      description: Run `sw_vers` if unsure.
+      placeholder: "macOS 15.0"
+    validations:
+      required: true
+  - type: input
+    id: architecture
+    attributes:
+      label: Architecture
+      placeholder: "Apple Silicon, Intel, or other"
+    validations:
+      required: true
+  - type: textarea
+    id: command
+    attributes:
+      label: Command
+      description: Paste the exact command or workflow that triggered the problem.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What did you expect to happen?
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: What happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or output
+      description: Paste relevant output. Remove secrets, tokens, and private paths if needed.
+      render: text
+  - type: textarea
+    id: config
+    attributes:
+      label: Relevant configuration
+      description: Paste relevant `~/.config/diu/config.json` fields. Remove private values.
+      render: json
+  - type: textarea
+    id: notes
+    attributes:
+      label: Additional context
+      description: Add anything else that may help diagnose the issue.
