@@ -19,12 +19,18 @@ type ProcessMonitor struct {
 	binaryPath   string
 	wrapperPath  string
 	originalPath string
+	homeDir      string
 }
 
 func NewProcessMonitor(name, binaryPath string) *ProcessMonitor {
+	homeDir := os.Getenv("HOME")
+	if usr, err := user.Current(); err == nil {
+		homeDir = usr.HomeDir
+	}
 	return &ProcessMonitor{
 		BaseMonitor: NewBaseMonitor(name),
 		binaryPath:  binaryPath,
+		homeDir:     homeDir,
 	}
 }
 
@@ -92,79 +98,72 @@ func writeOwnerExecutableFile(path string, data []byte) (err error) {
 }
 
 func (m *ProcessMonitor) generateWrapperScript() string {
-	diuPath, _ := os.Executable()
+	apiEndpoint := fmt.Sprintf("http://%s:%d/api/v1/executions", m.config.API.Host, m.config.API.Port)
 	return fmt.Sprintf(`#!/bin/bash
-DIU_SOCKET="%s"
-DIU_BINARY="%s"
-ORIGINAL_BINARY="%s"
+ORIGINAL="%s"
+DIU_API="%s"
 DIU_TOOL="%s"
 START_TIME=$(date +%%s)
+WORKING_DIR=$(pwd)
 
-"$ORIGINAL_BINARY" "$@"
+"$ORIGINAL" "$@"
 EXIT_CODE=$?
 
 END_TIME=$(date +%%s)
 DURATION=$(( (END_TIME - START_TIME) * 1000 ))
 
-json_escape() {
-    local value="$1"
-    value="${value//\\/\\\\}"
-    value="${value//\"/\\\"}"
-    value="${value//$'\n'/\\n}"
-    value="${value//$'\r'/\\r}"
-    value="${value//$'\t'/\\t}"
-    printf '%%s' "$value"
-}
+build_json() {
+    local args_json="["
+    local first=true
+    for arg in "$@"; do
+        if [ "$first" = true ]; then
+            first=false
+        else
+            args_json="$args_json,"
+        fi
+        escaped_arg=$(echo "$arg" | sed 's/\\/\\\\/g' | sed 's/"/\\"/g')
+        args_json="$args_json\"$escaped_arg\""
+    done
+    args_json="$args_json]"
+    escaped_cmd=$(printf '%%s %%s' "$ORIGINAL" "$*" | sed 's/\\/\\\\/g' | sed 's/"/\\"/g' | tr -d '\n')
+    escaped_dir=$(printf '%%s' "$WORKING_DIR" | sed 's/\\/\\\\/g' | sed 's/"/\\"/g' | tr -d '\n')
 
-args_json="["
-first=true
-for arg in "$@"; do
-    if [ "$first" = true ]; then
-        first=false
-    else
-        args_json="$args_json,"
-    fi
-    args_json="$args_json\"$(json_escape "$arg")\""
-done
-args_json="$args_json]"
-
-payload=$(cat <<EOF
+    cat <<EOF
 {
-        "tool": "$DIU_TOOL",
-        "command": "$(json_escape "$ORIGINAL_BINARY $*")",
-        "args": $args_json,
-        "exit_code": $EXIT_CODE,
-        "duration_ms": $DURATION,
-        "timestamp": "$(date -u +%%Y-%%m-%%dT%%H:%%M:%%SZ)",
-        "working_dir": "$(json_escape "$(pwd)")",
-        "user": "$(json_escape "$(whoami)")"
+    "tool": "$DIU_TOOL",
+    "command": "$escaped_cmd",
+    "args": $args_json,
+    "exit_code": $EXIT_CODE,
+    "duration_ms": $DURATION,
+    "timestamp": "$(date -u +%%Y-%%m-%%dT%%H:%%M:%%SZ)",
+    "working_dir": "$escaped_dir",
+    "user": "$(whoami)"
 }
 EOF
-)
+}
 
-sent=false
-if [ -S "$DIU_SOCKET" ] && command -v nc >/dev/null 2>&1; then
-    if printf '%%s\n' "$payload" | nc -U "$DIU_SOCKET" 2>/dev/null; then
-        sent=true
+{
+    if command -v curl >/dev/null 2>&1; then
+        build_json "$@" | curl -X POST "$DIU_API" \
+            -H "Content-Type: application/json" \
+            -d @- \
+            --silent \
+            --fail \
+            --connect-timeout 1 \
+            --max-time 2 \
+            2>/dev/null
     fi
-fi
-
-if [ "$sent" != true ] && [ -x "$DIU_BINARY" ]; then
-    printf '%%s\n' "$payload" | "$DIU_BINARY" record >/dev/null 2>&1 || true
-fi
+} &
 
 exit $EXIT_CODE
-`, core.DefaultSocketPath, core.ShellEscapeString(diuPath), core.ShellEscapeString(m.originalPath), m.name)
+`, core.ShellEscapeString(m.originalPath), apiEndpoint, m.name)
 }
 
 func (m *ProcessMonitor) updateShellConfig() error {
-	usr, _ := user.Current()
-	homeDir := usr.HomeDir
-
 	shellConfigs := []string{
-		filepath.Join(homeDir, ".bashrc"),
-		filepath.Join(homeDir, ".zshrc"),
-		filepath.Join(homeDir, ".config", "fish", "config.fish"),
+		filepath.Join(m.homeDir, ".bashrc"),
+		filepath.Join(m.homeDir, ".zshrc"),
+		filepath.Join(m.homeDir, ".config", "fish", "config.fish"),
 	}
 
 	exportLine := fmt.Sprintf("export PATH=\"%s:$PATH\"", m.config.Monitoring.Process.WrapperDir)

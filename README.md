@@ -6,13 +6,13 @@ DIU tracks when package managers and global development tools are executed on ma
 
 ## Features
 
-- 🔍 Track package manager executions (Homebrew, npm, Go)
-- 📊 Usage statistics and analytics
-- 🗂️ JSON-based storage with automatic backups
-- 🎨 Beautiful CLI with Charm styling via Fang
-- 🚀 Lightweight daemon process
-- 🔌 Extensible monitor system
-- 🍎 **Native macOS support** (Intel & Apple Silicon)
+- Track package manager executions (Homebrew, npm, Go)
+- Usage statistics and analytics
+- JSON-based storage with automatic backups
+- Beautiful CLI with Charm styling via Fang
+- Lightweight daemon process
+- Extensible monitor system
+- **Native macOS support** (Intel & Apple Silicon)
 
 ## Requirements
 

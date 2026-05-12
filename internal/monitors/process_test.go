@@ -107,6 +107,7 @@ func TestProcessMonitorGenerateWrapperScript(t *testing.T) {
 	)
 
 	monitor := NewProcessMonitor(wrapperToolName, originalBinaryPath)
+	monitor.config = core.DefaultConfig()
 	monitor.originalPath = originalBinaryPath
 
 	script := monitor.generateWrapperScript()
@@ -115,8 +116,8 @@ func TestProcessMonitorGenerateWrapperScript(t *testing.T) {
 		t.Error("Script should start with shebang")
 	}
 
-	if !strings.Contains(script, core.DefaultSocketPath) {
-		t.Errorf("Script should contain socket path %s", core.DefaultSocketPath)
+	if !strings.Contains(script, "curl") {
+		t.Error("Script should use curl for non-blocking API calls")
 	}
 
 	if !strings.Contains(script, originalBinaryPath) {
@@ -142,6 +143,7 @@ func TestProcessMonitorGenerateWrapperScript(t *testing.T) {
 
 func TestProcessMonitorInstallWrapper(t *testing.T) {
 	tmpDir := t.TempDir()
+	homeDir := t.TempDir()
 
 	config := core.DefaultConfig()
 	config.Monitoring.Process.WrapperDir = tmpDir
@@ -151,6 +153,7 @@ func TestProcessMonitorInstallWrapper(t *testing.T) {
 	monitor.config = config
 	monitor.wrapperPath = filepath.Join(tmpDir, "testtool")
 	monitor.originalPath = "/usr/bin/testtool"
+	monitor.homeDir = homeDir
 
 	err := monitor.InstallWrapper()
 	if err != nil {
