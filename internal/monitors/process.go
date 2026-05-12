@@ -23,11 +23,14 @@ type ProcessMonitor struct {
 }
 
 func NewProcessMonitor(name, binaryPath string) *ProcessMonitor {
-	usr, _ := user.Current()
+	homeDir := os.Getenv("HOME")
+	if usr, err := user.Current(); err == nil {
+		homeDir = usr.HomeDir
+	}
 	return &ProcessMonitor{
 		BaseMonitor: NewBaseMonitor(name),
 		binaryPath:  binaryPath,
-		homeDir:     usr.HomeDir,
+		homeDir:     homeDir,
 	}
 }
 
@@ -95,7 +98,7 @@ func writeOwnerExecutableFile(path string, data []byte) (err error) {
 }
 
 func (m *ProcessMonitor) generateWrapperScript() string {
-	apiEndpoint := fmt.Sprintf("http://localhost:%d/api/v1/executions", core.DefaultAPIPort)
+	apiEndpoint := fmt.Sprintf("http://%s:%d/api/v1/executions", m.config.API.Host, m.config.API.Port)
 	return fmt.Sprintf(`#!/bin/bash
 ORIGINAL="%s"
 DIU_API="%s"
@@ -122,16 +125,18 @@ build_json() {
         args_json="$args_json\"$escaped_arg\""
     done
     args_json="$args_json]"
+    escaped_cmd=$(printf '%%s %%s' "$ORIGINAL" "$*" | sed 's/\\/\\\\/g' | sed 's/"/\\"/g' | tr -d '\n')
+    escaped_dir=$(printf '%%s' "$WORKING_DIR" | sed 's/\\/\\\\/g' | sed 's/"/\\"/g' | tr -d '\n')
 
     cat <<EOF
 {
     "tool": "$DIU_TOOL",
-    "command": "$ORIGINAL $*",
+    "command": "$escaped_cmd",
     "args": $args_json,
     "exit_code": $EXIT_CODE,
     "duration_ms": $DURATION,
     "timestamp": "$(date -u +%%Y-%%m-%%dT%%H:%%M:%%SZ)",
-    "working_dir": "$WORKING_DIR",
+    "working_dir": "$escaped_dir",
     "user": "$(whoami)"
 }
 EOF
