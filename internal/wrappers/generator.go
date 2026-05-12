@@ -12,12 +12,18 @@ import (
 )
 
 type WrapperGenerator struct {
-	config *core.Config
+	config  *core.Config
+	homeDir string
 }
 
 func NewWrapperGenerator(config *core.Config) *WrapperGenerator {
+	homeDir := os.Getenv("HOME")
+	if dir, err := os.UserHomeDir(); err == nil {
+		homeDir = dir
+	}
 	return &WrapperGenerator{
-		config: config,
+		config:  config,
+		homeDir: homeDir,
 	}
 }
 
@@ -112,15 +118,10 @@ func (g *WrapperGenerator) findOriginalBinary(tool string) (string, error) {
 }
 
 func (g *WrapperGenerator) updatePATH() error {
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		return err
-	}
-
 	shellConfigs := []string{
-		filepath.Join(homeDir, ".bashrc"),
-		filepath.Join(homeDir, ".zshrc"),
-		filepath.Join(homeDir, ".config", "fish", "config.fish"),
+		filepath.Join(g.homeDir, ".bashrc"),
+		filepath.Join(g.homeDir, ".zshrc"),
+		filepath.Join(g.homeDir, ".config", "fish", "config.fish"),
 	}
 
 	exportLine := fmt.Sprintf("export PATH=\"%s:$PATH\"", g.config.Monitoring.Process.WrapperDir)
