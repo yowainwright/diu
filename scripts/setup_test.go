@@ -50,6 +50,7 @@ func TestSetupScriptInstallsMiseAndGitHooks(t *testing.T) {
 		"mise install",
 		"mise run deps",
 	})
+	assertNoHookTemps(t, hooksDir)
 
 	backups, err := filepath.Glob(filepath.Join(hooksDir, "pre-commit.backup.*"))
 	if err != nil {
@@ -90,6 +91,7 @@ func TestSetupScriptInstallsMiseAndGitHooks(t *testing.T) {
 			t.Fatalf("expected post-merge mise call %q in:\n%s", want, miseCalls)
 		}
 	}
+	assertNoHookTemps(t, hooksDir)
 }
 
 func assertHook(t *testing.T, path string, wants []string) {
@@ -108,6 +110,18 @@ func assertHook(t *testing.T, path string, wants []string) {
 		if !strings.Contains(content, want) {
 			t.Fatalf("expected %q in %s:\n%s", want, path, content)
 		}
+	}
+}
+
+func assertNoHookTemps(t *testing.T, hooksDir string) {
+	t.Helper()
+
+	temps, err := filepath.Glob(filepath.Join(hooksDir, "*.tmp.*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(temps) != 0 {
+		t.Fatalf("expected hook temp files to be cleaned up, got %v", temps)
 	}
 }
 
