@@ -1,0 +1,58 @@
+name: Feature request
+description: Suggest a focused improvement to DIU.
+title: "feat: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this form for concrete, actionable improvements. For broad design discussion, use GitHub Discussions.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What limitation or workflow gap are you running into?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Describe the behavior or API you would like DIU to support.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: What workarounds or other designs have you considered?
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - CLI
+        - daemon
+        - storage
+        - monitors
+        - wrappers
+        - documentation
+        - release or packaging
+        - other
+    validations:
+      required: true
+  - type: checkboxes
+    id: constraints
+    attributes:
+      label: Project constraints
+      options:
+        - label: This can be implemented without adding third-party Go module dependencies.
+          required: true
+        - label: This keeps DIU focused on local package/tool usage tracking.
+          required: false
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Add examples, mock output, or links that clarify the request.

@@ -67,8 +67,8 @@ func TestGoParseCommand(t *testing.T) {
 	}{
 		{
 			name:     "get package",
-			args:     []string{"get", "github.com/spf13/cobra"},
-			packages: []string{"github.com/spf13/cobra"},
+			args:     []string{"get", "github.com/example/cobra"},
+			packages: []string{"github.com/example/cobra"},
 			metadata: map[string]interface{}{
 				"subcommand": "get",
 				"action":     "get",
@@ -311,23 +311,23 @@ func TestGoExtractGoPackages(t *testing.T) {
 	}{
 		{
 			name:     "single package",
-			args:     []string{"github.com/spf13/cobra"},
-			expected: []string{"github.com/spf13/cobra"},
+			args:     []string{"github.com/example/cobra"},
+			expected: []string{"github.com/example/cobra"},
 		},
 		{
 			name:     "multiple packages",
-			args:     []string{"github.com/spf13/cobra", "github.com/spf13/viper"},
-			expected: []string{"github.com/spf13/cobra", "github.com/spf13/viper"},
+			args:     []string{"github.com/example/cobra", "github.com/example/viper"},
+			expected: []string{"github.com/example/cobra", "github.com/example/viper"},
 		},
 		{
 			name:     "package with version",
-			args:     []string{"github.com/spf13/cobra@v1.8.0"},
-			expected: []string{"github.com/spf13/cobra@v1.8.0"},
+			args:     []string{"github.com/example/cobra@v1.8.0"},
+			expected: []string{"github.com/example/cobra@v1.8.0"},
 		},
 		{
 			name:     "skip flags",
-			args:     []string{"-u", "github.com/spf13/cobra", "-v"},
-			expected: []string{"github.com/spf13/cobra"},
+			args:     []string{"-u", "github.com/example/cobra", "-v"},
+			expected: []string{"github.com/example/cobra"},
 		},
 		{
 			name:     "skip current directory patterns",
