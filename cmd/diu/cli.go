@@ -113,33 +113,33 @@ func (c *command) printUsage() {
 
 func (c *command) printUsageTo(w io.Writer) {
 	if c.Long != "" {
-		fmt.Fprintln(w, c.Long)
+		_, _ = fmt.Fprintln(w, c.Long)
 	} else if c.Short != "" {
-		fmt.Fprintln(w, c.Short)
+		_, _ = fmt.Fprintln(w, c.Short)
 	}
-	fmt.Fprintln(w)
-	fmt.Fprintf(w, "Usage: %s\n", c.usagePath())
+	_, _ = fmt.Fprintln(w)
+	_, _ = fmt.Fprintf(w, "Usage: %s\n", c.usagePath())
 
 	if len(c.commands) > 0 {
-		fmt.Fprintln(w)
-		fmt.Fprintln(w, "Commands:")
+		_, _ = fmt.Fprintln(w)
+		_, _ = fmt.Fprintln(w, "Commands:")
 		for _, child := range c.commands {
 			if child.Hidden {
 				continue
 			}
-			fmt.Fprintf(w, "  %-14s %s\n", commandName(child.Use), child.Short)
+			_, _ = fmt.Fprintf(w, "  %-14s %s\n", commandName(child.Use), child.Short)
 		}
 	}
 
 	if c.flags != nil && len(c.flags.order) > 0 {
-		fmt.Fprintln(w)
-		fmt.Fprintln(w, "Flags:")
+		_, _ = fmt.Fprintln(w)
+		_, _ = fmt.Fprintln(w, "Flags:")
 		for _, flag := range c.flags.order {
 			short := ""
 			if flag.short != "" {
 				short = "-" + flag.short + ", "
 			}
-			fmt.Fprintf(w, "  %s--%-16s %s\n", short, flag.name, flag.usage)
+			_, _ = fmt.Fprintf(w, "  %s--%-16s %s\n", short, flag.name, flag.usage)
 		}
 	}
 }
