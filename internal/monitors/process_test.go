@@ -107,6 +107,7 @@ func TestProcessMonitorGenerateWrapperScript(t *testing.T) {
 	)
 
 	monitor := NewProcessMonitor(wrapperToolName, originalBinaryPath)
+	monitor.config = core.DefaultConfig()
 	monitor.originalPath = originalBinaryPath
 
 	script := monitor.generateWrapperScript()
