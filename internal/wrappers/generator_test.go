@@ -171,6 +171,7 @@ func TestFindOriginalBinaryNotFound(t *testing.T) {
 
 func TestInstallWrappers(t *testing.T) {
 	tmpDir := t.TempDir()
+	homeDir := t.TempDir()
 
 	config := core.DefaultConfig()
 	config.Monitoring.Process.WrapperDir = tmpDir
@@ -179,6 +180,7 @@ func TestInstallWrappers(t *testing.T) {
 	config.API.Port = 8080
 
 	gen := NewWrapperGenerator(config)
+	gen.homeDir = homeDir
 
 	err := gen.InstallWrappers()
 	if err != nil {
@@ -193,6 +195,7 @@ func TestInstallWrappers(t *testing.T) {
 
 func TestInstallWrappersSkipsNotFound(t *testing.T) {
 	tmpDir := t.TempDir()
+	homeDir := t.TempDir()
 
 	config := core.DefaultConfig()
 	config.Monitoring.Process.WrapperDir = tmpDir
@@ -201,6 +204,7 @@ func TestInstallWrappersSkipsNotFound(t *testing.T) {
 	config.API.Port = 8080
 
 	gen := NewWrapperGenerator(config)
+	gen.homeDir = homeDir
 
 	err := gen.InstallWrappers()
 	if err != nil {
@@ -221,6 +225,7 @@ func TestUpdatePATH(t *testing.T) {
 	config.Monitoring.Process.WrapperDir = tmpDir
 
 	gen := NewWrapperGenerator(config)
+	gen.homeDir = homeDir
 	if err := gen.updatePATH(); err != nil {
 		t.Fatalf("updatePATH failed: %v", err)
 	}
