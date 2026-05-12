@@ -17,7 +17,10 @@ type WrapperGenerator struct {
 }
 
 func NewWrapperGenerator(config *core.Config) *WrapperGenerator {
-	homeDir, _ := os.UserHomeDir()
+	homeDir := os.Getenv("HOME")
+	if dir, err := os.UserHomeDir(); err == nil {
+		homeDir = dir
+	}
 	return &WrapperGenerator{
 		config:  config,
 		homeDir: homeDir,
