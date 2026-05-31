@@ -136,7 +136,9 @@ Default configuration includes:
 - Enabled tools: homebrew, npm, go
 - Storage location: `~/.local/share/diu/executions.json`
 - Retention: 365 days
+- Storage limits: 50,000 executions, 10 MiB active JSON file
 - Automatic backups: enabled
+- Backup limit: 7 backup files
 
 ## How It Works
 

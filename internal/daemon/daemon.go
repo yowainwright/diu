@@ -91,6 +91,9 @@ func (d *Daemon) Start() error {
 	d.wg.Add(1)
 	go d.processEvents()
 
+	d.wg.Add(1)
+	go d.runPeriodicCleanup()
+
 	if err := d.registry.StartAll(d.ctx, d.eventChan); err != nil {
 		return fmt.Errorf("failed to start monitors: %w", err)
 	}
@@ -212,6 +215,31 @@ func (d *Daemon) enrichExecution(record *core.ExecutionRecord) {
 		if _, exists := record.Metadata[key]; !exists {
 			record.Metadata[key] = value
 		}
+	}
+}
+
+func (d *Daemon) runPeriodicCleanup() {
+	defer d.wg.Done()
+	d.pruneOldRecords()
+	ticker := time.NewTicker(24 * time.Hour)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			d.pruneOldRecords()
+		case <-d.ctx.Done():
+			return
+		}
+	}
+}
+
+func (d *Daemon) pruneOldRecords() {
+	var before time.Time
+	if d.config.Storage.RetentionDays > 0 {
+		before = time.Now().AddDate(0, 0, -d.config.Storage.RetentionDays)
+	}
+	if err := d.storage.Cleanup(before); err != nil {
+		log.Printf("Failed to prune old records: %v", err)
 	}
 }
 

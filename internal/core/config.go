@@ -28,11 +28,14 @@ type DaemonConfig struct {
 }
 
 type StorageConfig struct {
-	Backend        string        `json:"backend"`
-	JSONFile       string        `json:"json_file"`
-	BackupEnabled  bool          `json:"backup_enabled"`
-	BackupInterval time.Duration `json:"backup_interval"`
-	RetentionDays  int           `json:"retention_days"`
+	Backend         string        `json:"backend"`
+	JSONFile        string        `json:"json_file"`
+	BackupEnabled   bool          `json:"backup_enabled"`
+	BackupInterval  time.Duration `json:"backup_interval"`
+	RetentionDays   int           `json:"retention_days"`
+	MaxExecutions   int           `json:"max_executions"`
+	MaxStorageBytes int64         `json:"max_storage_bytes"`
+	MaxBackups      int           `json:"max_backups"`
 }
 
 type MonitoringConfig struct {
@@ -100,11 +103,14 @@ func DefaultConfig() *Config {
 			PIDFile:  DefaultPIDFile,
 		},
 		Storage: StorageConfig{
-			Backend:        StorageBackendJSON,
-			JSONFile:       filepath.Join(dataDir, "executions.json"),
-			BackupEnabled:  true,
-			BackupInterval: 24 * time.Hour,
-			RetentionDays:  DefaultRetentionDays,
+			Backend:         StorageBackendJSON,
+			JSONFile:        filepath.Join(dataDir, "executions.json"),
+			BackupEnabled:   true,
+			BackupInterval:  24 * time.Hour,
+			RetentionDays:   DefaultRetentionDays,
+			MaxExecutions:   DefaultMaxExecutions,
+			MaxStorageBytes: DefaultMaxStorageBytes,
+			MaxBackups:      DefaultMaxBackups,
 		},
 		Monitoring: MonitoringConfig{
 			EnabledTools: DefaultEnabledTools,
@@ -164,12 +170,12 @@ func LoadConfig(path string) (*Config, error) {
 		return nil, fmt.Errorf("failed to read config: %w", err)
 	}
 
-	var cfg Config
-	if err := json.Unmarshal(data, &cfg); err != nil {
+	cfg := DefaultConfig()
+	if err := json.Unmarshal(data, cfg); err != nil {
 		return nil, fmt.Errorf("failed to parse config: %w", err)
 	}
 
-	return &cfg, nil
+	return cfg, nil
 }
 
 func (c *Config) Save() error {
