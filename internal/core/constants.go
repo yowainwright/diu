@@ -22,6 +22,9 @@ const (
 	DefaultAPIHost         = "127.0.0.1"
 	DefaultLogLevel        = "info"
 	DefaultRetentionDays   = 365
+	DefaultMaxExecutions   = 50000
+	DefaultMaxStorageBytes = 10 * 1024 * 1024
+	DefaultMaxBackups      = 7
 	DefaultEventBuffer     = 100
 	DefaultShutdownTimeout = 5 * time.Second
 

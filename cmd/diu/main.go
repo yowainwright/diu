@@ -231,7 +231,7 @@ func main() {
 	// Maintenance commands
 	cleanupCmd := &command{
 		Use:   "cleanup",
-		Short: "Clean old executions based on retention",
+		Short: "Clean executions based on retention and storage limits",
 		RunE:  cleanup,
 	}
 
@@ -1392,6 +1392,12 @@ func getConfig(cmd *command, args []string) error {
 		fmt.Println(config.Storage.JSONFile)
 	case "storage.retention_days":
 		fmt.Println(config.Storage.RetentionDays)
+	case "storage.max_executions":
+		fmt.Println(config.Storage.MaxExecutions)
+	case "storage.max_storage_bytes":
+		fmt.Println(config.Storage.MaxStorageBytes)
+	case "storage.max_backups":
+		fmt.Println(config.Storage.MaxBackups)
 	case "daemon.pid_file":
 		fmt.Println(config.Daemon.PIDFile)
 	case "api.enabled":
@@ -1428,7 +1434,37 @@ func setConfig(cmd *command, args []string) error {
 		if err != nil {
 			return fmt.Errorf("invalid retention_days value: %w", err)
 		}
+		if days < 0 {
+			return fmt.Errorf("retention_days must be non-negative")
+		}
 		config.Storage.RetentionDays = days
+	case "storage.max_executions":
+		maxExecutions, err := strconv.Atoi(value)
+		if err != nil {
+			return fmt.Errorf("invalid max_executions value: %w", err)
+		}
+		if maxExecutions < 0 {
+			return fmt.Errorf("max_executions must be non-negative")
+		}
+		config.Storage.MaxExecutions = maxExecutions
+	case "storage.max_storage_bytes":
+		maxStorageBytes, err := strconv.ParseInt(value, 10, 64)
+		if err != nil {
+			return fmt.Errorf("invalid max_storage_bytes value: %w", err)
+		}
+		if maxStorageBytes < 0 {
+			return fmt.Errorf("max_storage_bytes must be non-negative")
+		}
+		config.Storage.MaxStorageBytes = maxStorageBytes
+	case "storage.max_backups":
+		maxBackups, err := strconv.Atoi(value)
+		if err != nil {
+			return fmt.Errorf("invalid max_backups value: %w", err)
+		}
+		if maxBackups < 0 {
+			return fmt.Errorf("max_backups must be non-negative")
+		}
+		config.Storage.MaxBackups = maxBackups
 	case "daemon.pid_file":
 		config.Daemon.PIDFile = value
 	case "api.enabled":
@@ -1480,7 +1516,10 @@ func cleanup(cmd *command, args []string) error {
 	}
 	defer closeStore(store)
 
-	before := time.Now().AddDate(0, 0, -config.Storage.RetentionDays)
+	var before time.Time
+	if config.Storage.RetentionDays > 0 {
+		before = time.Now().AddDate(0, 0, -config.Storage.RetentionDays)
+	}
 	if err := store.Cleanup(before); err != nil {
 		return fmt.Errorf("cleanup failed: %w", err)
 	}
@@ -1883,16 +1922,18 @@ payload=$(cat <<EOF
 EOF
 )
 
-sent=false
-if [ -S "$DIU_SOCKET" ] && command -v nc >/dev/null 2>&1; then
-    if printf '%%s\n' "$payload" | nc -U "$DIU_SOCKET" 2>/dev/null; then
-        sent=true
+{
+    sent=false
+    if [ -S "$DIU_SOCKET" ] && command -v nc >/dev/null 2>&1; then
+        if printf '%%s\n' "$payload" | nc -w 1 -U "$DIU_SOCKET" 2>/dev/null; then
+            sent=true
+        fi
     fi
-fi
 
-if [ "$sent" != true ] && [ -x "$DIU_BINARY" ]; then
-    printf '%%s\n' "$payload" | "$DIU_BINARY" record >/dev/null 2>&1 || true
-fi
+    if [ "$sent" != true ] && [ -x "$DIU_BINARY" ]; then
+        printf '%%s\n' "$payload" | "$DIU_BINARY" record >/dev/null 2>&1
+    fi
+} &>/dev/null &
 
 exit $EXIT_CODE
 `, core.DefaultSocketPath, core.ShellEscapeString(diuPath), core.ShellEscapeString(target.OriginalPath), core.ShellEscapeString(target.Tool), core.ShellEscapeString(target.Package), core.ShellEscapeString(target.Name))
