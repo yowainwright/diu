@@ -92,6 +92,55 @@ func TestLoadConfigAppliesDefaultsForMissingFields(t *testing.T) {
 	if config.Storage.MaxBackups != DefaultMaxBackups {
 		t.Errorf("Expected max backups default %d, got %d", DefaultMaxBackups, config.Storage.MaxBackups)
 	}
+
+	if len(config.Monitoring.Filesystem.WatchPaths) == 0 {
+		t.Error("Expected default watch paths for missing watch_paths config")
+	}
+}
+
+func TestLoadConfigHonorsEmptyWatchPathsOverride(t *testing.T) {
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "config.json")
+
+	data := []byte(`{"monitoring":{"filesystem":{"watch_paths":{}}}}`)
+	if err := os.WriteFile(configPath, data, PrivateFileMode); err != nil {
+		t.Fatalf("Failed to write config: %v", err)
+	}
+
+	config, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("Failed to load config: %v", err)
+	}
+
+	if len(config.Monitoring.Filesystem.WatchPaths) != 0 {
+		t.Errorf("Expected empty watch paths override, got %#v", config.Monitoring.Filesystem.WatchPaths)
+	}
+}
+
+func TestLoadConfigHonorsPartialWatchPathsOverride(t *testing.T) {
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "config.json")
+
+	data := []byte(`{"monitoring":{"filesystem":{"watch_paths":{"npm":["/custom/npm"]}}}}`)
+	if err := os.WriteFile(configPath, data, PrivateFileMode); err != nil {
+		t.Fatalf("Failed to write config: %v", err)
+	}
+
+	config, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("Failed to load config: %v", err)
+	}
+
+	watchPaths := config.Monitoring.Filesystem.WatchPaths
+	if len(watchPaths) != 1 {
+		t.Fatalf("Expected one watch_paths key, got %#v", watchPaths)
+	}
+	if paths := watchPaths[ToolNPM]; len(paths) != 1 || paths[0] != "/custom/npm" {
+		t.Errorf("Expected custom npm watch path, got %#v", paths)
+	}
+	if _, ok := watchPaths[ToolHomebrew]; ok {
+		t.Errorf("Expected homebrew watch paths to remain disabled, got %#v", watchPaths[ToolHomebrew])
+	}
 }
 
 func TestConfigSave(t *testing.T) {

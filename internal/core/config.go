@@ -171,8 +171,13 @@ func LoadConfig(path string) (*Config, error) {
 	}
 
 	cfg := DefaultConfig()
+	defaultWatchPaths := cfg.Monitoring.Filesystem.WatchPaths
+	cfg.Monitoring.Filesystem.WatchPaths = nil
 	if err := json.Unmarshal(data, cfg); err != nil {
 		return nil, fmt.Errorf("failed to parse config: %w", err)
+	}
+	if cfg.Monitoring.Filesystem.WatchPaths == nil {
+		cfg.Monitoring.Filesystem.WatchPaths = defaultWatchPaths
 	}
 
 	return cfg, nil
