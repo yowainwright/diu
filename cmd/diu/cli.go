@@ -43,7 +43,7 @@ func (c *command) execute(args []string) error {
 			return nil
 		case "-v", "--version":
 			if c.parent == nil {
-				fmt.Println(coreVersion())
+				fmt.Println(versionString())
 				return nil
 			}
 		}
@@ -161,7 +161,14 @@ func commandName(use string) string {
 }
 
 func coreVersion() string {
+	if version != "" && version != "dev" {
+		return version
+	}
 	return core.Version
+}
+
+func versionString() string {
+	return fmt.Sprintf("diu %s (commit %s, built %s)", coreVersion(), commit, date)
 }
 
 type flagSet struct {

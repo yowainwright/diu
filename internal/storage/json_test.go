@@ -3,6 +3,7 @@ package storage
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -306,6 +307,177 @@ func TestCleanup(t *testing.T) {
 
 	if executions[0].Tool != "new" {
 		t.Error("Wrong execution retained after cleanup")
+	}
+}
+
+func TestAddExecutionEnforcesMaxExecutions(t *testing.T) {
+	tempDir := t.TempDir()
+	config := &core.Config{
+		Storage: core.StorageConfig{
+			JSONFile:      filepath.Join(tempDir, "test.json"),
+			MaxExecutions: 2,
+		},
+	}
+
+	storage, err := NewJSONStorage(config)
+	if err != nil {
+		t.Fatalf("Failed to create storage: %v", err)
+	}
+	defer closeStorage(t, storage)
+
+	now := time.Now()
+	addExecution(t, storage, &core.ExecutionRecord{Tool: "oldest", Timestamp: now.Add(-3 * time.Hour)})
+	addExecution(t, storage, &core.ExecutionRecord{Tool: "middle", Timestamp: now.Add(-2 * time.Hour)})
+	addExecution(t, storage, &core.ExecutionRecord{Tool: "newest", Timestamp: now.Add(-1 * time.Hour)})
+
+	executions, err := storage.GetExecutions(QueryOptions{})
+	if err != nil {
+		t.Fatalf("Failed to get executions: %v", err)
+	}
+
+	if len(executions) != 2 {
+		t.Fatalf("Expected 2 executions after max_executions pruning, got %d", len(executions))
+	}
+
+	if executions[0].Tool != "newest" || executions[1].Tool != "middle" {
+		t.Errorf("Expected newest executions to be retained, got %s and %s", executions[0].Tool, executions[1].Tool)
+	}
+}
+
+func TestAddExecutionEnforcesMaxStorageBytes(t *testing.T) {
+	tempDir := t.TempDir()
+	config := &core.Config{
+		Storage: core.StorageConfig{
+			JSONFile:        filepath.Join(tempDir, "test.json"),
+			MaxStorageBytes: 2048,
+		},
+	}
+
+	storage, err := NewJSONStorage(config)
+	if err != nil {
+		t.Fatalf("Failed to create storage: %v", err)
+	}
+	defer closeStorage(t, storage)
+
+	addExecution(t, storage, &core.ExecutionRecord{
+		Tool:      "large",
+		Command:   strings.Repeat("x", 4096),
+		Timestamp: time.Now(),
+	})
+
+	executions, err := storage.GetExecutions(QueryOptions{})
+	if err != nil {
+		t.Fatalf("Failed to get executions: %v", err)
+	}
+	if len(executions) != 0 {
+		t.Fatalf("Expected oversized execution to be pruned, got %d executions", len(executions))
+	}
+
+	info, err := os.Stat(config.Storage.JSONFile)
+	if err != nil {
+		t.Fatalf("Failed to stat storage file: %v", err)
+	}
+	if info.Size() > config.Storage.MaxStorageBytes {
+		t.Errorf("Expected storage file to be at most %d bytes, got %d", config.Storage.MaxStorageBytes, info.Size())
+	}
+}
+
+func TestBackupPrunesOldBackups(t *testing.T) {
+	const storageFileName = "test.json"
+
+	tempDir := t.TempDir()
+	config := &core.Config{
+		Storage: core.StorageConfig{
+			JSONFile:   filepath.Join(tempDir, storageFileName),
+			MaxBackups: 2,
+		},
+	}
+
+	storage, err := NewJSONStorage(config)
+	if err != nil {
+		t.Fatalf("Failed to create storage: %v", err)
+	}
+	defer closeStorage(t, storage)
+
+	for i := 0; i < 3; i++ {
+		addExecution(t, storage, &core.ExecutionRecord{
+			Tool:      "test",
+			Command:   "test backup pruning",
+			Timestamp: time.Now().Add(time.Duration(i) * time.Second),
+		})
+		if err := storage.Backup(); err != nil {
+			t.Fatalf("Failed to create backup %d: %v", i, err)
+		}
+	}
+
+	files, err := filepath.Glob(config.Storage.JSONFile + ".backup.*")
+	if err != nil {
+		t.Fatalf("Failed to list backups: %v", err)
+	}
+	if len(files) != 2 {
+		t.Fatalf("Expected 2 backup files after pruning, got %d", len(files))
+	}
+}
+
+func TestUpdatePackageDoesNotPruneExecutions(t *testing.T) {
+	tempDir := t.TempDir()
+	config := &core.Config{
+		Storage: core.StorageConfig{
+			JSONFile: filepath.Join(tempDir, "test.json"),
+		},
+	}
+
+	storage, err := NewJSONStorage(config)
+	if err != nil {
+		t.Fatalf("Failed to create storage: %v", err)
+	}
+	defer closeStorage(t, storage)
+
+	addExecution(t, storage, &core.ExecutionRecord{Tool: "old", Timestamp: time.Now().Add(-2 * time.Hour)})
+	addExecution(t, storage, &core.ExecutionRecord{Tool: "new", Timestamp: time.Now()})
+
+	config.Storage.MaxExecutions = 1
+	updatePackage(t, storage, &core.PackageInfo{Name: "test-package", Tool: "npm"})
+
+	executions, err := storage.GetExecutions(QueryOptions{})
+	if err != nil {
+		t.Fatalf("Failed to get executions: %v", err)
+	}
+	if len(executions) != 2 {
+		t.Fatalf("Expected package update to retain 2 executions, got %d", len(executions))
+	}
+}
+
+func TestNextBackupPathUsesSuffixForCollision(t *testing.T) {
+	tempDir := t.TempDir()
+	config := &core.Config{
+		Storage: core.StorageConfig{
+			JSONFile: filepath.Join(tempDir, "test.json"),
+		},
+	}
+
+	storage, err := NewJSONStorage(config)
+	if err != nil {
+		t.Fatalf("Failed to create storage: %v", err)
+	}
+	defer closeStorage(t, storage)
+
+	jsonStorage := storage.(*JSONStorage)
+	now := time.Date(2026, 6, 1, 12, 0, 0, 123, time.UTC)
+	firstPath, err := jsonStorage.nextBackupPath(now)
+	if err != nil {
+		t.Fatalf("Failed to get first backup path: %v", err)
+	}
+	if err := os.WriteFile(firstPath, []byte("{}"), core.PrivateFileMode); err != nil {
+		t.Fatalf("Failed to create colliding backup path: %v", err)
+	}
+
+	nextPath, err := jsonStorage.nextBackupPath(now)
+	if err != nil {
+		t.Fatalf("Failed to get next backup path: %v", err)
+	}
+	if nextPath != firstPath+".1" {
+		t.Fatalf("Expected suffixed backup path %s, got %s", firstPath+".1", nextPath)
 	}
 }
 

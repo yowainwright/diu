@@ -12,6 +12,9 @@ storage:
   backup_enabled: true
   backup_interval: 24h
   retention_days: 365
+  max_executions: 50000
+  max_storage_bytes: 10485760
+  max_backups: 7
 
 monitoring:
   enabled_tools:
