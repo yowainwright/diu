@@ -419,6 +419,68 @@ func TestBackupPrunesOldBackups(t *testing.T) {
 	}
 }
 
+func TestUpdatePackageDoesNotPruneExecutions(t *testing.T) {
+	tempDir := t.TempDir()
+	config := &core.Config{
+		Storage: core.StorageConfig{
+			JSONFile: filepath.Join(tempDir, "test.json"),
+		},
+	}
+
+	storage, err := NewJSONStorage(config)
+	if err != nil {
+		t.Fatalf("Failed to create storage: %v", err)
+	}
+	defer closeStorage(t, storage)
+
+	addExecution(t, storage, &core.ExecutionRecord{Tool: "old", Timestamp: time.Now().Add(-2 * time.Hour)})
+	addExecution(t, storage, &core.ExecutionRecord{Tool: "new", Timestamp: time.Now()})
+
+	config.Storage.MaxExecutions = 1
+	updatePackage(t, storage, &core.PackageInfo{Name: "test-package", Tool: "npm"})
+
+	executions, err := storage.GetExecutions(QueryOptions{})
+	if err != nil {
+		t.Fatalf("Failed to get executions: %v", err)
+	}
+	if len(executions) != 2 {
+		t.Fatalf("Expected package update to retain 2 executions, got %d", len(executions))
+	}
+}
+
+func TestNextBackupPathUsesSuffixForCollision(t *testing.T) {
+	tempDir := t.TempDir()
+	config := &core.Config{
+		Storage: core.StorageConfig{
+			JSONFile: filepath.Join(tempDir, "test.json"),
+		},
+	}
+
+	storage, err := NewJSONStorage(config)
+	if err != nil {
+		t.Fatalf("Failed to create storage: %v", err)
+	}
+	defer closeStorage(t, storage)
+
+	jsonStorage := storage.(*JSONStorage)
+	now := time.Date(2026, 6, 1, 12, 0, 0, 123, time.UTC)
+	firstPath, err := jsonStorage.nextBackupPath(now)
+	if err != nil {
+		t.Fatalf("Failed to get first backup path: %v", err)
+	}
+	if err := os.WriteFile(firstPath, []byte("{}"), core.PrivateFileMode); err != nil {
+		t.Fatalf("Failed to create colliding backup path: %v", err)
+	}
+
+	nextPath, err := jsonStorage.nextBackupPath(now)
+	if err != nil {
+		t.Fatalf("Failed to get next backup path: %v", err)
+	}
+	if nextPath != firstPath+".1" {
+		t.Fatalf("Expected suffixed backup path %s, got %s", firstPath+".1", nextPath)
+	}
+}
+
 func TestGetExecutionByID(t *testing.T) {
 	tempDir := t.TempDir()
 	config := &core.Config{
