@@ -21,6 +21,12 @@ import (
 )
 
 var (
+	version = "dev"
+	commit  = "none"
+	date    = "unknown"
+)
+
+var (
 	// Styles
 	titleStyle = newStyle().
 			Bold(true).
@@ -1516,11 +1522,7 @@ func cleanup(cmd *command, args []string) error {
 	}
 	defer closeStore(store)
 
-	var before time.Time
-	if config.Storage.RetentionDays > 0 {
-		before = time.Now().AddDate(0, 0, -config.Storage.RetentionDays)
-	}
-	if err := store.Cleanup(before); err != nil {
+	if err := store.Cleanup(time.Time{}); err != nil {
 		return fmt.Errorf("cleanup failed: %w", err)
 	}
 

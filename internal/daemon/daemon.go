@@ -234,11 +234,7 @@ func (d *Daemon) runPeriodicCleanup() {
 }
 
 func (d *Daemon) pruneOldRecords() {
-	var before time.Time
-	if d.config.Storage.RetentionDays > 0 {
-		before = time.Now().AddDate(0, 0, -d.config.Storage.RetentionDays)
-	}
-	if err := d.storage.Cleanup(before); err != nil {
+	if err := d.storage.Cleanup(time.Time{}); err != nil {
 		log.Printf("Failed to prune old records: %v", err)
 	}
 }
