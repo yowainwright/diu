@@ -23,6 +23,8 @@ type JSONStorage struct {
 	mu       sync.RWMutex
 }
 
+const maxBackupPathAttempts = 1000
+
 func NewJSONStorage(config *core.Config) (Storage, error) {
 	storagePath, err := cleanManagedPath(config.Storage.JSONFile)
 	if err != nil {
@@ -130,6 +132,9 @@ func (j *JSONStorage) AddExecution(record *core.ExecutionRecord) error {
 		j.data.Executions = append(j.data.Executions, *record)
 		j.data.Statistics.TotalExecutions++
 
+		if j.data.Statistics.ExecutionFrequency == nil {
+			j.data.Statistics.ExecutionFrequency = make(map[string]int)
+		}
 		if _, exists := j.data.Statistics.ExecutionFrequency[record.Tool]; !exists {
 			j.data.Statistics.ExecutionFrequency[record.Tool] = 0
 			j.data.Statistics.ToolsUsed = append(j.data.Statistics.ToolsUsed, record.Tool)
@@ -140,6 +145,10 @@ func (j *JSONStorage) AddExecution(record *core.ExecutionRecord) error {
 			if err := j.updatePackageInternal(record.Tool, pkg, record.Timestamp); err != nil {
 				return err
 			}
+		}
+
+		if err := j.enforceRetentionPolicies(time.Time{}); err != nil {
+			return err
 		}
 
 		return j.save()
@@ -364,10 +373,13 @@ func (j *JSONStorage) UpdateStatistics() error {
 }
 
 func (j *JSONStorage) Backup() error {
-	j.mu.RLock()
-	defer j.mu.RUnlock()
+	j.mu.Lock()
+	defer j.mu.Unlock()
 
-	backupPath := fmt.Sprintf("%s.backup.%s", j.filepath, time.Now().Format("20060102_150405"))
+	backupPath, err := j.nextBackupPath(time.Now())
+	if err != nil {
+		return err
+	}
 
 	data, err := json.MarshalIndent(j.data, "", "  ")
 	if err != nil {
@@ -376,6 +388,10 @@ func (j *JSONStorage) Backup() error {
 
 	if err := os.WriteFile(backupPath, data, core.PrivateFileMode); err != nil {
 		return fmt.Errorf("failed to write backup file: %w", err)
+	}
+
+	if err := j.pruneBackups(); err != nil {
+		return err
 	}
 
 	return nil
@@ -413,18 +429,204 @@ func (j *JSONStorage) Cleanup(before time.Time) error {
 			return err
 		}
 
-		var kept []core.ExecutionRecord
-		for _, exec := range j.data.Executions {
-			if exec.Timestamp.After(before) {
-				kept = append(kept, exec)
-			}
+		if err := j.enforceRetentionPolicies(before); err != nil {
+			return err
 		}
-
-		j.data.Executions = kept
-		j.data.Statistics.TotalExecutions = len(kept)
 
 		return j.save()
 	})
+}
+
+func (j *JSONStorage) enforceRetentionPolicies(before time.Time) error {
+	changed := false
+
+	cutoff := before
+	if cutoff.IsZero() && j.config.Storage.RetentionDays > 0 {
+		cutoff = time.Now().AddDate(0, 0, -j.config.Storage.RetentionDays)
+	}
+	if !cutoff.IsZero() {
+		kept := make([]core.ExecutionRecord, 0, len(j.data.Executions))
+		for _, exec := range j.data.Executions {
+			if exec.Timestamp.After(cutoff) {
+				kept = append(kept, exec)
+			}
+		}
+		if len(kept) != len(j.data.Executions) {
+			j.data.Executions = kept
+			changed = true
+		}
+	}
+
+	if maxExecutions := j.config.Storage.MaxExecutions; maxExecutions > 0 && len(j.data.Executions) > maxExecutions {
+		sortExecutionsNewestFirst(j.data.Executions)
+		j.data.Executions = append([]core.ExecutionRecord(nil), j.data.Executions[:maxExecutions]...)
+		changed = true
+	}
+
+	if maxBytes := j.config.Storage.MaxStorageBytes; maxBytes > 0 {
+		pruned, err := j.enforceMaxStorageBytes(maxBytes)
+		if err != nil {
+			return err
+		}
+		changed = changed || pruned
+	}
+
+	if changed {
+		j.rebuildStatistics()
+	}
+
+	return nil
+}
+
+func (j *JSONStorage) enforceMaxStorageBytes(maxBytes int64) (bool, error) {
+	size, err := j.estimatedStorageSize()
+	if err != nil {
+		return false, err
+	}
+	if size <= maxBytes || len(j.data.Executions) == 0 {
+		return false, nil
+	}
+
+	sortExecutionsNewestFirst(j.data.Executions)
+	executions := append([]core.ExecutionRecord(nil), j.data.Executions...)
+
+	bestKeep := 0
+	low, high := 0, len(executions)
+	for low <= high {
+		keep := low + (high-low)/2
+		j.data.Executions = executions[:keep]
+
+		size, err := j.estimatedStorageSize()
+		if err != nil {
+			j.data.Executions = executions
+			return false, err
+		}
+
+		if size <= maxBytes {
+			bestKeep = keep
+			low = keep + 1
+		} else {
+			high = keep - 1
+		}
+	}
+
+	j.data.Executions = append([]core.ExecutionRecord(nil), executions[:bestKeep]...)
+	return bestKeep != len(executions), nil
+}
+
+func (j *JSONStorage) estimatedStorageSize() (int64, error) {
+	data, err := json.MarshalIndent(j.data, "", "  ")
+	if err != nil {
+		return 0, fmt.Errorf("failed to marshal storage data for size check: %w", err)
+	}
+	return int64(len(data)), nil
+}
+
+func sortExecutionsNewestFirst(executions []core.ExecutionRecord) {
+	sort.SliceStable(executions, func(i, k int) bool {
+		return executions[i].Timestamp.After(executions[k].Timestamp)
+	})
+}
+
+func (j *JSONStorage) rebuildStatistics() {
+	stats := core.StorageStatistics{
+		TotalExecutions:    len(j.data.Executions),
+		ToolsUsed:          []string{},
+		MostActiveDay:      "",
+		ExecutionFrequency: make(map[string]int),
+	}
+
+	seenTools := make(map[string]bool)
+	dayCount := make(map[string]int)
+	for _, exec := range j.data.Executions {
+		if exec.Tool != "" {
+			if !seenTools[exec.Tool] {
+				seenTools[exec.Tool] = true
+				stats.ToolsUsed = append(stats.ToolsUsed, exec.Tool)
+			}
+			stats.ExecutionFrequency[exec.Tool]++
+		}
+		if !exec.Timestamp.IsZero() {
+			day := exec.Timestamp.Format("2006-01-02")
+			dayCount[day]++
+		}
+	}
+
+	maxCount := 0
+	for day, count := range dayCount {
+		if count > maxCount {
+			maxCount = count
+			stats.MostActiveDay = day
+		}
+	}
+
+	j.data.Statistics = stats
+}
+
+func (j *JSONStorage) pruneBackups() error {
+	maxBackups := j.config.Storage.MaxBackups
+	if maxBackups <= 0 {
+		return nil
+	}
+
+	paths, err := filepath.Glob(j.filepath + ".backup.*")
+	if err != nil {
+		return fmt.Errorf("failed to list backup files: %w", err)
+	}
+
+	backups := make([]backupFile, 0, len(paths))
+	for _, path := range paths {
+		info, err := os.Stat(path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return fmt.Errorf("failed to stat backup file %s: %w", path, err)
+		}
+		backups = append(backups, backupFile{path: path, modTime: info.ModTime()})
+	}
+	if len(backups) <= maxBackups {
+		return nil
+	}
+
+	sort.Slice(backups, func(i, k int) bool {
+		if !backups[i].modTime.Equal(backups[k].modTime) {
+			return backups[i].modTime.Before(backups[k].modTime)
+		}
+		return backups[i].path < backups[k].path
+	})
+
+	for _, backup := range backups[:len(backups)-maxBackups] {
+		if err := os.Remove(backup.path); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("failed to remove old backup %s: %w", backup.path, err)
+		}
+	}
+
+	return nil
+}
+
+type backupFile struct {
+	path    string
+	modTime time.Time
+}
+
+func (j *JSONStorage) nextBackupPath(now time.Time) (string, error) {
+	base := fmt.Sprintf("%s.backup.%s", j.filepath, now.Format("20060102_150405_000000000"))
+	for i := 0; i < maxBackupPathAttempts; i++ {
+		path := base
+		if i > 0 {
+			path = fmt.Sprintf("%s.%d", base, i)
+		}
+
+		if _, err := os.Stat(path); err == nil {
+			continue
+		} else if os.IsNotExist(err) {
+			return path, nil
+		} else {
+			return "", fmt.Errorf("failed to stat backup path %s: %w", path, err)
+		}
+	}
+	return "", fmt.Errorf("failed to find available backup path after %d attempts", maxBackupPathAttempts)
 }
 
 func (j *JSONStorage) reload() error {
