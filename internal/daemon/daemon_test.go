@@ -200,10 +200,11 @@ func testConfig(t *testing.T) *core.Config {
 	return &core.Config{
 		Version: "1.0",
 		Daemon: core.DaemonConfig{
-			Port:     0,
-			LogLevel: "info",
-			DataDir:  tmpDir,
-			PIDFile:  filepath.Join(tmpDir, "diu.pid"),
+			Port:       0,
+			LogLevel:   "info",
+			DataDir:    tmpDir,
+			PIDFile:    filepath.Join(tmpDir, "diu.pid"),
+			SocketPath: filepath.Join(tmpDir, "diu.sock"),
 		},
 		Storage: core.StorageConfig{
 			Backend:       "json",
@@ -660,7 +661,7 @@ func TestDaemonSocketListener(t *testing.T) {
 
 	time.Sleep(100 * time.Millisecond)
 
-	conn, err := net.Dial("unix", "/tmp/diu.sock")
+	conn, err := net.Dial("unix", cfg.Daemon.SocketPath)
 	if err != nil {
 		t.Fatalf("Failed to connect to socket: %v", err)
 	}

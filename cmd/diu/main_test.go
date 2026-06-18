@@ -1,6 +1,9 @@
 package main
 
 import (
+	"bufio"
+	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -8,6 +11,7 @@ import (
 	"time"
 
 	"github.com/yowainwright/diu/internal/core"
+	"github.com/yowainwright/diu/internal/storage"
 )
 
 func TestPackageNameForExecutable(t *testing.T) {
@@ -129,6 +133,26 @@ func TestFilterPackagesSearchAndUnused(t *testing.T) {
 	}
 }
 
+func TestPrintPackageListNumbersFromOne(t *testing.T) {
+	packages := []*core.PackageInfo{
+		{Name: "jq", Tool: core.ToolHomebrew},
+		{Name: "eslint", Tool: core.ToolNPM},
+	}
+
+	var printErr error
+	output := captureStdout(t, func() {
+		printErr = printPackageList(packages, formatTable)
+	})
+	if printErr != nil {
+		t.Fatalf("printPackageList failed: %v", printErr)
+	}
+
+	lines := strings.Split(strings.TrimRight(output, "\n"), "\n")
+	if len(lines) == 0 || !strings.HasPrefix(lines[0], "  1  ") {
+		t.Fatalf("first package row = %q, want numbering from 1", output)
+	}
+}
+
 func TestUninstallPlan(t *testing.T) {
 	const (
 		homebrewPackage = "jq"
@@ -240,5 +264,697 @@ func TestValidateRemovableExecutablePath(t *testing.T) {
 	}
 	if _, err := validateRemovableExecutablePath(nonExecutablePath); err == nil {
 		t.Fatal("Expected non-executable path validation to fail")
+	}
+}
+
+func TestRecordExecutionWritesToConfiguredStorage(t *testing.T) {
+	config := setupTestHomeConfig(t)
+
+	payload := `{
+		"tool":"brew",
+		"command":"brew install jq",
+		"args":["install","jq"],
+		"exit_code":0,
+		"duration_ms":1200,
+		"packages_affected":["jq"]
+	}`
+
+	var runErr error
+	withStdin(t, payload, func() {
+		runErr = recordExecution(&command{}, nil)
+	})
+	if runErr != nil {
+		t.Fatalf("recordExecution failed: %v", runErr)
+	}
+
+	store := openTestStore(t, config)
+	defer closeTestStore(t, store)
+
+	executions, err := store.GetExecutions(storage.QueryOptions{Tool: core.ToolHomebrew})
+	if err != nil {
+		t.Fatalf("GetExecutions failed: %v", err)
+	}
+	if len(executions) != 1 {
+		t.Fatalf("Expected 1 homebrew execution, got %d", len(executions))
+	}
+	if executions[0].Tool != core.ToolHomebrew {
+		t.Fatalf("Tool = %q, want %q", executions[0].Tool, core.ToolHomebrew)
+	}
+}
+
+func TestQueryExecutionsFormats(t *testing.T) {
+	config := setupTestHomeConfig(t)
+	store := openTestStore(t, config)
+	addTestExecution(t, store, &core.ExecutionRecord{
+		Tool:             core.ToolNPM,
+		Command:          "npm install eslint",
+		Args:             []string{"install", "eslint"},
+		Timestamp:        time.Now(),
+		Duration:         1500 * time.Millisecond,
+		ExitCode:         0,
+		PackagesAffected: []string{"eslint"},
+	})
+	closeTestStore(t, store)
+
+	jsonOutput := captureStdout(t, func() {
+		if err := queryExecutions(queryCommandForTest(t, "--tool", "npm", "--format", "json", "--limit", "1"), nil); err != nil {
+			t.Fatalf("queryExecutions JSON failed: %v", err)
+		}
+	})
+	var records []core.ExecutionRecord
+	if err := json.Unmarshal([]byte(jsonOutput), &records); err != nil {
+		t.Fatalf("Failed to decode JSON output %q: %v", jsonOutput, err)
+	}
+	if len(records) != 1 || records[0].Command != "npm install eslint" {
+		t.Fatalf("Unexpected JSON records: %#v", records)
+	}
+
+	csvOutput := captureStdout(t, func() {
+		if err := queryExecutions(queryCommandForTest(t, "--format", "csv"), nil); err != nil {
+			t.Fatalf("queryExecutions CSV failed: %v", err)
+		}
+	})
+	if !strings.Contains(csvOutput, "tool,command,timestamp,duration_ms,exit_code") || !strings.Contains(csvOutput, "npm install eslint") {
+		t.Fatalf("Unexpected CSV output:\n%s", csvOutput)
+	}
+
+	tableOutput := captureStdout(t, func() {
+		if err := queryExecutions(queryCommandForTest(t), nil); err != nil {
+			t.Fatalf("queryExecutions table failed: %v", err)
+		}
+	})
+	if !strings.Contains(tableOutput, "Execution History") || !strings.Contains(tableOutput, "npm install eslint") {
+		t.Fatalf("Unexpected table output:\n%s", tableOutput)
+	}
+}
+
+func TestPackageCommandsUseStorage(t *testing.T) {
+	config := setupTestHomeConfig(t)
+	store := openTestStore(t, config)
+	updateTestPackage(t, store, &core.PackageInfo{
+		Name:       "jq",
+		Tool:       core.ToolHomebrew,
+		Version:    "1.7",
+		UsageCount: 4,
+		LastUsed:   time.Now().Add(-48 * time.Hour),
+		Path:       "/opt/homebrew/bin/jq",
+	})
+	updateTestPackage(t, store, &core.PackageInfo{
+		Name:       "eslint",
+		Tool:       core.ToolNPM,
+		Version:    "9.0.0",
+		UsageCount: 2,
+	})
+	closeTestStore(t, store)
+
+	listOutput := captureStdout(t, func() {
+		if err := listPackages(packagesCommandForTest(t, "--tool", "homebrew"), nil); err != nil {
+			t.Fatalf("listPackages failed: %v", err)
+		}
+	})
+	if !strings.Contains(listOutput, "Tracked Packages") || !strings.Contains(listOutput, "jq (1.7)") {
+		t.Fatalf("Unexpected list output:\n%s", listOutput)
+	}
+
+	checkOutput := captureStdout(t, func() {
+		if err := checkPackages(checkCommandForTest(t, "--search", "eslint", "--format", "json"), nil); err != nil {
+			t.Fatalf("checkPackages failed: %v", err)
+		}
+	})
+	var packages []core.PackageInfo
+	if err := json.Unmarshal([]byte(checkOutput), &packages); err != nil {
+		t.Fatalf("Failed to decode package JSON %q: %v", checkOutput, err)
+	}
+	if len(packages) != 1 || packages[0].Name != "eslint" {
+		t.Fatalf("Unexpected check packages: %#v", packages)
+	}
+
+	manageOutput := captureStdout(t, func() {
+		if err := managePackages(manageCommandForTest(t, "--uninstall", "jq", "--tool", "homebrew", "--dry-run"), nil); err != nil {
+			t.Fatalf("managePackages dry-run failed: %v", err)
+		}
+	})
+	if strings.TrimSpace(manageOutput) != "brew uninstall jq" {
+		t.Fatalf("Dry-run output = %q, want brew uninstall jq", manageOutput)
+	}
+}
+
+func TestConfigCommandsAndMaintenance(t *testing.T) {
+	config := setupTestHomeConfig(t)
+
+	setOutput := captureStdout(t, func() {
+		if err := setConfig(&command{}, []string{"storage.retention_days", "30"}); err != nil {
+			t.Fatalf("setConfig failed: %v", err)
+		}
+	})
+	if !strings.Contains(setOutput, "Configuration updated") {
+		t.Fatalf("Unexpected setConfig output: %q", setOutput)
+	}
+
+	getOutput := captureStdout(t, func() {
+		if err := getConfig(&command{}, []string{"storage.retention_days"}); err != nil {
+			t.Fatalf("getConfig failed: %v", err)
+		}
+	})
+	if strings.TrimSpace(getOutput) != "30" {
+		t.Fatalf("retention_days = %q, want 30", getOutput)
+	}
+
+	listOutput := captureStdout(t, func() {
+		if err := listConfig(&command{}, nil); err != nil {
+			t.Fatalf("listConfig failed: %v", err)
+		}
+	})
+	var listed core.Config
+	if err := json.Unmarshal([]byte(listOutput), &listed); err != nil {
+		t.Fatalf("Failed to decode config list output: %v", err)
+	}
+	if listed.Storage.RetentionDays != 30 {
+		t.Fatalf("Listed retention_days = %d, want 30", listed.Storage.RetentionDays)
+	}
+
+	store := openTestStore(t, config)
+	addTestExecution(t, store, &core.ExecutionRecord{
+		Tool:      core.ToolNPM,
+		Command:   "npm install old",
+		Timestamp: time.Now().Add(-60 * 24 * time.Hour),
+	})
+	addTestExecution(t, store, &core.ExecutionRecord{
+		Tool:      core.ToolNPM,
+		Command:   "npm install current",
+		Timestamp: time.Now(),
+	})
+	closeTestStore(t, store)
+
+	backupOutput := captureStdout(t, func() {
+		if err := backup(&command{}, nil); err != nil {
+			t.Fatalf("backup failed: %v", err)
+		}
+	})
+	if !strings.Contains(backupOutput, "Backup created") {
+		t.Fatalf("Unexpected backup output: %q", backupOutput)
+	}
+	backups, err := filepath.Glob(config.Storage.JSONFile + ".backup.*")
+	if err != nil {
+		t.Fatalf("Failed to list backups: %v", err)
+	}
+	if len(backups) == 0 {
+		t.Fatal("Expected backup file to be created")
+	}
+
+	cleanupOutput := captureStdout(t, func() {
+		if err := cleanup(&command{}, nil); err != nil {
+			t.Fatalf("cleanup failed: %v", err)
+		}
+	})
+	if !strings.Contains(cleanupOutput, "Cleanup completed") {
+		t.Fatalf("Unexpected cleanup output: %q", cleanupOutput)
+	}
+
+	store = openTestStore(t, config)
+	defer closeTestStore(t, store)
+	executions, err := store.GetExecutions(storage.QueryOptions{})
+	if err != nil {
+		t.Fatalf("GetExecutions failed: %v", err)
+	}
+	if len(executions) != 1 || executions[0].Command != "npm install current" {
+		t.Fatalf("Unexpected executions after cleanup: %#v", executions)
+	}
+}
+
+func TestPackageAndFormattingHelpers(t *testing.T) {
+	packages := []*core.PackageInfo{
+		{Name: "low", Tool: core.ToolNPM, UsageCount: 1, LastUsed: time.Now()},
+		{Name: "high", Tool: core.ToolHomebrew, UsageCount: 5, LastUsed: time.Now().Add(-24 * time.Hour)},
+	}
+	sortPackages(packages)
+	if packages[0].Name != "high" {
+		t.Fatalf("sortPackages placed %q first, want high", packages[0].Name)
+	}
+
+	if pkg, err := packageBySelection(packages, 0, "2"); err != nil || pkg.Name != "low" {
+		t.Fatalf("packageBySelection = %#v, %v; want low", pkg, err)
+	}
+	if _, err := packageBySelection(packages, 0, "abc"); err == nil {
+		t.Fatal("Expected invalid selection to fail")
+	}
+
+	if got := truncate("abcdef", 4); got != "abc." {
+		t.Fatalf("truncate = %q, want abc.", got)
+	}
+	if got := formatLastUsed(time.Time{}); got != "never" {
+		t.Fatalf("formatLastUsed zero = %q, want never", got)
+	}
+	if getToolColor("brew") == "" {
+		t.Fatal("Expected brew tool color")
+	}
+
+	detailOutput := captureStdout(t, func() {
+		printPackageDetail(&core.PackageInfo{Name: "jq", Tool: core.ToolHomebrew, Version: "1.7", Path: "/tmp/jq"})
+	})
+	if !strings.Contains(detailOutput, "jq") || !strings.Contains(detailOutput, "Version:") {
+		t.Fatalf("Unexpected package detail output:\n%s", detailOutput)
+	}
+}
+
+func TestDurationAndWrapperHelpers(t *testing.T) {
+	days, err := parseDuration("2d")
+	if err != nil || days != 48*time.Hour {
+		t.Fatalf("parseDuration 2d = %s, %v", days, err)
+	}
+	weeks, err := parseDuration("1w")
+	if err != nil || weeks != 7*24*time.Hour {
+		t.Fatalf("parseDuration 1w = %s, %v", weeks, err)
+	}
+	months, err := parseDuration("1m")
+	if err != nil || months != 30*24*time.Hour {
+		t.Fatalf("parseDuration 1m = %s, %v", months, err)
+	}
+	hours, err := parseDuration("3h")
+	if err != nil || hours != 3*time.Hour {
+		t.Fatalf("parseDuration 3h = %s, %v", hours, err)
+	}
+
+	tempDir := t.TempDir()
+	path, err := executableWrapperPath(tempDir, "tool")
+	if err != nil {
+		t.Fatalf("executableWrapperPath failed: %v", err)
+	}
+	if path != filepath.Join(tempDir, "tool") {
+		t.Fatalf("wrapper path = %s, want %s", path, filepath.Join(tempDir, "tool"))
+	}
+	if _, err := executableWrapperPath(tempDir, "../tool"); err == nil {
+		t.Fatal("Expected escaping wrapper name to fail")
+	}
+
+	written := filepath.Join(tempDir, "written")
+	if err := writeOwnerExecutableFile(written, []byte("#!/bin/bash\n")); err != nil {
+		t.Fatalf("writeOwnerExecutableFile failed: %v", err)
+	}
+	info, err := os.Stat(written)
+	if err != nil {
+		t.Fatalf("Failed to stat written wrapper: %v", err)
+	}
+	if info.Mode().Perm() != core.OwnerExecutableMode {
+		t.Fatalf("wrapper mode = %v, want %v", info.Mode().Perm(), core.OwnerExecutableMode)
+	}
+}
+
+func TestShowStatsUsesStorage(t *testing.T) {
+	config := setupTestHomeConfig(t)
+	store := openTestStore(t, config)
+	addTestExecution(t, store, &core.ExecutionRecord{
+		Tool:             core.ToolNPM,
+		Command:          "npm install eslint",
+		Args:             []string{"install", "eslint"},
+		Timestamp:        time.Now(),
+		PackagesAffected: []string{"eslint"},
+	})
+	addTestExecution(t, store, &core.ExecutionRecord{
+		Tool:             core.ToolHomebrew,
+		Command:          "brew install jq",
+		Args:             []string{"install", "jq"},
+		Timestamp:        time.Now().Add(-48 * time.Hour),
+		PackagesAffected: []string{"jq"},
+	})
+	updateTestPackage(t, store, &core.PackageInfo{
+		Name:       "eslint",
+		Tool:       core.ToolNPM,
+		UsageCount: 3,
+		LastUsed:   time.Now(),
+	})
+	closeTestStore(t, store)
+
+	output := captureStdout(t, func() {
+		if err := showStats(statsCommandForTest(t, "--daily", "--tool", "npm", "--top", "1"), nil); err != nil {
+			t.Fatalf("showStats failed: %v", err)
+		}
+	})
+	if !strings.Contains(output, "DIU Statistics (Last 24 Hours)") ||
+		!strings.Contains(output, "Total executions:") ||
+		!strings.Contains(output, "eslint (npm)") {
+		t.Fatalf("Unexpected stats output:\n%s", output)
+	}
+}
+
+func TestSetupProjectInitializesStorageWithoutWrappers(t *testing.T) {
+	config := setupTestHomeConfig(t)
+
+	output := captureStdout(t, func() {
+		if err := setupProject(&command{}, nil); err != nil {
+			t.Fatalf("setupProject failed: %v", err)
+		}
+	})
+	if !strings.Contains(output, "DIU setup completed") {
+		t.Fatalf("Unexpected setup output: %q", output)
+	}
+	if _, err := os.Stat(config.Storage.JSONFile); err != nil {
+		t.Fatalf("Expected storage file to exist: %v", err)
+	}
+}
+
+func TestScanPackagesDiscoversExecutableWrappers(t *testing.T) {
+	config := setupTestHomeConfig(t)
+	t.Setenv("PATH", t.TempDir())
+
+	binDir := t.TempDir()
+	writeExecutableForTest(t, filepath.Join(binDir, "jq"), "#!/bin/bash\nexit 0\n")
+	if err := os.WriteFile(filepath.Join(binDir, "notes"), []byte("not executable"), core.PrivateFileMode); err != nil {
+		t.Fatalf("Failed to write non-executable: %v", err)
+	}
+	writeExecutableForTest(t, filepath.Join(binDir, "brew"), "#!/bin/bash\nexit 0\n")
+
+	config.Monitoring.Filesystem.WatchPaths = map[string][]string{
+		core.ToolHomebrew: {binDir},
+	}
+	config.Tools.Go.GoBin = filepath.Join(t.TempDir(), "missing")
+	if err := config.Save(); err != nil {
+		t.Fatalf("Failed to save config: %v", err)
+	}
+
+	output := captureStdout(t, func() {
+		if err := scanPackages(&command{}, nil); err != nil {
+			t.Fatalf("scanPackages failed: %v", err)
+		}
+	})
+	if !strings.Contains(output, "1 packages scanned") {
+		t.Fatalf("Unexpected scan output: %q", output)
+	}
+
+	store := openTestStore(t, config)
+	defer closeTestStore(t, store)
+	pkg, err := store.GetPackage(core.ToolHomebrew, "jq")
+	if err != nil {
+		t.Fatalf("Expected scanned jq package: %v", err)
+	}
+	if pkg.Path != filepath.Join(binDir, "jq") {
+		t.Fatalf("Package path = %s, want scanned executable path", pkg.Path)
+	}
+}
+
+func TestInstallExecutableWrappersWritesScripts(t *testing.T) {
+	config := setupTestHomeConfig(t)
+	t.Setenv("PATH", t.TempDir())
+
+	wrapperDir := filepath.Join(t.TempDir(), "wrappers")
+	binDir := filepath.Join(t.TempDir(), "Cellar", "jq", "1.8.1", "bin")
+	if err := os.MkdirAll(binDir, core.OwnerDirectoryMode); err != nil {
+		t.Fatalf("Failed to create bin dir: %v", err)
+	}
+	originalPath := filepath.Join(binDir, "jq")
+	writeExecutableForTest(t, originalPath, "#!/bin/bash\nexit 0\n")
+
+	config.Monitoring.Process.WrapperDir = wrapperDir
+	config.Monitoring.Filesystem.WatchPaths = map[string][]string{
+		core.ToolHomebrew: {binDir},
+	}
+	config.Tools.Go.GoBin = filepath.Join(t.TempDir(), "missing")
+	if err := os.MkdirAll(wrapperDir, core.OwnerDirectoryMode); err != nil {
+		t.Fatalf("Failed to create wrapper dir: %v", err)
+	}
+
+	targets := discoverExecutableWrappers(config)
+	if len(targets) != 1 {
+		t.Fatalf("Expected one wrapper target, got %#v", targets)
+	}
+	if targets[0].Package != "jq" {
+		t.Fatalf("Package = %s, want jq", targets[0].Package)
+	}
+
+	if err := installExecutableWrappers(config); err != nil {
+		t.Fatalf("installExecutableWrappers failed: %v", err)
+	}
+	wrapperPath := filepath.Join(wrapperDir, "jq")
+	content, err := os.ReadFile(wrapperPath)
+	if err != nil {
+		t.Fatalf("Failed to read wrapper: %v", err)
+	}
+	if !strings.Contains(string(content), originalPath) || !strings.Contains(string(content), config.Daemon.SocketPath) {
+		t.Fatalf("Wrapper content missing original path or socket:\n%s", content)
+	}
+}
+
+func TestUninstallGoBinaryRemovesExecutableWrapperAndState(t *testing.T) {
+	config := setupTestHomeConfig(t)
+	if err := os.MkdirAll(config.Monitoring.Process.WrapperDir, core.OwnerDirectoryMode); err != nil {
+		t.Fatalf("Failed to create wrapper dir: %v", err)
+	}
+
+	binaryPath := filepath.Join(t.TempDir(), "mytool")
+	writeExecutableForTest(t, binaryPath, "#!/bin/bash\nexit 0\n")
+	wrapperPath := filepath.Join(config.Monitoring.Process.WrapperDir, "mytool")
+	writeExecutableForTest(t, wrapperPath, "#!/bin/bash\nexit 0\n")
+
+	store := openTestStore(t, config)
+	updateTestPackage(t, store, &core.PackageInfo{
+		Name: "mytool",
+		Tool: core.ToolGo,
+		Path: binaryPath,
+	})
+	closeTestStore(t, store)
+
+	output := captureStdout(t, func() {
+		if err := uninstallPackage(&core.PackageInfo{Name: "mytool", Tool: core.ToolGo, Path: binaryPath}, true); err != nil {
+			t.Fatalf("uninstallPackage failed: %v", err)
+		}
+	})
+	if !strings.Contains(output, "mytool uninstalled") {
+		t.Fatalf("Unexpected uninstall output: %q", output)
+	}
+	if _, err := os.Stat(binaryPath); !os.IsNotExist(err) {
+		t.Fatalf("Expected binary removal, stat err=%v", err)
+	}
+	if _, err := os.Stat(wrapperPath); !os.IsNotExist(err) {
+		t.Fatalf("Expected wrapper removal, stat err=%v", err)
+	}
+
+	store = openTestStore(t, config)
+	defer closeTestStore(t, store)
+	if _, err := store.GetPackage(core.ToolGo, "mytool"); err == nil {
+		t.Fatal("Expected package state to be removed")
+	}
+}
+
+func TestInteractiveAndUninstallHelpers(t *testing.T) {
+	pkg := &core.PackageInfo{Name: "jq", Tool: core.ToolHomebrew}
+	if !supportsUninstall(pkg) {
+		t.Fatal("Expected homebrew package to support uninstall")
+	}
+	if supportsUninstall(&core.PackageInfo{Name: "unknown", Tool: "unknown"}) {
+		t.Fatal("Expected unknown tool to reject uninstall")
+	}
+	if wrapperNameForPackage(&core.PackageInfo{Name: "pkg", Path: "/tmp/tool"}) != "tool" {
+		t.Fatal("Expected wrapper name to prefer executable basename")
+	}
+
+	reader := bufio.NewReader(strings.NewReader("value\n"))
+	value, err := readPrompt(reader, "prompt> ")
+	if err != nil {
+		t.Fatalf("readPrompt failed: %v", err)
+	}
+	if value != "value" {
+		t.Fatalf("readPrompt = %q, want value", value)
+	}
+
+	cancelReader := bufio.NewReader(strings.NewReader("no\n"))
+	if err := confirmAndUninstall(cancelReader, pkg); err == nil || !strings.Contains(err.Error(), "cancelled") {
+		t.Fatalf("Expected cancellation error, got %v", err)
+	}
+
+	browserOutput := captureStdout(t, func() {
+		printBrowserScreen([]*core.PackageInfo{pkg}, 0, "j", true)
+	})
+	if !strings.Contains(browserOutput, "DIU Packages") || !strings.Contains(browserOutput, "u uninstall") {
+		t.Fatalf("Unexpected browser screen:\n%s", browserOutput)
+	}
+}
+
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
+
+	oldStdout := os.Stdout
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("Failed to create pipe: %v", err)
+	}
+
+	os.Stdout = writer
+	defer func() {
+		os.Stdout = oldStdout
+	}()
+
+	fn()
+
+	if err := writer.Close(); err != nil {
+		t.Fatalf("Failed to close writer: %v", err)
+	}
+	data, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatalf("Failed to read stdout: %v", err)
+	}
+	if err := reader.Close(); err != nil {
+		t.Fatalf("Failed to close reader: %v", err)
+	}
+	return string(data)
+}
+
+func setupTestHomeConfig(t *testing.T) *core.Config {
+	t.Helper()
+
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+
+	config := core.DefaultConfig()
+	config.Monitoring.EnabledTools = []string{}
+	config.Monitoring.Filesystem.WatchPaths = map[string][]string{}
+	config.Monitoring.Process.AutoInstallWrappers = false
+
+	configPath := filepath.Join(homeDir, ".config", "diu", "config.json")
+	if err := config.SaveTo(configPath); err != nil {
+		t.Fatalf("Failed to save test config: %v", err)
+	}
+	return config
+}
+
+func openTestStore(t *testing.T, config *core.Config) storage.Storage {
+	t.Helper()
+	store, err := storage.NewJSONStorage(config)
+	if err != nil {
+		t.Fatalf("Failed to open test storage: %v", err)
+	}
+	return store
+}
+
+func closeTestStore(t *testing.T, store storage.Storage) {
+	t.Helper()
+	if err := store.Close(); err != nil {
+		t.Fatalf("Failed to close test storage: %v", err)
+	}
+}
+
+func addTestExecution(t *testing.T, store storage.Storage, record *core.ExecutionRecord) {
+	t.Helper()
+	if err := store.AddExecution(record); err != nil {
+		t.Fatalf("Failed to add test execution: %v", err)
+	}
+}
+
+func updateTestPackage(t *testing.T, store storage.Storage, pkg *core.PackageInfo) {
+	t.Helper()
+	if err := store.UpdatePackage(pkg); err != nil {
+		t.Fatalf("Failed to update test package: %v", err)
+	}
+}
+
+func withStdin(t *testing.T, input string, fn func()) {
+	t.Helper()
+
+	oldStdin := os.Stdin
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("Failed to create stdin pipe: %v", err)
+	}
+	if _, err := writer.WriteString(input); err != nil {
+		t.Fatalf("Failed to write stdin: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("Failed to close stdin writer: %v", err)
+	}
+
+	os.Stdin = reader
+	defer func() {
+		os.Stdin = oldStdin
+		if err := reader.Close(); err != nil {
+			t.Fatalf("Failed to close stdin reader: %v", err)
+		}
+	}()
+
+	fn()
+}
+
+func queryCommandForTest(t *testing.T, args ...string) *command {
+	t.Helper()
+	cmd := &command{}
+	var tool, pkg, last, format string
+	var limit int
+	cmd.Flags().StringVarP(&tool, "tool", "t", "", "tool")
+	cmd.Flags().StringVarP(&pkg, "package", "p", "", "package")
+	cmd.Flags().StringVarP(&last, "last", "l", "", "last")
+	cmd.Flags().IntVarP(&limit, "limit", "n", 20, "limit")
+	cmd.Flags().StringVarP(&format, "format", "f", formatTable, "format")
+	parseTestFlags(t, cmd, args...)
+	return cmd
+}
+
+func packagesCommandForTest(t *testing.T, args ...string) *command {
+	t.Helper()
+	cmd := &command{}
+	var tool, unused string
+	cmd.Flags().StringVarP(&tool, "tool", "t", "", "tool")
+	cmd.Flags().StringVarP(&unused, "unused", "u", "", "unused")
+	parseTestFlags(t, cmd, args...)
+	return cmd
+}
+
+func checkCommandForTest(t *testing.T, args ...string) *command {
+	t.Helper()
+	cmd := &command{}
+	var tool, search, unused, format string
+	var limit int
+	cmd.Flags().StringVarP(&tool, "tool", "t", "", "tool")
+	cmd.Flags().StringVarP(&search, "search", "s", "", "search")
+	cmd.Flags().StringVarP(&unused, "unused", "u", "", "unused")
+	cmd.Flags().IntVarP(&limit, "limit", "n", defaultListLimit, "limit")
+	cmd.Flags().StringVarP(&format, "format", "f", formatTable, "format")
+	parseTestFlags(t, cmd, args...)
+	return cmd
+}
+
+func manageCommandForTest(t *testing.T, args ...string) *command {
+	t.Helper()
+	cmd := &command{}
+	var tool, search, uninstall string
+	var yes, dryRun bool
+	cmd.Flags().StringVarP(&tool, "tool", "t", "", "tool")
+	cmd.Flags().StringVarP(&search, "search", "s", "", "search")
+	cmd.Flags().StringVar(&uninstall, "uninstall", "", "uninstall")
+	cmd.Flags().BoolVarP(&yes, "yes", "y", false, "yes")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "dry run")
+	parseTestFlags(t, cmd, args...)
+	return cmd
+}
+
+func statsCommandForTest(t *testing.T, args ...string) *command {
+	t.Helper()
+	cmd := &command{}
+	var daily, weekly bool
+	var tool string
+	var top int
+	cmd.Flags().BoolVarP(&daily, "daily", "d", false, "daily")
+	cmd.Flags().BoolVarP(&weekly, "weekly", "w", false, "weekly")
+	cmd.Flags().StringVarP(&tool, "tool", "t", "", "tool")
+	cmd.Flags().IntVar(&top, "top", 10, "top")
+	parseTestFlags(t, cmd, args...)
+	return cmd
+}
+
+func writeExecutableForTest(t *testing.T, path string, content string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(content), core.PrivateFileMode); err != nil {
+		t.Fatalf("Failed to write executable %s: %v", path, err)
+	}
+	if err := os.Chmod(path, core.OwnerExecutableMode); err != nil {
+		t.Fatalf("Failed to chmod executable %s: %v", path, err)
+	}
+}
+
+func parseTestFlags(t *testing.T, cmd *command, args ...string) {
+	t.Helper()
+	remaining, err := cmd.Flags().parse(args)
+	if err != nil {
+		t.Fatalf("Failed to parse test flags %v: %v", args, err)
+	}
+	if len(remaining) != 0 {
+		t.Fatalf("Unexpected remaining test args: %v", remaining)
 	}
 }

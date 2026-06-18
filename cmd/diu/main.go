@@ -893,7 +893,7 @@ func printPackageList(packages []*core.PackageInfo, format string) error {
 			fmt.Println(infoStyle.Render("No packages found"))
 			return nil
 		}
-		printPackageRows(packages, len(packages))
+		printPackageRows(packages, 0)
 	}
 	return nil
 }
@@ -1406,6 +1406,8 @@ func getConfig(cmd *command, args []string) error {
 		fmt.Println(config.Storage.MaxBackups)
 	case "daemon.pid_file":
 		fmt.Println(config.Daemon.PIDFile)
+	case "daemon.socket_path":
+		fmt.Println(config.Daemon.SocketPath)
 	case "api.enabled":
 		fmt.Println(config.API.Enabled)
 	case "api.port":
@@ -1473,6 +1475,8 @@ func setConfig(cmd *command, args []string) error {
 		config.Storage.MaxBackups = maxBackups
 	case "daemon.pid_file":
 		config.Daemon.PIDFile = value
+	case "daemon.socket_path":
+		config.Daemon.SocketPath = value
 	case "api.enabled":
 		enabled, err := strconv.ParseBool(value)
 		if err != nil {
@@ -1938,7 +1942,7 @@ EOF
 } &>/dev/null &
 
 exit $EXIT_CODE
-`, core.DefaultSocketPath, core.ShellEscapeString(diuPath), core.ShellEscapeString(target.OriginalPath), core.ShellEscapeString(target.Tool), core.ShellEscapeString(target.Package), core.ShellEscapeString(target.Name))
+`, core.ShellEscapeString(config.Daemon.SocketPath), core.ShellEscapeString(diuPath), core.ShellEscapeString(target.OriginalPath), core.ShellEscapeString(target.Tool), core.ShellEscapeString(target.Package), core.ShellEscapeString(target.Name))
 
 	return writeOwnerExecutableFile(wrapperPath, []byte(script))
 }

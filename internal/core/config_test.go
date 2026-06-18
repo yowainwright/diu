@@ -17,6 +17,14 @@ func TestDefaultConfig(t *testing.T) {
 		t.Errorf("Expected daemon port 8080, got %d", config.Daemon.Port)
 	}
 
+	if config.Daemon.PIDFile != filepath.Join(config.Daemon.DataDir, DefaultPIDFileName) {
+		t.Errorf("Expected PID file under data dir, got %s", config.Daemon.PIDFile)
+	}
+
+	if config.Daemon.SocketPath != filepath.Join(config.Daemon.DataDir, DefaultSocketFileName) {
+		t.Errorf("Expected socket path under data dir, got %s", config.Daemon.SocketPath)
+	}
+
 	if config.Storage.Backend != "json" {
 		t.Errorf("Expected storage backend json, got %s", config.Storage.Backend)
 	}
@@ -171,11 +179,47 @@ func TestConfigSave(t *testing.T) {
 	}
 }
 
+func TestConfigSaveUsesDefaultPath(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+
+	config := DefaultConfig()
+	config.Daemon.Port = 9091
+	if err := config.Save(); err != nil {
+		t.Fatalf("Save failed: %v", err)
+	}
+
+	loaded, err := LoadConfig("")
+	if err != nil {
+		t.Fatalf("LoadConfig failed: %v", err)
+	}
+	if loaded.Daemon.Port != 9091 {
+		t.Fatalf("Loaded daemon port = %d, want 9091", loaded.Daemon.Port)
+	}
+}
+
+func TestLoadConfigErrors(t *testing.T) {
+	tempDir := t.TempDir()
+	malformedPath := filepath.Join(tempDir, "malformed.json")
+	if err := os.WriteFile(malformedPath, []byte("{"), PrivateFileMode); err != nil {
+		t.Fatalf("Failed to write malformed config: %v", err)
+	}
+	if _, err := LoadConfig(malformedPath); err == nil {
+		t.Fatal("Expected malformed config to fail")
+	}
+
+	if _, err := LoadConfig(tempDir); err == nil {
+		t.Fatal("Expected directory config path to fail")
+	}
+}
+
 func TestEnsureDirectories(t *testing.T) {
 	tempDir := t.TempDir()
 
 	config := DefaultConfig()
 	config.Daemon.DataDir = filepath.Join(tempDir, "data")
+	config.Daemon.PIDFile = filepath.Join(tempDir, "run", "diu.pid")
+	config.Daemon.SocketPath = filepath.Join(tempDir, "socket", "diu.sock")
 	config.Storage.JSONFile = filepath.Join(tempDir, "storage", "exec.json")
 	config.Monitoring.Process.WrapperDir = filepath.Join(tempDir, "wrappers")
 
@@ -187,6 +231,8 @@ func TestEnsureDirectories(t *testing.T) {
 	// Verify directories exist
 	dirs := []string{
 		config.Daemon.DataDir,
+		filepath.Dir(config.Daemon.PIDFile),
+		filepath.Dir(config.Daemon.SocketPath),
 		filepath.Dir(config.Storage.JSONFile),
 		config.Monitoring.Process.WrapperDir,
 	}
@@ -195,5 +241,13 @@ func TestEnsureDirectories(t *testing.T) {
 		if _, err := os.Stat(dir); os.IsNotExist(err) {
 			t.Errorf("Directory %s was not created", dir)
 		}
+	}
+}
+
+func TestShellEscapeString(t *testing.T) {
+	got := ShellEscapeString(`a\b"$c`)
+	want := `a\\b\"\$c`
+	if got != want {
+		t.Fatalf("ShellEscapeString = %q, want %q", got, want)
 	}
 }
