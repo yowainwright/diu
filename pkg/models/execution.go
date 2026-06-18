@@ -5,18 +5,18 @@ import (
 )
 
 type ExecutionSummary struct {
-	Tool       string        `json:"tool"`
-	Package    string        `json:"package"`
-	Count      int           `json:"count"`
-	LastUsed   time.Time     `json:"last_used"`
-	TotalTime  time.Duration `json:"total_time_ms"`
+	Tool      string        `json:"tool"`
+	Package   string        `json:"package"`
+	Count     int           `json:"count"`
+	LastUsed  time.Time     `json:"last_used"`
+	TotalTime time.Duration `json:"total_time_ms"`
 }
 
 type DailyStats struct {
-	Date       string         `json:"date"`
-	Executions int            `json:"executions"`
-	Tools      map[string]int `json:"tools"`
-	TopPackages []string      `json:"top_packages"`
+	Date        string         `json:"date"`
+	Executions  int            `json:"executions"`
+	Tools       map[string]int `json:"tools"`
+	TopPackages []string       `json:"top_packages"`
 }
 
 type WeeklyStats struct {
@@ -34,9 +34,9 @@ type PackageStat struct {
 }
 
 type HealthStatus struct {
-	Status      string    `json:"status"`
-	Version     string    `json:"version"`
-	Uptime      string    `json:"uptime"`
-	LastExecution time.Time `json:"last_execution,omitempty"`
-	MonitorsActive []string `json:"monitors_active"`
+	Status         string    `json:"status"`
+	Version        string    `json:"version"`
+	Uptime         string    `json:"uptime"`
+	LastExecution  time.Time `json:"last_execution,omitempty"`
+	MonitorsActive []string  `json:"monitors_active"`
 }

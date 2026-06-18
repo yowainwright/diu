@@ -28,8 +28,19 @@ jobs:
           brew install goreleaser
           brew install mise
 
-      - name: Run tests
-        run: go test -v ./...
+      - name: Run vet
+        run: go vet ./...
+
+      - name: Run linters
+        run: golangci-lint run ./...
+
+      - name: Run race tests
+        run: go test -v -race ./...
+
+      - name: Build release targets
+        run: |
+          GOOS=darwin GOARCH=amd64 go build -v -o /tmp/diu-darwin-amd64 ./cmd/diu
+          GOOS=darwin GOARCH=arm64 go build -v -o /tmp/diu-darwin-arm64 ./cmd/diu
 
       - name: Run GoReleaser
         env:

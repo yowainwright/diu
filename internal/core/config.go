@@ -21,10 +21,11 @@ type Config struct {
 }
 
 type DaemonConfig struct {
-	Port     int    `json:"port"`
-	LogLevel string `json:"log_level"`
-	DataDir  string `json:"data_dir"`
-	PIDFile  string `json:"pid_file"`
+	Port       int    `json:"port"`
+	LogLevel   string `json:"log_level"`
+	DataDir    string `json:"data_dir"`
+	PIDFile    string `json:"pid_file"`
+	SocketPath string `json:"socket_path"`
 }
 
 type StorageConfig struct {
@@ -91,16 +92,20 @@ type ReportingConfig struct {
 }
 
 func DefaultConfig() *Config {
-	homeDir, _ := os.UserHomeDir()
-	dataDir := filepath.Join(homeDir, ".local", "share", "diu")
+	homeDir := os.Getenv("HOME")
+	if dir, err := os.UserHomeDir(); err == nil {
+		homeDir = dir
+	}
+	dataDir := DefaultDataDir()
 
 	return &Config{
 		Version: ConfigVersion,
 		Daemon: DaemonConfig{
-			Port:     DefaultDaemonPort,
-			LogLevel: DefaultLogLevel,
-			DataDir:  dataDir,
-			PIDFile:  DefaultPIDFile,
+			Port:       DefaultDaemonPort,
+			LogLevel:   DefaultLogLevel,
+			DataDir:    dataDir,
+			PIDFile:    DefaultPIDFilePath(dataDir),
+			SocketPath: DefaultSocketPath(dataDir),
 		},
 		Storage: StorageConfig{
 			Backend:         StorageBackendJSON,
@@ -210,6 +215,8 @@ func (c *Config) SaveTo(path string) error {
 func (c *Config) EnsureDirectories() error {
 	dirs := []string{
 		c.Daemon.DataDir,
+		filepath.Dir(c.Daemon.PIDFile),
+		filepath.Dir(c.Daemon.SocketPath),
 		filepath.Dir(c.Storage.JSONFile),
 		c.Monitoring.Process.WrapperDir,
 	}

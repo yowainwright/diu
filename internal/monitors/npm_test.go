@@ -1,6 +1,7 @@
 package monitors
 
 import (
+	"path/filepath"
 	"testing"
 
 	"github.com/yowainwright/diu/internal/core"
@@ -398,5 +399,87 @@ func TestNPMExtractDepth(t *testing.T) {
 				t.Errorf("Expected depth %d, got %d", tt.expected, depth)
 			}
 		})
+	}
+}
+
+func TestNPMInitializeAndGetGlobalPackagesWithFakeNPM(t *testing.T) {
+	prependFakeCommand(t, npmCommandName, `#!/bin/sh
+if [ "$1" = "config" ] && [ "$2" = "get" ] && [ "$3" = "prefix" ]; then
+  printf '%s\n' "$FAKE_NPM_PREFIX"
+  exit 0
+fi
+if [ "$1" = "list" ] && [ "$2" = "-g" ] && [ "$3" = "--depth=0" ] && [ "$4" = "--json" ]; then
+  printf '%s\n' '{"dependencies":{"eslint":{"version":"9.0.0","dependencies":{"@eslint/js":{}}},"typescript":{"version":"5.5.0"}}}'
+  exit 0
+fi
+exit 2
+`)
+
+	prefix := t.TempDir()
+	t.Setenv("FAKE_NPM_PREFIX", prefix)
+
+	config := core.DefaultConfig()
+	config.Monitoring.Process.AutoInstallWrappers = false
+	config.Tools.NPM.TrackGlobalOnly = true
+
+	monitor := NewNPMMonitor().(*NPMMonitor)
+	if err := monitor.Initialize(config); err != nil {
+		t.Fatalf("Initialize failed: %v", err)
+	}
+	if monitor.globalPath != filepath.Join(prefix, "lib", "node_modules") {
+		t.Fatalf("globalPath = %s, want prefix node_modules path", monitor.globalPath)
+	}
+
+	packages, err := monitor.GetInstalledPackages()
+	if err != nil {
+		t.Fatalf("GetInstalledPackages failed: %v", err)
+	}
+	byName := make(map[string]*core.PackageInfo)
+	for _, pkg := range packages {
+		byName[pkg.Name] = pkg
+	}
+	if byName["eslint"] == nil || byName["eslint"].Version != "9.0.0" {
+		t.Fatalf("Unexpected eslint package: %#v", byName["eslint"])
+	}
+	if len(byName["eslint"].Dependencies) != 1 || byName["eslint"].Dependencies[0] != "@eslint/js" {
+		t.Fatalf("Unexpected eslint dependencies: %#v", byName["eslint"].Dependencies)
+	}
+	if byName["typescript"] == nil || byName["typescript"].Version != "5.5.0" {
+		t.Fatalf("Unexpected typescript package: %#v", byName["typescript"])
+	}
+}
+
+func TestNPMGlobalPackagesFallbackWithFakeNPM(t *testing.T) {
+	prependFakeCommand(t, npmCommandName, `#!/bin/sh
+if [ "$1" = "config" ] && [ "$2" = "get" ] && [ "$3" = "prefix" ]; then
+  printf '%s\n' "$FAKE_NPM_PREFIX"
+  exit 0
+fi
+if [ "$1" = "list" ] && [ "$2" = "-g" ] && [ "$3" = "--depth=0" ] && [ "$4" = "--json" ]; then
+  printf 'not json\n'
+  exit 0
+fi
+if [ "$1" = "list" ] && [ "$2" = "-g" ] && [ "$3" = "--depth=0" ]; then
+  printf '/tmp/prefix/lib\n├── eslint@9.0.0\n└── typescript@5.5.0\n'
+  exit 0
+fi
+exit 2
+`)
+	t.Setenv("FAKE_NPM_PREFIX", t.TempDir())
+
+	config := core.DefaultConfig()
+	config.Monitoring.Process.AutoInstallWrappers = false
+
+	monitor := NewNPMMonitor().(*NPMMonitor)
+	if err := monitor.Initialize(config); err != nil {
+		t.Fatalf("Initialize failed: %v", err)
+	}
+
+	packages, err := monitor.getGlobalPackages()
+	if err != nil {
+		t.Fatalf("getGlobalPackages failed: %v", err)
+	}
+	if len(packages) != 2 || packages[0].Name != "eslint" || packages[0].Version != "9.0.0" {
+		t.Fatalf("Unexpected fallback packages: %#v", packages)
 	}
 }

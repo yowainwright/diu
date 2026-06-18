@@ -20,7 +20,6 @@ comment:
   require_changes: false
 
 ignore:
-  - "docs/**"
   - "e2e/**"
   - "configs/**"
   - "Dockerfile"

@@ -3,11 +3,14 @@ package monitors
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/yowainwright/diu/internal/core"
+	"github.com/yowainwright/diu/internal/storage"
 )
 
 func TestProcessMonitor(t *testing.T) {
@@ -101,6 +104,8 @@ func TestProcessMonitorGenerateWrapperScript(t *testing.T) {
 		originalBinaryPath    = "/usr/local/bin/brew"
 		shebangText           = "#!/bin/bash"
 		toolAssignment        = `DIU_TOOL="brew"`
+		socketAssignment      = `DIU_SOCKET=`
+		recordFallbackCmd     = `"$DIU_BINARY" record`
 		toolJSONField         = `"tool": "$DIU_TOOL"`
 		argsJSONField         = `"args": $args_json`
 		exitCodeForwardingCmd = "exit $EXIT_CODE"
@@ -116,8 +121,16 @@ func TestProcessMonitorGenerateWrapperScript(t *testing.T) {
 		t.Error("Script should start with shebang")
 	}
 
-	if !strings.Contains(script, "curl") {
-		t.Error("Script should use curl for non-blocking API calls")
+	if !strings.Contains(script, "nc") {
+		t.Error("Script should use nc for socket delivery")
+	}
+
+	if !strings.Contains(script, socketAssignment) {
+		t.Error("Script should configure the DIU socket path")
+	}
+
+	if !strings.Contains(script, recordFallbackCmd) {
+		t.Error("Script should fall back to direct diu record")
 	}
 
 	if !strings.Contains(script, originalBinaryPath) {
@@ -138,6 +151,77 @@ func TestProcessMonitorGenerateWrapperScript(t *testing.T) {
 
 	if !strings.Contains(script, exitCodeForwardingCmd) {
 		t.Error("Script should exit with original exit code")
+	}
+}
+
+func TestProcessMonitorWrapperRecordsWithoutDaemon(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+
+	config := core.DefaultConfig()
+	config.Daemon.SocketPath = filepath.Join(tempHome, "run", "missing.sock")
+	config.Storage.JSONFile = filepath.Join(tempHome, "data", "executions.json")
+	config.Monitoring.Process.WrapperDir = filepath.Join(tempHome, "wrappers")
+	config.Monitoring.Process.AutoInstallWrappers = false
+
+	configPath := filepath.Join(tempHome, ".config", "diu", "config.json")
+	if err := config.SaveTo(configPath); err != nil {
+		t.Fatalf("Failed to save config: %v", err)
+	}
+
+	binaryPath := filepath.Join(t.TempDir(), "diu")
+	build := exec.Command("go", "build", "-o", binaryPath, "../../cmd/diu")
+	build.Env = append(os.Environ(), "HOME="+tempHome)
+	if output, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("Failed to build diu test binary: %v\n%s", err, output)
+	}
+
+	originalPath := filepath.Join(t.TempDir(), "original-tool")
+	if err := os.WriteFile(originalPath, []byte("#!/bin/bash\nexit 0\n"), core.PrivateFileMode); err != nil {
+		t.Fatalf("Failed to write original command: %v", err)
+	}
+	if err := os.Chmod(originalPath, core.OwnerExecutableMode); err != nil {
+		t.Fatalf("Failed to chmod original command: %v", err)
+	}
+
+	wrapperPath := filepath.Join(t.TempDir(), "wrapped-tool")
+	script := generateProcessWrapperScript(originalPath, binaryPath, config.Daemon.SocketPath, "test-tool")
+	if err := os.WriteFile(wrapperPath, []byte(script), core.PrivateFileMode); err != nil {
+		t.Fatalf("Failed to write wrapper: %v", err)
+	}
+	if err := os.Chmod(wrapperPath, core.OwnerExecutableMode); err != nil {
+		t.Fatalf("Failed to chmod wrapper: %v", err)
+	}
+
+	run := exec.Command(wrapperPath, "alpha", "beta")
+	run.Env = append(os.Environ(), "HOME="+tempHome)
+	if output, err := run.CombinedOutput(); err != nil {
+		t.Fatalf("Wrapper failed: %v\n%s", err, output)
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		store, err := storage.NewJSONStorage(config)
+		if err == nil {
+			executions, queryErr := store.GetExecutions(storage.QueryOptions{Tool: "test-tool"})
+			if closeErr := store.Close(); closeErr != nil {
+				t.Fatalf("Failed to close storage: %v", closeErr)
+			}
+			if queryErr != nil {
+				t.Fatalf("Failed to query storage: %v", queryErr)
+			}
+			if len(executions) > 0 {
+				if got := strings.Join(executions[0].Args, " "); got != "alpha beta" {
+					t.Fatalf("Recorded args = %q, want alpha beta", got)
+				}
+				return
+			}
+		}
+
+		if time.Now().After(deadline) {
+			t.Fatal("Timed out waiting for wrapper fallback to record execution")
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
 }
 
@@ -227,30 +311,6 @@ func TestProcessMonitorFindOriginalBinarySkipsWrapperDir(t *testing.T) {
 	}
 }
 
-func TestCreateWrapperScript(t *testing.T) {
-	script := CreateWrapperScript("npm", "/usr/local/bin/npm", "/tmp/wrappers")
-
-	if !strings.Contains(script, "#!/bin/bash") {
-		t.Error("Script should start with shebang")
-	}
-
-	if !strings.Contains(script, "/usr/local/bin/npm") {
-		t.Error("Script should contain original path")
-	}
-
-	if !strings.Contains(script, `"tool": "npm"`) && !strings.Contains(script, `\"tool\": \"npm\"`) {
-		t.Error("Script should contain tool name")
-	}
-
-	if !strings.Contains(script, "curl") {
-		t.Error("Script should use curl for HTTP API")
-	}
-
-	if !strings.Contains(script, "exit $EXIT_CODE") {
-		t.Error("Script should preserve exit code")
-	}
-}
-
 func TestProcessMonitorStart(t *testing.T) {
 	tmpDir := t.TempDir()
 
@@ -269,5 +329,102 @@ func TestProcessMonitorStart(t *testing.T) {
 	err := monitor.Start(ctx, eventChan)
 	if err != nil {
 		t.Fatalf("Start failed: %v", err)
+	}
+}
+
+func TestProcessMonitorExecuteAndTrack(t *testing.T) {
+	binaryPath := filepath.Join(t.TempDir(), "testtool")
+	if err := os.WriteFile(binaryPath, []byte("#!/bin/bash\nexit 7\n"), core.PrivateFileMode); err != nil {
+		t.Fatalf("Failed to write binary: %v", err)
+	}
+	if err := os.Chmod(binaryPath, core.OwnerExecutableMode); err != nil {
+		t.Fatalf("Failed to chmod binary: %v", err)
+	}
+
+	monitor := NewProcessMonitor("testtool", binaryPath)
+	monitor.originalPath = binaryPath
+
+	record, err := monitor.ExecuteAndTrack("testtool", []string{"alpha", "beta"})
+	if err != nil {
+		t.Fatalf("ExecuteAndTrack failed: %v", err)
+	}
+	if record.Tool != "testtool" {
+		t.Fatalf("Tool = %s, want testtool", record.Tool)
+	}
+	if record.Command != "testtool alpha beta" {
+		t.Fatalf("Command = %q, want testtool alpha beta", record.Command)
+	}
+	if record.ExitCode != 7 {
+		t.Fatalf("ExitCode = %d, want 7", record.ExitCode)
+	}
+	if strings.Join(record.Args, " ") != "alpha beta" {
+		t.Fatalf("Args = %#v, want alpha beta", record.Args)
+	}
+}
+
+func TestProcessMonitorUpdateShellConfig(t *testing.T) {
+	homeDir := t.TempDir()
+	zshrc := filepath.Join(homeDir, ".zshrc")
+	if err := os.WriteFile(zshrc, []byte("# existing\n"), core.PrivateFileMode); err != nil {
+		t.Fatalf("Failed to write shell config: %v", err)
+	}
+
+	config := core.DefaultConfig()
+	config.Monitoring.Process.WrapperDir = filepath.Join(homeDir, "wrappers")
+
+	monitor := NewProcessMonitor("testtool", "testtool")
+	monitor.config = config
+	monitor.homeDir = homeDir
+
+	if err := monitor.updateShellConfig(); err != nil {
+		t.Fatalf("updateShellConfig failed: %v", err)
+	}
+	if err := monitor.updateShellConfig(); err != nil {
+		t.Fatalf("second updateShellConfig failed: %v", err)
+	}
+
+	content, err := os.ReadFile(zshrc)
+	if err != nil {
+		t.Fatalf("Failed to read shell config: %v", err)
+	}
+	exportLine := `export PATH="` + config.Monitoring.Process.WrapperDir + `:$PATH"`
+	if strings.Count(string(content), exportLine) != 1 {
+		t.Fatalf("shell config content = %q, want one export line", content)
+	}
+}
+
+func TestValidateExecutablePath(t *testing.T) {
+	tempDir := t.TempDir()
+	executablePath := filepath.Join(tempDir, "tool")
+	if err := os.WriteFile(executablePath, []byte("#!/bin/bash\nexit 0\n"), core.PrivateFileMode); err != nil {
+		t.Fatalf("Failed to write executable: %v", err)
+	}
+	if err := os.Chmod(executablePath, core.OwnerExecutableMode); err != nil {
+		t.Fatalf("Failed to chmod executable: %v", err)
+	}
+
+	validated, err := validateExecutablePath(executablePath)
+	if err != nil {
+		t.Fatalf("validateExecutablePath failed: %v", err)
+	}
+	if validated != executablePath {
+		t.Fatalf("validated path = %s, want %s", validated, executablePath)
+	}
+
+	nonExecutablePath := filepath.Join(tempDir, "notes.txt")
+	if err := os.WriteFile(nonExecutablePath, []byte("notes"), core.PrivateFileMode); err != nil {
+		t.Fatalf("Failed to write non-executable: %v", err)
+	}
+	for name, path := range map[string]string{
+		"empty":          "",
+		"relative":       "tool",
+		"directory":      tempDir,
+		"non-executable": nonExecutablePath,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := validateExecutablePath(path); err == nil {
+				t.Fatal("Expected validation to fail")
+			}
+		})
 	}
 }

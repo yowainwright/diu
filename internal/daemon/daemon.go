@@ -139,8 +139,6 @@ func (d *Daemon) Stop() error {
 			}
 		}
 
-		close(d.eventChan)
-
 		d.wg.Wait()
 
 		if err := d.storage.Close(); err != nil {
@@ -149,6 +147,9 @@ func (d *Daemon) Stop() error {
 
 		if err := os.Remove(d.config.Daemon.PIDFile); err != nil && !os.IsNotExist(err) {
 			log.Printf("Error removing PID file: %v", err)
+		}
+		if err := os.Remove(d.config.Daemon.SocketPath); err != nil && !os.IsNotExist(err) {
+			log.Printf("Error removing socket file: %v", err)
 		}
 
 		log.Println("DIU daemon stopped")
@@ -240,10 +241,13 @@ func (d *Daemon) pruneOldRecords() {
 }
 
 func (d *Daemon) startSocketListener() error {
-	socketPath := core.DefaultSocketPath
+	socketPath := d.config.Daemon.SocketPath
 
 	if err := os.Remove(socketPath); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("failed to remove stale socket: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(socketPath), core.OwnerDirectoryMode); err != nil {
+		return fmt.Errorf("failed to create socket directory: %w", err)
 	}
 
 	listener, err := net.Listen("unix", socketPath)
@@ -268,7 +272,11 @@ func (d *Daemon) startSocketListener() error {
 				}
 			}
 
-			go d.handleSocketConnection(conn)
+			d.wg.Add(1)
+			go func() {
+				defer d.wg.Done()
+				d.handleSocketConnection(conn)
+			}()
 		}
 	}()
 
@@ -282,6 +290,10 @@ func (d *Daemon) handleSocketConnection(conn net.Conn) {
 		}
 	}()
 
+	if err := conn.SetReadDeadline(time.Now().Add(core.DefaultShutdownTimeout)); err != nil {
+		log.Printf("Failed to set socket read deadline: %v", err)
+	}
+
 	decoder := json.NewDecoder(conn)
 	var record core.ExecutionRecord
 	if err := decoder.Decode(&record); err != nil {
@@ -290,7 +302,16 @@ func (d *Daemon) handleSocketConnection(conn net.Conn) {
 	}
 
 	select {
+	case <-d.ctx.Done():
+		log.Printf("Daemon stopping, dropping socket event")
+		return
+	default:
+	}
+
+	select {
 	case d.eventChan <- &record:
+	case <-d.ctx.Done():
+		log.Printf("Daemon stopping, dropping socket event")
 	case <-time.After(time.Second):
 		log.Printf("Event channel full, dropping event")
 	}
@@ -363,6 +384,8 @@ func (d *Daemon) handleExecutions(w http.ResponseWriter, r *http.Request) {
 		select {
 		case d.eventChan <- &record:
 			w.WriteHeader(http.StatusAccepted)
+		case <-d.ctx.Done():
+			http.Error(w, "Daemon stopping", http.StatusServiceUnavailable)
 		default:
 			http.Error(w, "Event queue full", http.StatusServiceUnavailable)
 		}
