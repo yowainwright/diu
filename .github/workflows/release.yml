@@ -26,6 +26,7 @@ jobs:
       - name: Install dependencies
         run: |
           brew install goreleaser
+          brew install golangci-lint
           brew install mise
 
       - name: Run vet

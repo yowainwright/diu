@@ -677,3 +677,434 @@ func TestCleanup(t *testing.T) {
 		t.Fatalf("Expected 'npm install current' to remain, got: %s", executions[0].Command)
 	}
 }
+
+// =============================================================================
+// Additional Config Handler Tests
+// =============================================================================
+
+func TestGetConfigAllKeys(t *testing.T) {
+	setupTestHomeConfig(t)
+
+	// Test all valid config keys
+	validKeys := []string{
+		"storage.json_file",
+		"storage.retention_days",
+		"storage.max_executions",
+		"storage.max_storage_bytes",
+		"storage.max_backups",
+		"daemon.pid_file",
+		"daemon.socket_path",
+		"api.enabled",
+		"api.port",
+		"monitoring.enabled_tools",
+	}
+
+	for _, key := range validKeys {
+		t.Run(key, func(t *testing.T) {
+			output := captureStdout(t, func() {
+				if err := getConfig(&command{}, []string{key}); err != nil {
+					t.Fatalf("getConfig(%s) failed: %v", key, err)
+				}
+			})
+			trimmed := strings.TrimSpace(output)
+			// For monitoring.enabled_tools, output may be empty list
+			if key == "monitoring.enabled_tools" {
+				// Empty is valid for this key
+				return
+			}
+			if trimmed == "" {
+				t.Fatalf("getConfig(%s) returned empty output", key)
+			}
+		})
+	}
+}
+
+func TestSetConfigAllKeys(t *testing.T) {
+	setupTestHomeConfig(t)
+
+	tests := []struct {
+		key   string
+		value string
+	}{
+		{"storage.retention_days", "7"},
+		{"storage.max_executions", "500"},
+		{"storage.max_storage_bytes", "1073741824"},
+		{"storage.max_backups", "5"},
+		{"daemon.pid_file", "/tmp/diu.pid"},
+		{"daemon.socket_path", "/tmp/diu.sock"},
+		{"api.enabled", "false"},
+		{"api.port", "9090"},
+		{"monitoring.enabled_tools", "homebrew,npm"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.key+"="+tt.value, func(t *testing.T) {
+			// Set the value
+			output := captureStdout(t, func() {
+				if err := setConfig(&command{}, []string{tt.key, tt.value}); err != nil {
+					t.Fatalf("setConfig(%s, %s) failed: %v", tt.key, tt.value, err)
+				}
+			})
+			if !strings.Contains(output, "Configuration updated") {
+				t.Fatalf("Expected 'Configuration updated', got: %q", output)
+			}
+
+			// Verify it was set by getting it back
+			getOutput := captureStdout(t, func() {
+				if err := getConfig(&command{}, []string{tt.key}); err != nil {
+					t.Fatalf("getConfig(%s) failed: %v", tt.key, err)
+				}
+			})
+			// For monitoring.enabled_tools, the output has comma-space separator
+			var expectedOutput = tt.value
+			if tt.key == "monitoring.enabled_tools" {
+				expectedOutput = strings.ReplaceAll(tt.value, ",", ", ")
+			}
+			if strings.TrimSpace(getOutput) != expectedOutput {
+				t.Fatalf("getConfig(%s) = %q, want %q", tt.key, strings.TrimSpace(getOutput), expectedOutput)
+			}
+		})
+	}
+}
+
+// =============================================================================
+// Helper Function Tests
+// =============================================================================
+
+func TestGetToolColor(t *testing.T) {
+	tests := []struct {
+		tool string
+		want bool // true if we expect a non-empty color
+	}{
+		{"homebrew", true},
+		{"npm", true},
+		{"go", true},
+		{"pip", true},
+		{"gem", true},
+		{"cargo", true},
+		{"unknown", true}, // default case should still return a color
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.tool, func(t *testing.T) {
+			got := getToolColor(tt.tool)
+			if tt.want && got == "" {
+				t.Fatalf("getToolColor(%q) = %q, want non-empty", tt.tool, got)
+			}
+		})
+	}
+}
+
+func TestFormatLastUsed(t *testing.T) {
+	tests := []struct {
+		lastUsed time.Time
+		want    string
+	}{
+		{time.Time{}, "never"},
+		{time.Date(2024, 1, 15, 0, 0, 0, 0, time.UTC), "2024-01-15"},
+		{time.Date(2025, 12, 25, 10, 30, 0, 0, time.UTC), "2025-12-25"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.lastUsed.Format("2006-01-02"), func(t *testing.T) {
+			got := formatLastUsed(tt.lastUsed)
+			if got != tt.want {
+				t.Fatalf("formatLastUsed(%v) = %q, want %q", tt.lastUsed, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestTruncate(t *testing.T) {
+	tests := []struct {
+		value     string
+		maxLength int
+		want     string
+	}{
+		{"hello", 10, "hello"},
+		{"hello", 5, "hello"},
+		{"hello", 4, "hel."},
+		{"hello", 3, "he."},
+		{"hello", 2, "h."},
+		{"hello", 1, "h"},
+		{"hello", 0, ""},
+		{"", 5, ""},
+		{"a", 1, "a"},
+		{"short", 10, "short"},
+	}
+
+	for _, tt := range tests {
+		t.Run(fmt.Sprintf("%q,%d", tt.value, tt.maxLength), func(t *testing.T) {
+			got := truncate(tt.value, tt.maxLength)
+			if got != tt.want {
+				t.Fatalf("truncate(%q, %d) = %q, want %q", tt.value, tt.maxLength, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestValidateExecutablePath(t *testing.T) {
+	tempDir := t.TempDir()
+
+	// Test valid executable
+	execPath := filepath.Join(tempDir, "tool")
+	writeExecutableForTest(t, execPath, "#!/bin/bash\necho test\n")
+
+	validated, err := validateExecutablePath(execPath)
+	if err != nil {
+		t.Fatalf("validateExecutablePath(%s) failed: %v", execPath, err)
+	}
+	if validated != execPath {
+		t.Fatalf("validateExecutablePath() = %s, want %s", validated, execPath)
+	}
+
+	// Test empty path
+	if _, err := validateExecutablePath(""); err == nil {
+		t.Fatal("Expected error for empty path")
+	}
+
+	// Test non-absolute path
+	if _, err := validateExecutablePath("relative/tool"); err == nil {
+		t.Fatal("Expected error for relative path")
+	}
+
+	// Test directory
+	dirPath := filepath.Join(tempDir, "dir")
+	if err := os.MkdirAll(dirPath, 0o755); err != nil {
+		t.Fatalf("Failed to create directory: %v", err)
+	}
+	if _, err := validateExecutablePath(dirPath); err == nil {
+		t.Fatal("Expected error for directory")
+	}
+
+	// Test non-executable file
+	nonExec := filepath.Join(tempDir, "notes.txt")
+	if err := os.WriteFile(nonExec, []byte("not executable"), 0o644); err != nil {
+		t.Fatalf("Failed to create non-executable file: %v", err)
+	}
+	if _, err := validateExecutablePath(nonExec); err == nil {
+		t.Fatal("Expected error for non-executable file")
+	}
+
+	// Test non-existent file
+	if _, err := validateExecutablePath("/nonexistent/path/to/tool"); err == nil {
+		t.Fatal("Expected error for non-existent file")
+	}
+}
+
+// =============================================================================
+// CLI Helper Tests
+// =============================================================================
+
+func TestFlagParsingComprehensive(t *testing.T) {
+	cmd := &command{}
+	var tool, pkg, last, format string
+	var limit int
+	var daily, weekly, jsonFlag bool
+
+	cmd.Flags().StringVarP(&tool, "tool", "t", "", "tool")
+	cmd.Flags().StringVarP(&pkg, "package", "p", "", "package")
+	cmd.Flags().StringVarP(&last, "last", "l", "", "last")
+	cmd.Flags().IntVarP(&limit, "limit", "n", 20, "limit")
+	cmd.Flags().StringVarP(&format, "format", "f", "table", "format")
+	cmd.Flags().BoolVarP(&daily, "daily", "d", false, "daily")
+	cmd.Flags().BoolVarP(&weekly, "weekly", "w", false, "weekly")
+	cmd.Flags().BoolVar(&jsonFlag, "json", false, "json")
+
+	tests := []struct {
+		name          string
+		args          []string
+		wantTool     string
+		wantPkg      string
+		wantLast     string
+		wantLimit    int
+		wantFormat   string
+		wantDaily    bool
+		wantWeekly   bool
+		wantJSON    bool
+	}{
+		{
+			name:       "all flags long",
+			args:       []string{"--tool", "npm", "--package", "eslint", "--last", "1h", "--limit", "10", "--format", "json", "--daily", "--weekly", "--json"},
+			wantTool:   "npm",
+			wantPkg:    "eslint",
+			wantLast:   "1h",
+			wantLimit:  10,
+			wantFormat: "json",
+			wantDaily:  true,
+			wantWeekly: true,
+			wantJSON:   true,
+		},
+		{
+			name:       "all flags short",
+			args:       []string{"-t", "brew", "-p", "jq", "-l", "2d", "-n", "5", "-f", "csv", "-d", "-w"},
+			wantTool:   "brew",
+			wantPkg:    "jq",
+			wantLast:   "2d",
+			wantLimit:  5,
+			wantFormat: "csv",
+			wantDaily:  true,
+			wantWeekly: true,
+			wantJSON:   false,
+		},
+		{
+			name:       "no flags",
+			args:       []string{},
+			wantTool:   "",
+			wantPkg:    "",
+			wantLast:   "",
+			wantLimit:  20,
+			wantFormat: "table",
+			wantDaily:  false,
+			wantWeekly: false,
+			wantJSON:   false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Reset all variables
+			tool = ""
+			pkg = ""
+			last = ""
+			limit = 20
+			format = "table"
+			daily = false
+			weekly = false
+			jsonFlag = false
+
+			remaining, err := cmd.Flags().parse(tt.args)
+			if err != nil {
+				t.Fatalf("parse failed: %v", err)
+			}
+			if len(remaining) != 0 {
+				t.Fatalf("unexpected remaining args: %v", remaining)
+			}
+
+			if tool != tt.wantTool {
+				t.Errorf("tool = %q, want %q", tool, tt.wantTool)
+			}
+			if pkg != tt.wantPkg {
+				t.Errorf("pkg = %q, want %q", pkg, tt.wantPkg)
+			}
+			if last != tt.wantLast {
+				t.Errorf("last = %q, want %q", last, tt.wantLast)
+			}
+			if limit != tt.wantLimit {
+				t.Errorf("limit = %d, want %d", limit, tt.wantLimit)
+			}
+			if format != tt.wantFormat {
+				t.Errorf("format = %q, want %q", format, tt.wantFormat)
+			}
+			if daily != tt.wantDaily {
+				t.Errorf("daily = %v, want %v", daily, tt.wantDaily)
+			}
+			if weekly != tt.wantWeekly {
+				t.Errorf("weekly = %v, want %v", weekly, tt.wantWeekly)
+			}
+			if jsonFlag != tt.wantJSON {
+				t.Errorf("json = %v, want %v", jsonFlag, tt.wantJSON)
+			}
+		})
+	}
+}
+
+func TestCommandExecution(t *testing.T) {
+	root := &command{Use: "diu", Short: "DIU CLI"}
+
+	var executed bool
+	var capturedArg string
+	child := &command{
+		Use: "query",
+		Short: "Query executions",
+		RunE: func(cmd *command, args []string) error {
+			executed = true
+			capturedArg = args[0]
+			return nil
+		},
+	}
+	root.AddCommand(child)
+
+	// Test subcommand execution with simple args (no flags)
+	err := root.Execute([]string{"query", "arg1"})
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+	if !executed {
+		t.Fatal("Expected subcommand to execute")
+	}
+	if capturedArg != "arg1" {
+		t.Fatalf("capturedArg = %q, want %q", capturedArg, "arg1")
+	}
+}
+
+func TestCommandHelp(t *testing.T) {
+	cmd := &command{Use: "test", Short: "Test command"}
+
+	output := captureStdout(t, func() {
+		cmd.printUsage()
+	})
+
+	if !strings.Contains(output, "Test command") {
+		t.Fatalf("Expected short description in output, got: %q", output)
+	}
+	if !strings.Contains(output, "Usage:") {
+		t.Fatalf("Expected 'Usage:' in output, got: %q", output)
+	}
+}
+
+func TestVersionString(t *testing.T) {
+	// Just verify it doesn't panic and returns something
+	vs := versionString()
+	if vs == "" {
+		t.Fatal("versionString returned empty")
+	}
+	if !strings.Contains(vs, "diu") {
+		t.Fatalf("Expected 'diu' in version string, got: %q", vs)
+	}
+}
+
+func TestExecuteWithHelpFlag(t *testing.T) {
+	root := &command{Use: "diu", Short: "DIU CLI"}
+
+	output := captureStdout(t, func() {
+		if err := root.Execute([]string{"--help"}); err != nil {
+			t.Fatalf("Execute --help failed: %v", err)
+		}
+	})
+
+	if !strings.Contains(output, "DIU CLI") {
+		t.Fatalf("Expected short description in output, got: %q", output)
+	}
+	if !strings.Contains(output, "Usage:") {
+		t.Fatalf("Expected 'Usage:' in output, got: %q", output)
+	}
+}
+
+func TestExecuteWithVersionFlag(t *testing.T) {
+	root := &command{Use: "diu", Short: "DIU CLI"}
+
+	output := captureStdout(t, func() {
+		if err := root.Execute([]string{"--version"}); err != nil {
+			t.Fatalf("Execute --version failed: %v", err)
+		}
+	})
+
+	if !strings.Contains(output, "diu") {
+		t.Fatalf("Expected version info in output, got: %q", output)
+	}
+}
+
+func TestExecuteUnknownCommand(t *testing.T) {
+	root := &command{Use: "diu", Short: "DIU CLI"}
+
+	// Test with unknown command - should print usage to stderr
+	// We can't easily capture stderr, so just verify it doesn't panic
+	err := root.Execute([]string{"unknown-command"})
+	if err == nil {
+		t.Fatal("Expected error for unknown command")
+	}
+	if !strings.Contains(err.Error(), "unknown command") {
+		t.Fatalf("Expected 'unknown command' error, got: %v", err)
+	}
+}

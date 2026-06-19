@@ -303,8 +303,8 @@ DURATION=$(( (END_TIME - START_TIME) * 1000 ))
 
 json_escape() {
     local value="$1"
-    value="${value//\/\\}"
-    value="${value//"/\\"}"
+    value="${value//\\/\\\\}"
+    value="${value//\"/\\\"}"
     value="${value//$'\n'/\\n}"
     value="${value//$'\r'/\\r}"
     value="${value//$'\t'/\\t}"

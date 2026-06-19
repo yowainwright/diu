@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -691,6 +692,11 @@ func TestInstallExecutableWrappersWritesScripts(t *testing.T) {
 	}
 	if !strings.Contains(string(content), originalPath) || !strings.Contains(string(content), config.Daemon.SocketPath) {
 		t.Fatalf("Wrapper content missing original path or socket:\n%s", content)
+	}
+	if bashPath, err := exec.LookPath("bash"); err == nil {
+		if output, err := exec.Command(bashPath, "-n", wrapperPath).CombinedOutput(); err != nil {
+			t.Fatalf("Generated wrapper has invalid bash syntax: %v\n%s", err, output)
+		}
 	}
 }
 
