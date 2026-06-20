@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/yowainwright/diu/internal/core"
-	"github.com/yowainwright/diu/internal/daemon"
 	"github.com/yowainwright/diu/internal/monitors"
 	"github.com/yowainwright/diu/internal/safefs"
 	"github.com/yowainwright/diu/internal/storage"
@@ -448,11 +447,6 @@ func newMonitor(tool string) (monitors.Monitor, error) {
 	default:
 		return nil, fmt.Errorf("unsupported tool: %s", tool)
 	}
-}
-
-// isRunning checks if the daemon is running
-func isRunning(config *core.Config) bool {
-	return daemon.IsRunning(config)
 }
 
 // enrichExecutionRecord enriches an execution record with parsed metadata
