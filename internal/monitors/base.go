@@ -97,3 +97,29 @@ func (r *MonitorRegistry) StopAll() error {
 	}
 	return nil
 }
+
+// EnrichExecutionRecord enriches an execution record with parsed metadata using the given monitor.
+// This is a shared helper used by both the CLI and daemon to avoid code duplication.
+// Note: The caller is responsible for normalizing the tool name and setting the timestamp before calling this function.
+func EnrichExecutionRecord(monitor Monitor, record *core.ExecutionRecord) {
+	parsed, err := monitor.ParseCommand(record.Command, record.Args)
+	if err != nil {
+		return
+	}
+
+	if len(record.PackagesAffected) == 0 {
+		record.PackagesAffected = parsed.PackagesAffected
+	}
+
+	if len(parsed.Metadata) == 0 {
+		return
+	}
+	if record.Metadata == nil {
+		record.Metadata = make(map[string]interface{})
+	}
+	for key, value := range parsed.Metadata {
+		if _, exists := record.Metadata[key]; !exists {
+			record.Metadata[key] = value
+		}
+	}
+}

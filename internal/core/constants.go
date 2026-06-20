@@ -29,6 +29,7 @@ const (
 	DefaultMaxBackups      = 7
 	DefaultEventBuffer     = 100
 	DefaultShutdownTimeout = 5 * time.Second
+	DefaultSocketReadTimeout = 30 * time.Second
 
 	OwnerDirectoryMode  = 0o700
 	PrivateFileMode     = 0o600

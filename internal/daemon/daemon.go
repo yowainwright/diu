@@ -186,37 +186,17 @@ func (d *Daemon) processEvents() {
 }
 
 func (d *Daemon) enrichExecution(record *core.ExecutionRecord) {
+	// Normalize tool name before looking up monitor
 	record.Tool = core.NormalizeToolName(record.Tool)
 	if record.Timestamp.IsZero() {
 		record.Timestamp = time.Now()
 	}
-
+	
 	monitor, ok := d.registry.Get(record.Tool)
 	if !ok {
 		return
 	}
-
-	parsed, err := monitor.ParseCommand(record.Command, record.Args)
-	if err != nil {
-		log.Printf("Failed to parse %s command: %v", record.Tool, err)
-		return
-	}
-
-	if len(record.PackagesAffected) == 0 {
-		record.PackagesAffected = parsed.PackagesAffected
-	}
-
-	if len(parsed.Metadata) == 0 {
-		return
-	}
-	if record.Metadata == nil {
-		record.Metadata = make(map[string]interface{})
-	}
-	for key, value := range parsed.Metadata {
-		if _, exists := record.Metadata[key]; !exists {
-			record.Metadata[key] = value
-		}
-	}
+	monitors.EnrichExecutionRecord(monitor, record)
 }
 
 func (d *Daemon) runPeriodicCleanup() {
@@ -290,7 +270,7 @@ func (d *Daemon) handleSocketConnection(conn net.Conn) {
 		}
 	}()
 
-	if err := conn.SetReadDeadline(time.Now().Add(core.DefaultShutdownTimeout)); err != nil {
+	if err := conn.SetReadDeadline(time.Now().Add(core.DefaultSocketReadTimeout)); err != nil {
 		log.Printf("Failed to set socket read deadline: %v", err)
 	}
 
