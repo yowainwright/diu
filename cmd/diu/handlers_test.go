@@ -1108,3 +1108,175 @@ func TestExecuteUnknownCommand(t *testing.T) {
 		t.Fatalf("Expected 'unknown command' error, got: %v", err)
 	}
 }
+
+// =============================================================================
+// Additional Helper Function Tests
+// =============================================================================
+
+func TestCloseStore(t *testing.T) {
+	config := setupTestHomeConfig(t)
+	store, err := storage.NewJSONStorage(config)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+
+	// closeStore is defined in helpers.go - test it directly
+	// This just calls store.Close()
+	closeStore(store)
+	// If we get here without panic, it succeeded
+}
+
+func TestIsTerminal(t *testing.T) {
+	// isTerminal checks if stdout is a terminal
+	// In tests, stdout is usually not a terminal
+	result := isTerminal()
+	// Just verify it doesn't panic and returns a bool
+	_ = result
+}
+
+func TestGoBinaryDir(t *testing.T) {
+	config := core.DefaultConfig()
+	// Set GoBin to a test path
+	tempDir := t.TempDir()
+	goBinPath := filepath.Join(tempDir, "go", "bin")
+	if err := os.MkdirAll(goBinPath, 0o755); err != nil {
+		t.Fatalf("Failed to create go bin path: %v", err)
+	}
+	config.Tools.Go.GoBin = goBinPath
+
+	got := goBinaryDir(config)
+	// goBinaryDir returns GoBin directly if set
+	if got != goBinPath {
+		t.Fatalf("goBinaryDir = %s, want %s", got, goBinPath)
+	}
+}
+
+func TestNpmPackageFromPath(t *testing.T) {
+	tests := []struct {
+		path    string
+		want    string
+	}{
+		{"/usr/local/lib/node_modules/package/bin/tool", "package"},
+		{"/usr/local/lib/node_modules/@scope/package/bin/tool", "@scope/package"},
+		{"/usr/local/lib/node_modules/@scope/package", "@scope/package"},
+		{"", ""},
+		{"no node_modules", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.path, func(t *testing.T) {
+			got := npmPackageFromPath(tt.path)
+			if got != tt.want {
+				t.Fatalf("npmPackageFromPath(%q) = %q, want %q", tt.path, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestWrapperNameForPackage(t *testing.T) {
+	tests := []struct {
+		pkg  *core.PackageInfo
+		want string
+	}{
+		{&core.PackageInfo{Name: "jq", Path: ""}, "jq"},
+		{&core.PackageInfo{Name: "jq", Path: "/opt/homebrew/bin/jq"}, "jq"},
+		{&core.PackageInfo{Name: "tool", Path: "/path/to/tool"}, "tool"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.pkg.Name, func(t *testing.T) {
+			got := wrapperNameForPackage(tt.pkg)
+			if got != tt.want {
+				t.Fatalf("wrapperNameForPackage(%+v) = %q, want %q", tt.pkg, got, tt.want)
+			}
+		})
+	}
+}
+
+// =============================================================================
+// Daemon Handler Tests with Mock Checker
+// =============================================================================
+
+// MockDaemonChecker is a mock implementation of DaemonChecker for testing
+type MockDaemonChecker struct {
+	isRunning bool
+}
+
+func (m MockDaemonChecker) IsRunning(config *core.Config) bool {
+	return m.isRunning
+}
+
+func TestStartDaemonAlreadyRunning(t *testing.T) {
+	setupTestHomeConfig(t)
+
+	// Create a mock checker that simulates daemon already running
+	mock := MockDaemonChecker{isRunning: true}
+
+	restore := SetDaemonChecker(mock)
+	defer restore()
+
+	output := captureStdout(t, func() {
+		if err := startDaemon(&command{}, nil); err != nil {
+			t.Fatalf("startDaemon failed: %v", err)
+		}
+	})
+
+	if !strings.Contains(output, "DIU daemon is already running") {
+		t.Fatalf("Expected 'already running' message, got: %q", output)
+	}
+}
+
+func TestStopDaemonNotRunning(t *testing.T) {
+	setupTestHomeConfig(t)
+
+	// Create a mock checker that simulates daemon not running
+	mock := MockDaemonChecker{isRunning: false}
+
+	restore := SetDaemonChecker(mock)
+	defer restore()
+
+	output := captureStdout(t, func() {
+		if err := stopDaemon(&command{}, nil); err != nil {
+			t.Fatalf("stopDaemon failed: %v", err)
+		}
+	})
+
+	if !strings.Contains(output, "DIU daemon is not running") {
+		t.Fatalf("Expected 'not running' message, got: %q", output)
+	}
+}
+
+func TestDaemonStatusWithMockRunning(t *testing.T) {
+	setupTestHomeConfig(t)
+
+	// Create a mock checker that simulates daemon running
+	mock := MockDaemonChecker{isRunning: true}
+
+	restore := SetDaemonChecker(mock)
+	defer restore()
+
+	// Also need to set up a PID file for the status to read
+	config, _ := core.LoadConfig("")
+	pidFile := config.Daemon.PIDFile
+	if err := os.MkdirAll(filepath.Dir(pidFile), 0o755); err != nil {
+		t.Fatalf("Failed to create PID directory: %v", err)
+	}
+	if err := os.WriteFile(pidFile, []byte("12345\n"), 0o644); err != nil {
+		t.Fatalf("Failed to write PID file: %v", err)
+	}
+	defer func() {
+		if err := os.Remove(pidFile); err != nil && !os.IsNotExist(err) {
+			t.Logf("Failed to remove PID file: %v", err)
+		}
+	}()
+
+	output := captureStdout(t, func() {
+		if err := daemonStatus(&command{}, nil); err != nil {
+			t.Fatalf("daemonStatus failed: %v", err)
+		}
+	})
+
+	if !strings.Contains(output, "DIU daemon is running") {
+		t.Fatalf("Expected 'is running' message, got: %q", output)
+	}
+}
