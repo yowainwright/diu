@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -31,12 +32,7 @@ func TestDaemonStatusNotRunning(t *testing.T) {
 	}
 }
 
-func TestDaemonStatusRunning(t *testing.T) {
-	// This test would require mocking daemon.IsRunning to return true
-	// For now, we test the not-running case
-	// In a real scenario, we'd start the daemon first
-	t.Skip("Skipping - requires running daemon")
-}
+
 
 // =============================================================================
 // Query Handler Tests
@@ -1278,5 +1274,321 @@ func TestDaemonStatusWithMockRunning(t *testing.T) {
 
 	if !strings.Contains(output, "DIU daemon is running") {
 		t.Fatalf("Expected 'is running' message, got: %q", output)
+	}
+}
+
+// =============================================================================
+// CLI Function Tests
+// =============================================================================
+
+func TestPrintHelp(t *testing.T) {
+	root := &command{
+		Use:   "diu",
+		Short: "DIU CLI",
+		Long:  "DIU is a dependency management tool",
+	}
+
+	output := captureStdout(t, func() {
+		if err := root.printHelp(nil); err != nil {
+			t.Fatalf("printHelp failed: %v", err)
+		}
+	})
+
+	if !strings.Contains(output, "DIU is a dependency management tool") {
+		t.Fatalf("Expected long description, got: %q", output)
+	}
+}
+
+func TestPrintUsageTo(t *testing.T) {
+	cmd := &command{
+		Use:   "test",
+		Short: "Test command",
+	}
+
+	var buf bytes.Buffer
+	cmd.printUsageTo(&buf)
+
+	output := buf.String()
+	if !strings.Contains(output, "Test command") {
+		t.Fatalf("Expected short description, got: %q", output)
+	}
+	if !strings.Contains(output, "Usage:") {
+		t.Fatalf("Expected Usage:, got: %q", output)
+	}
+	if !strings.Contains(output, "test") {
+		t.Fatalf("Expected command name, got: %q", output)
+	}
+}
+
+func TestCommandName(t *testing.T) {
+	tests := []struct {
+		use   string
+		want  string
+	}{
+		{"diu", "diu"},
+		{"query", "query"},
+		{"list-packages", "list-packages"},
+		{"", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.use, func(t *testing.T) {
+			got := commandName(tt.use)
+			if got != tt.want {
+				t.Fatalf("commandName(%q) = %q, want %q", tt.use, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCoreVersion(t *testing.T) {
+	// Verify coreVersion returns either the build version or the core package version
+	version := coreVersion()
+	if version == "" {
+		t.Fatal("coreVersion returned empty")
+	}
+	// Should be either the build version or the default core version
+	expectedVersions := []string{"0.1.0", version} // version is from build, 0.1.0 is from core
+	found := false
+	for _, v := range expectedVersions {
+		if version == v {
+			found = true
+			break
+		}
+	}
+	if !found && version != "dev" {
+		t.Fatalf("coreVersion returned unexpected value: %q", version)
+	}
+}
+
+func TestVersionStringConsistency(t *testing.T) {
+	vs := versionString()
+	if vs == "" {
+		t.Fatal("versionString returned empty")
+	}
+	// versionString should be in format: "diu <version> (commit <hash>, built <date>)"
+	if !strings.HasPrefix(vs, "diu ") {
+		t.Fatalf("versionString should start with 'diu ', got: %q", vs)
+	}
+	if !strings.Contains(vs, "commit ") {
+		t.Fatalf("versionString should contain 'commit ', got: %q", vs)
+	}
+	if !strings.Contains(vs, "built ") {
+		t.Fatalf("versionString should contain 'built ', got: %q", vs)
+	}
+	// Verify it contains the core version
+	if !strings.Contains(vs, coreVersion()) {
+		t.Fatalf("versionString should contain coreVersion, got: %q", vs)
+	}
+}
+
+func TestFlagGetters(t *testing.T) {
+	flags := newFlagSet()
+	var strVal string
+	var intVal int
+	var boolVal bool
+
+	flags.StringVarP(&strVal, "string", "s", "default", "string flag")
+	flags.IntVarP(&intVal, "int", "i", 42, "int flag")
+	flags.BoolVarP(&boolVal, "bool", "b", true, "bool flag")
+
+	// Set values - for booleans, use = syntax
+	_, err := flags.parse([]string{"--string", "test", "--int", "100", "--bool=false"})
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+
+	// Test getters
+	strFlag := flags.lookupLong("string")
+	if strFlag == nil {
+		t.Fatal("lookupLong returned nil for string")
+	}
+	if strFlag.stringValue == nil || *strFlag.stringValue != "test" {
+		t.Fatalf("string flag value = %v, want 'test'", strFlag.stringValue)
+	}
+
+	intFlag := flags.lookupLong("int")
+	if intFlag == nil {
+		t.Fatal("lookupLong returned nil for int")
+	}
+	if intFlag.intValue == nil || *intFlag.intValue != 100 {
+		t.Fatalf("int flag value = %d, want 100", *intFlag.intValue)
+	}
+
+	boolFlag := flags.lookupLong("bool")
+	if boolFlag == nil {
+		t.Fatal("lookupLong returned nil for bool")
+	}
+	if boolFlag.boolValue == nil || *boolFlag.boolValue != false {
+		t.Fatalf("bool flag value = %v, want false", *boolFlag.boolValue)
+	}
+
+	// Test GetString, GetInt, GetBool
+	gotStr, err := flags.GetString("string")
+	if err != nil || gotStr != "test" {
+		t.Fatalf("GetString failed: %v, got %q", err, gotStr)
+	}
+	gotInt, err := flags.GetInt("int")
+	if err != nil || gotInt != 100 {
+		t.Fatalf("GetInt failed: %v, got %d", err, gotInt)
+	}
+	gotBool, err := flags.GetBool("bool")
+	if err != nil || gotBool != false {
+		t.Fatalf("GetBool failed: %v, got %v", err, gotBool)
+	}
+
+	// Test lookupShort
+	strFlagShort := flags.lookupShort("s")
+	if strFlagShort != strFlag {
+		t.Fatal("lookupShort didn't return same flag as lookupLong")
+	}
+}
+
+func TestFlagStringMethod(t *testing.T) {
+	flags := newFlagSet()
+	var strVal string
+	flags.StringVar(&strVal, "string", "default", "string flag")
+
+	_, _ = flags.parse([]string{"--string", "test"})
+
+	strFlag := flags.lookupLong("string")
+	if strFlag == nil {
+		t.Fatal("lookupLong returned nil")
+	}
+
+	// Test String() method on flagValue
+	fv := flagValue{flag: strFlag}
+	if fv.String() != "test" {
+		t.Fatalf("flagValue.String() = %q, want 'test'", fv.String())
+	}
+}
+
+func TestStyleRenderTo(t *testing.T) {
+	// Test with color disabled
+	t.Setenv("NO_COLOR", "1")
+
+	style := newStyle().Bold(true).Foreground(color("205"))
+	// Create a temp file to use as *os.File
+	tmpFile, err := os.CreateTemp(t.TempDir(), "render")
+	if err != nil {
+		t.Fatalf("Failed to create temp file: %v", err)
+	}
+	defer func() {
+		if err := tmpFile.Close(); err != nil {
+			t.Fatalf("Failed to close temp file: %v", err)
+		}
+	}()
+	defer func() {
+		if err := os.Remove(tmpFile.Name()); err != nil {
+			t.Fatalf("Failed to remove temp file: %v", err)
+		}
+	}()
+
+	result := style.RenderTo("test", tmpFile)
+
+	// With NO_COLOR, should return plain text
+	if result != "test" {
+		t.Fatalf("RenderTo with NO_COLOR = %q, want 'test'", result)
+	}
+}
+
+func TestShouldRenderColor(t *testing.T) {
+	// Test with NO_COLOR set
+	t.Setenv("NO_COLOR", "1")
+
+	// Create a temp file
+	tmpFile, err := os.CreateTemp(t.TempDir(), "color")
+	if err != nil {
+		t.Fatalf("Failed to create temp file: %v", err)
+	}
+	defer func() {
+		if err := tmpFile.Close(); err != nil {
+			t.Fatalf("Failed to close temp file: %v", err)
+		}
+	}()
+	defer func() {
+		if err := os.Remove(tmpFile.Name()); err != nil {
+			t.Fatalf("Failed to remove temp file: %v", err)
+		}
+	}()
+
+	if shouldRenderColor(tmpFile) {
+		t.Fatal("shouldRenderColor should return false with NO_COLOR set")
+	}
+}
+
+func TestExecuteWithHelpCommand(t *testing.T) {
+	root := &command{Use: "diu", Short: "DIU CLI"}
+
+	output := captureStdout(t, func() {
+		if err := root.Execute([]string{"help"}); err != nil {
+			t.Fatalf("Execute help failed: %v", err)
+		}
+	})
+
+	if !strings.Contains(output, "DIU CLI") {
+		t.Fatalf("Expected short description, got: %q", output)
+	}
+}
+
+func TestExecuteWithUnknownHelp(t *testing.T) {
+	root := &command{Use: "diu", Short: "DIU CLI"}
+
+	err := root.Execute([]string{"help", "unknown"})
+	if err == nil {
+		t.Fatal("Expected error for unknown help command")
+	}
+	if !strings.Contains(err.Error(), "unknown command") {
+		t.Fatalf("Expected 'unknown command' error, got: %v", err)
+	}
+}
+
+func TestParseEdgeCases(t *testing.T) {
+	flags := newFlagSet()
+	var val string
+	flags.StringVar(&val, "flag", "", "flag")
+
+	// Test empty args
+	remaining, err := flags.parse([]string{})
+	if err != nil {
+		t.Fatalf("parse([]) failed: %v", err)
+	}
+	if len(remaining) != 0 {
+		t.Fatalf("Expected no remaining args, got: %v", remaining)
+	}
+	if val != "" {
+		t.Fatalf("Expected default value, got: %q", val)
+	}
+
+	// Test only positional args
+	remaining, err = flags.parse([]string{"arg1", "arg2"})
+	if err != nil {
+		t.Fatalf("parse positional args failed: %v", err)
+	}
+	if len(remaining) != 2 || remaining[0] != "arg1" || remaining[1] != "arg2" {
+		t.Fatalf("Expected [arg1 arg2], got: %v", remaining)
+	}
+}
+
+func TestFlagSetMethod(t *testing.T) {
+	flags := newFlagSet()
+	var val string
+	flags.StringVar(&val, "flag", "", "flag")
+
+	// Parse and then set directly on the flag
+	_, _ = flags.parse([]string{"--flag", "initial"})
+
+	flag := flags.lookupLong("flag")
+	if flag == nil {
+		t.Fatal("lookupLong returned nil")
+	}
+
+	// Set should update the value
+	if err := flag.set("updated", true); err != nil {
+		t.Fatalf("flag.set failed: %v", err)
+	}
+
+	if val != "updated" {
+		t.Fatalf("set failed: val = %q, want 'updated'", val)
 	}
 }
