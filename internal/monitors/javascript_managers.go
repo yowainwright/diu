@@ -32,13 +32,10 @@ func NewPNPMMonitor() Monitor {
 }
 
 func (m *PNPMMonitor) Initialize(config *core.Config) error {
-	if err := m.ProcessMonitor.Initialize(config); err != nil {
-		return err
-	}
 	if _, err := exec.LookPath(pnpmCommandName); err != nil {
 		return fmt.Errorf("pnpm not found: %w", err)
 	}
-	return nil
+	return m.ProcessMonitor.Initialize(config)
 }
 
 func (m *PNPMMonitor) ParseCommand(cmd string, args []string) (*core.ExecutionRecord, error) {
@@ -75,13 +72,10 @@ func NewBunMonitor() Monitor {
 }
 
 func (m *BunMonitor) Initialize(config *core.Config) error {
-	if err := m.ProcessMonitor.Initialize(config); err != nil {
-		return err
-	}
 	if _, err := exec.LookPath(bunCommandName); err != nil {
 		return fmt.Errorf("bun not found: %w", err)
 	}
-	return nil
+	return m.ProcessMonitor.Initialize(config)
 }
 
 func (m *BunMonitor) ParseCommand(cmd string, args []string) (*core.ExecutionRecord, error) {

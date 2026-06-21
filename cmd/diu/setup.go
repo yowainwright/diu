@@ -262,49 +262,55 @@ func discoverExecutableWrappers(config *core.Config) []executableWrapper {
 		}
 	}
 
-	for _, dir := range config.Monitoring.Filesystem.WatchPaths[core.ToolHomebrew] {
-		addExecutableDir(core.ToolHomebrew, dir)
+	if toolEnabled(core.ToolHomebrew) {
+		for _, dir := range config.Monitoring.Filesystem.WatchPaths[core.ToolHomebrew] {
+			addExecutableDir(core.ToolHomebrew, dir)
+		}
 	}
-	if npmBin := npmGlobalBinDir(); npmBin != "" {
-		addExecutableDir(core.ToolNPM, npmBin)
-	}
-	for _, dir := range config.Monitoring.Filesystem.WatchPaths[core.ToolNPM] {
-		addExecutableDir(core.ToolNPM, dir)
+	if toolEnabled(core.ToolNPM) {
+		if npmBin := npmGlobalBinDir(); npmBin != "" {
+			addExecutableDir(core.ToolNPM, npmBin)
+		}
+		for _, dir := range config.Monitoring.Filesystem.WatchPaths[core.ToolNPM] {
+			addExecutableDir(core.ToolNPM, dir)
+		}
 	}
 	if toolEnabled(core.ToolPNPM) {
 		if pnpmBin := pnpmGlobalBinDir(); pnpmBin != "" {
 			addExecutableDir(core.ToolPNPM, pnpmBin)
 		}
-	}
-	for _, dir := range config.Monitoring.Filesystem.WatchPaths[core.ToolPNPM] {
-		addExecutableDir(core.ToolPNPM, dir)
+		for _, dir := range config.Monitoring.Filesystem.WatchPaths[core.ToolPNPM] {
+			addExecutableDir(core.ToolPNPM, dir)
+		}
 	}
 	if toolEnabled(core.ToolBun) {
 		if bunBin := bunGlobalBinDir(); bunBin != "" {
 			addExecutableDir(core.ToolBun, bunBin)
 		}
+		for _, dir := range config.Monitoring.Filesystem.WatchPaths[core.ToolBun] {
+			addExecutableDir(core.ToolBun, dir)
+		}
 	}
-	for _, dir := range config.Monitoring.Filesystem.WatchPaths[core.ToolBun] {
-		addExecutableDir(core.ToolBun, dir)
-	}
-	if goBin := goBinaryDir(config); goBin != "" {
-		addExecutableDir(core.ToolGo, goBin)
+	if toolEnabled(core.ToolGo) {
+		if goBin := goBinaryDir(config); goBin != "" {
+			addExecutableDir(core.ToolGo, goBin)
+		}
 	}
 	if toolEnabled(core.ToolPip) {
 		if pythonBin := pythonUserBaseBinDir(); pythonBin != "" {
 			addExecutableDir(core.ToolPip, pythonBin)
 		}
-	}
-	for _, dir := range config.Monitoring.Filesystem.WatchPaths[core.ToolPip] {
-		addExecutableDir(core.ToolPip, dir)
+		for _, dir := range config.Monitoring.Filesystem.WatchPaths[core.ToolPip] {
+			addExecutableDir(core.ToolPip, dir)
+		}
 	}
 	if toolEnabled(core.ToolUV) {
 		if uvBin := uvToolBinDir(); uvBin != "" {
 			addExecutableDir(core.ToolUV, uvBin)
 		}
-	}
-	for _, dir := range config.Monitoring.Filesystem.WatchPaths[core.ToolUV] {
-		addExecutableDir(core.ToolUV, dir)
+		for _, dir := range config.Monitoring.Filesystem.WatchPaths[core.ToolUV] {
+			addExecutableDir(core.ToolUV, dir)
+		}
 	}
 
 	results := make([]executableWrapper, 0, len(targets))

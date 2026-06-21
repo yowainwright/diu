@@ -653,6 +653,7 @@ func TestScanPackagesDiscoversExecutableWrappers(t *testing.T) {
 	config.Monitoring.Filesystem.WatchPaths = map[string][]string{
 		core.ToolHomebrew: {binDir},
 	}
+	config.Monitoring.EnabledTools = []string{core.ToolHomebrew}
 	config.Tools.Go.GoBin = filepath.Join(t.TempDir(), "missing")
 	if err := config.Save(); err != nil {
 		t.Fatalf("Failed to save config: %v", err)
@@ -766,6 +767,7 @@ func TestInstallExecutableWrappersWritesScripts(t *testing.T) {
 	config.Monitoring.Filesystem.WatchPaths = map[string][]string{
 		core.ToolHomebrew: {binDir},
 	}
+	config.Monitoring.EnabledTools = []string{core.ToolHomebrew}
 	config.Tools.Go.GoBin = filepath.Join(t.TempDir(), "missing")
 	if err := os.MkdirAll(wrapperDir, core.OwnerDirectoryMode); err != nil {
 		t.Fatalf("Failed to create wrapper dir: %v", err)
@@ -816,6 +818,7 @@ func TestDiscoverExecutableWrappersForAdditionalManagers(t *testing.T) {
 		core.ToolPip:  {pipDir},
 		core.ToolUV:   {uvDir},
 	}
+	config.Monitoring.EnabledTools = []string{core.ToolPNPM, core.ToolBun, core.ToolPip, core.ToolUV}
 	config.Tools.Go.GoBin = filepath.Join(t.TempDir(), "missing")
 
 	targets := discoverExecutableWrappers(config)
@@ -837,6 +840,22 @@ func TestDiscoverExecutableWrappersForAdditionalManagers(t *testing.T) {
 		if target.Tool != wantTool || target.Package != name {
 			t.Fatalf("Target %s = %#v, want tool %s package %s", name, target, wantTool, name)
 		}
+	}
+}
+
+func TestDiscoverExecutableWrappersSkipsDisabledWatchPaths(t *testing.T) {
+	config := setupTestHomeConfig(t)
+
+	uvDir := t.TempDir()
+	writeExecutableForTest(t, filepath.Join(uvDir, "ruff"), "#!/bin/bash\nexit 0\n")
+	config.Monitoring.EnabledTools = []string{core.ToolPip}
+	config.Monitoring.Filesystem.WatchPaths = map[string][]string{
+		core.ToolUV: {uvDir},
+	}
+	config.Tools.Go.GoBin = filepath.Join(t.TempDir(), "missing")
+
+	if targets := discoverExecutableWrappers(config); len(targets) != 0 {
+		t.Fatalf("Expected disabled uv watch path to be ignored, got %#v", targets)
 	}
 }
 
@@ -1382,6 +1401,14 @@ func TestRunNPMUninstallCommandFails(t *testing.T) {
 	prependFakeCommand(t, "npm", "#!/bin/sh\nexit 1\n")
 	if err := runNPMUninstall("typescript"); err == nil {
 		t.Fatal("expected non-zero exit error")
+	}
+}
+
+func TestRunPipUninstallFallsBackToPip3(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	prependFakeCommand(t, "pip3", "#!/bin/sh\nexit 0\n")
+	if err := runPipUninstall("ruff"); err != nil {
+		t.Fatalf("expected nil, got %v", err)
 	}
 }
 

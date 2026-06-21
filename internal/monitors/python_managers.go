@@ -104,13 +104,10 @@ func NewUVMonitor() Monitor {
 }
 
 func (m *UVMonitor) Initialize(config *core.Config) error {
-	if err := m.ProcessMonitor.Initialize(config); err != nil {
-		return err
-	}
 	if _, err := exec.LookPath(uvCommandName); err != nil {
 		return fmt.Errorf("uv not found: %w", err)
 	}
-	return nil
+	return m.ProcessMonitor.Initialize(config)
 }
 
 func (m *UVMonitor) ParseCommand(cmd string, args []string) (*core.ExecutionRecord, error) {
@@ -174,13 +171,10 @@ func NewPoetryMonitor() Monitor {
 }
 
 func (m *PoetryMonitor) Initialize(config *core.Config) error {
-	if err := m.ProcessMonitor.Initialize(config); err != nil {
-		return err
-	}
 	if _, err := exec.LookPath(poetryCommandName); err != nil {
 		return fmt.Errorf("poetry not found: %w", err)
 	}
-	return nil
+	return m.ProcessMonitor.Initialize(config)
 }
 
 func (m *PoetryMonitor) ParseCommand(cmd string, args []string) (*core.ExecutionRecord, error) {

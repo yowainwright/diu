@@ -612,6 +612,7 @@ func TestScanPackages(t *testing.T) {
 	config.Monitoring.Filesystem.WatchPaths = map[string][]string{
 		core.ToolHomebrew: {binDir},
 	}
+	config.Monitoring.EnabledTools = []string{core.ToolHomebrew}
 	config.Tools.Go.GoBin = filepath.Join(t.TempDir(), "missing")
 	if err := config.Save(); err != nil {
 		t.Fatalf("Failed to save config: %v", err)

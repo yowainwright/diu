@@ -682,8 +682,13 @@ func runPipUninstall(name string) error {
 		return err
 	}
 
+	commandName, err := firstExistingCommand(pipCommandName, "pip3")
+	if err != nil {
+		return fmt.Errorf("pip not found: %w", err)
+	}
+
 	// #nosec G204 -- command is allowlisted and package name is validated before execution.
-	command := exec.Command(pipCommandName, uninstallSubcommand, pipYesFlag, name)
+	command := exec.Command(commandName, uninstallSubcommand, pipYesFlag, name)
 	return runPreparedCommand(command)
 }
 

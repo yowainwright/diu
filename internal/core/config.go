@@ -131,8 +131,6 @@ func DefaultConfig() *Config {
 					ToolNPM:      {filepath.Join(homeDir, ".npm", "bin"), "/usr/local/lib/node_modules"},
 					ToolPNPM:     {filepath.Join(homeDir, "Library", "pnpm"), filepath.Join(homeDir, ".local", "share", "pnpm")},
 					ToolBun:      {filepath.Join(homeDir, ".bun", "bin")},
-					ToolPip:      {filepath.Join(homeDir, ".local", "bin")},
-					ToolUV:       {filepath.Join(homeDir, ".local", "bin")},
 				},
 			},
 		},
