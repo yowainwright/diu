@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"os/exec"
@@ -962,5 +963,155 @@ func parseTestFlags(t *testing.T, cmd *command, args ...string) {
 	}
 	if len(remaining) != 0 {
 		t.Fatalf("Unexpected remaining test args: %v", remaining)
+	}
+}
+
+func prependFakeCommand(t *testing.T, name, script string) {
+	t.Helper()
+	binDir := t.TempDir()
+	path := filepath.Join(binDir, name)
+	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+		t.Fatalf("write fake %s: %v", name, err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+func TestRunPreparedCommandSuccess(t *testing.T) {
+	if err := runPreparedCommand(exec.Command("true")); err != nil {
+		t.Fatalf("expected nil, got %v", err)
+	}
+}
+
+func TestRunPreparedCommandFailure(t *testing.T) {
+	err := runPreparedCommand(exec.Command("false"))
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "uninstall failed") {
+		t.Fatalf("expected wrapped error, got %q", err.Error())
+	}
+}
+
+func TestRunHomebrewUninstallInvalidName(t *testing.T) {
+	err := runHomebrewUninstall("../evil", false)
+	if err == nil {
+		t.Fatal("expected validation error, got nil")
+	}
+}
+
+func TestRunHomebrewUninstallSuccess(t *testing.T) {
+	prependFakeCommand(t, "brew", "#!/bin/sh\nexit 0\n")
+	if err := runHomebrewUninstall("ripgrep", false); err != nil {
+		t.Fatalf("expected nil, got %v", err)
+	}
+}
+
+func TestRunHomebrewUninstallCask(t *testing.T) {
+	prependFakeCommand(t, "brew", "#!/bin/sh\necho \"$@\" >&2\nexit 0\n")
+	if err := runHomebrewUninstall("vlc", true); err != nil {
+		t.Fatalf("expected nil, got %v", err)
+	}
+}
+
+func TestRunHomebrewUninstallCommandFails(t *testing.T) {
+	prependFakeCommand(t, "brew", "#!/bin/sh\nexit 7\n")
+	if err := runHomebrewUninstall("ripgrep", false); err == nil {
+		t.Fatal("expected non-zero exit error")
+	}
+}
+
+func TestRunNPMUninstallInvalidName(t *testing.T) {
+	if err := runNPMUninstall("foo;rm"); err == nil {
+		t.Fatal("expected validation error")
+	}
+}
+
+func TestRunNPMUninstallSuccess(t *testing.T) {
+	prependFakeCommand(t, "npm", "#!/bin/sh\nexit 0\n")
+	if err := runNPMUninstall("typescript"); err != nil {
+		t.Fatalf("expected nil, got %v", err)
+	}
+}
+
+func TestRunNPMUninstallCommandFails(t *testing.T) {
+	prependFakeCommand(t, "npm", "#!/bin/sh\nexit 1\n")
+	if err := runNPMUninstall("typescript"); err == nil {
+		t.Fatal("expected non-zero exit error")
+	}
+}
+
+func TestRunUninstallGoBinary(t *testing.T) {
+	dir := t.TempDir()
+	binPath := filepath.Join(dir, "mytool")
+	writeExecutableForTest(t, binPath, "#!/bin/sh\nexit 0\n")
+
+	pkg := &core.PackageInfo{
+		Name: "mytool",
+		Tool: core.ToolGoBinary,
+		Path: binPath,
+	}
+
+	if err := runUninstall(pkg); err != nil {
+		t.Fatalf("runUninstall failed: %v", err)
+	}
+	if _, err := os.Stat(binPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected file removed, stat err: %v", err)
+	}
+}
+
+func TestRunUninstallUnsupportedTool(t *testing.T) {
+	pkg := &core.PackageInfo{Name: "foo", Tool: "bogus"}
+	if err := runUninstall(pkg); err == nil {
+		t.Fatal("expected unsupported error")
+	}
+}
+
+func TestRunUninstallHomebrewDispatch(t *testing.T) {
+	prependFakeCommand(t, "brew", "#!/bin/sh\nexit 0\n")
+	pkg := &core.PackageInfo{Name: "ripgrep", Tool: core.ToolHomebrew}
+	if err := runUninstall(pkg); err != nil {
+		t.Fatalf("expected nil, got %v", err)
+	}
+}
+
+func TestRunUninstallHomebrewCaskDispatch(t *testing.T) {
+	prependFakeCommand(t, "brew", "#!/bin/sh\nexit 0\n")
+	pkg := &core.PackageInfo{Name: "vlc", Tool: homebrewCaskTool}
+	if err := runUninstall(pkg); err != nil {
+		t.Fatalf("expected nil, got %v", err)
+	}
+}
+
+func TestRunUninstallNPMDispatch(t *testing.T) {
+	prependFakeCommand(t, "npm", "#!/bin/sh\nexit 0\n")
+	pkg := &core.PackageInfo{Name: "typescript", Tool: core.ToolNPM}
+	if err := runUninstall(pkg); err != nil {
+		t.Fatalf("expected nil, got %v", err)
+	}
+}
+
+func TestRunUninstallGoMissingPathReturnsError(t *testing.T) {
+	pkg := &core.PackageInfo{Name: "ghost", Tool: core.ToolGo, Path: ""}
+	if err := runUninstall(pkg); err == nil {
+		t.Fatal("expected error for missing path")
+	}
+}
+
+func TestRemoveGoBinaryFailsForMissingPath(t *testing.T) {
+	pkg := &core.PackageInfo{Name: "ghost", Tool: core.ToolGo, Path: ""}
+	if err := removeGoBinary(pkg); err == nil {
+		t.Fatal("expected validation error for empty path")
+	}
+}
+
+func TestRemoveUninstalledPackageState(t *testing.T) {
+	config := setupTestHomeConfig(t)
+	store := openTestStore(t, config)
+	updateTestPackage(t, store, &core.PackageInfo{Name: "ripgrep", Tool: core.ToolHomebrew})
+	closeTestStore(t, store)
+
+	pkg := &core.PackageInfo{Name: "ripgrep", Tool: core.ToolHomebrew}
+	if err := removeUninstalledPackageState(pkg); err != nil {
+		t.Fatalf("removeUninstalledPackageState failed: %v", err)
 	}
 }

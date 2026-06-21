@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -31,8 +32,6 @@ func TestDaemonStatusNotRunning(t *testing.T) {
 		t.Fatalf("Expected 'not running' message, got: %q", output)
 	}
 }
-
-
 
 // =============================================================================
 // Query Handler Tests
@@ -144,7 +143,7 @@ func TestQueryExecutionsCSV(t *testing.T) {
 func TestQueryExecutionsWithTimeFilter(t *testing.T) {
 	config := setupTestHomeConfig(t)
 	store := openTestStore(t, config)
-	
+
 	// Add old execution (2 days ago)
 	addTestExecution(t, store, &core.ExecutionRecord{
 		Tool:      core.ToolNPM,
@@ -154,7 +153,7 @@ func TestQueryExecutionsWithTimeFilter(t *testing.T) {
 		Duration:  1000 * time.Millisecond,
 		ExitCode:  0,
 	})
-	
+
 	// Add recent execution
 	addTestExecution(t, store, &core.ExecutionRecord{
 		Tool:      core.ToolNPM,
@@ -615,15 +614,15 @@ func TestBackup(t *testing.T) {
 func TestCleanup(t *testing.T) {
 	setupTestHomeConfig(t)
 	config, _ := core.LoadConfig("")
-	
+
 	// Set retention to 1 day for this test
 	config.Storage.RetentionDays = 1
 	if err := config.Save(); err != nil {
 		t.Fatalf("config.Save() failed: %v", err)
 	}
-	
+
 	store, _ := storage.NewJSONStorage(config)
-	
+
 	// Add old execution (2 days ago - should be removed)
 	if err := store.AddExecution(&core.ExecutionRecord{
 		Tool:      core.ToolNPM,
@@ -632,7 +631,7 @@ func TestCleanup(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("AddExecution failed: %v", err)
 	}
-	
+
 	// Add recent execution (should be kept)
 	if err := store.AddExecution(&core.ExecutionRecord{
 		Tool:      core.ToolNPM,
@@ -794,7 +793,7 @@ func TestGetToolColor(t *testing.T) {
 func TestFormatLastUsed(t *testing.T) {
 	tests := []struct {
 		lastUsed time.Time
-		want    string
+		want     string
 	}{
 		{time.Time{}, "never"},
 		{time.Date(2024, 1, 15, 0, 0, 0, 0, time.UTC), "2024-01-15"},
@@ -815,7 +814,7 @@ func TestTruncate(t *testing.T) {
 	tests := []struct {
 		value     string
 		maxLength int
-		want     string
+		want      string
 	}{
 		{"hello", 10, "hello"},
 		{"hello", 5, "hello"},
@@ -908,16 +907,16 @@ func TestFlagParsingComprehensive(t *testing.T) {
 	cmd.Flags().BoolVar(&jsonFlag, "json", false, "json")
 
 	tests := []struct {
-		name          string
-		args          []string
-		wantTool     string
-		wantPkg      string
-		wantLast     string
-		wantLimit    int
-		wantFormat   string
-		wantDaily    bool
-		wantWeekly   bool
-		wantJSON    bool
+		name       string
+		args       []string
+		wantTool   string
+		wantPkg    string
+		wantLast   string
+		wantLimit  int
+		wantFormat string
+		wantDaily  bool
+		wantWeekly bool
+		wantJSON   bool
 	}{
 		{
 			name:       "all flags long",
@@ -1011,7 +1010,7 @@ func TestCommandExecution(t *testing.T) {
 	var executed bool
 	var capturedArg string
 	child := &command{
-		Use: "query",
+		Use:   "query",
 		Short: "Query executions",
 		RunE: func(cmd *command, args []string) error {
 			executed = true
@@ -1149,8 +1148,8 @@ func TestGoBinaryDir(t *testing.T) {
 
 func TestNpmPackageFromPath(t *testing.T) {
 	tests := []struct {
-		path    string
-		want    string
+		path string
+		want string
 	}{
 		{"/usr/local/lib/node_modules/package/bin/tool", "package"},
 		{"/usr/local/lib/node_modules/@scope/package/bin/tool", "@scope/package"},
@@ -1322,8 +1321,8 @@ func TestPrintUsageTo(t *testing.T) {
 
 func TestCommandName(t *testing.T) {
 	tests := []struct {
-		use   string
-		want  string
+		use  string
+		want string
 	}{
 		{"diu", "diu"},
 		{"query", "query"},
@@ -1590,5 +1589,339 @@ func TestFlagSetMethod(t *testing.T) {
 
 	if val != "updated" {
 		t.Fatalf("set failed: val = %q, want 'updated'", val)
+	}
+}
+
+type stoppingChecker struct {
+	runningCalls   int
+	stopAfterCalls int
+}
+
+func (s *stoppingChecker) IsRunning(_ *core.Config) bool {
+	s.runningCalls++
+	return s.runningCalls < s.stopAfterCalls
+}
+
+type startingChecker struct {
+	runningCalls    int
+	startAfterCalls int
+}
+
+func (s *startingChecker) IsRunning(_ *core.Config) bool {
+	s.runningCalls++
+	return s.runningCalls >= s.startAfterCalls
+}
+
+type alwaysRunningChecker struct {
+	calls int
+}
+
+func (a *alwaysRunningChecker) IsRunning(_ *core.Config) bool {
+	a.calls++
+	return true
+}
+
+type sequenceDaemonChecker struct {
+	states []bool
+	calls  int
+}
+
+func (s *sequenceDaemonChecker) IsRunning(_ *core.Config) bool {
+	if len(s.states) == 0 {
+		return false
+	}
+	if s.calls >= len(s.states) {
+		return s.states[len(s.states)-1]
+	}
+	state := s.states[s.calls]
+	s.calls++
+	return state
+}
+
+func TestWaitForDaemonStartedImmediate(t *testing.T) {
+	restore := SetDaemonChecker(MockDaemonChecker{isRunning: true})
+	defer restore()
+
+	if err := waitForDaemonStarted(&core.Config{}, time.Second); err != nil {
+		t.Fatalf("expected nil, got %v", err)
+	}
+}
+
+func TestWaitForDaemonStartedAfterPolling(t *testing.T) {
+	checker := &startingChecker{startAfterCalls: 3}
+	restore := SetDaemonChecker(checker)
+	defer restore()
+
+	start := time.Now()
+	if err := waitForDaemonStarted(&core.Config{}, time.Second); err != nil {
+		t.Fatalf("expected nil, got %v", err)
+	}
+	elapsed := time.Since(start)
+	minExpected := 2 * daemonStartPollInterval
+	if elapsed < minExpected {
+		t.Fatalf("expected at least %s of polling, got %s", minExpected, elapsed)
+	}
+	if checker.runningCalls < 3 {
+		t.Fatalf("expected at least 3 IsRunning calls, got %d", checker.runningCalls)
+	}
+}
+
+func TestWaitForDaemonStartedTimeout(t *testing.T) {
+	restore := SetDaemonChecker(MockDaemonChecker{isRunning: false})
+	defer restore()
+
+	err := waitForDaemonStarted(&core.Config{}, 250*time.Millisecond)
+	if err == nil {
+		t.Fatal("expected timeout error, got nil")
+	}
+	if !strings.Contains(err.Error(), "timed out") {
+		t.Fatalf("expected 'timed out' in error, got %q", err.Error())
+	}
+}
+
+func TestWaitForDaemonStoppedImmediate(t *testing.T) {
+	restore := SetDaemonChecker(MockDaemonChecker{isRunning: false})
+	defer restore()
+
+	if err := waitForDaemonStopped(&core.Config{}, time.Second); err != nil {
+		t.Fatalf("expected nil, got %v", err)
+	}
+}
+
+func TestWaitForDaemonStoppedAfterPolling(t *testing.T) {
+	checker := &stoppingChecker{stopAfterCalls: 3}
+	restore := SetDaemonChecker(checker)
+	defer restore()
+
+	start := time.Now()
+	if err := waitForDaemonStopped(&core.Config{}, time.Second); err != nil {
+		t.Fatalf("expected nil, got %v", err)
+	}
+	elapsed := time.Since(start)
+	minExpected := 2 * daemonStopPollInterval
+	if elapsed < minExpected {
+		t.Fatalf("expected at least %s of polling, got %s", minExpected, elapsed)
+	}
+	if checker.runningCalls < 3 {
+		t.Fatalf("expected at least 3 IsRunning calls, got %d", checker.runningCalls)
+	}
+}
+
+func TestWaitForDaemonStoppedTimeout(t *testing.T) {
+	checker := &alwaysRunningChecker{}
+	restore := SetDaemonChecker(checker)
+	defer restore()
+
+	err := waitForDaemonStopped(&core.Config{}, 250*time.Millisecond)
+	if err == nil {
+		t.Fatal("expected timeout error, got nil")
+	}
+	if !strings.Contains(err.Error(), "timed out") {
+		t.Fatalf("expected 'timed out' in error, got %q", err.Error())
+	}
+}
+
+func TestRestartDaemonStopsThenStarts(t *testing.T) {
+	setupTestHomeConfig(t)
+	checker := &sequenceDaemonChecker{states: []bool{false, false, true}}
+	restore := SetDaemonChecker(checker)
+	defer restore()
+
+	oldStarter := daemonProcessStarter
+	daemonProcessStarter = func(string, []string, *syscall.ProcAttr) error {
+		return nil
+	}
+	defer func() {
+		daemonProcessStarter = oldStarter
+	}()
+
+	output := captureStdout(t, func() {
+		if err := restartDaemon(&command{}, nil); err != nil {
+			t.Fatalf("restartDaemon failed: %v", err)
+		}
+	})
+
+	if !strings.Contains(output, "not running") {
+		t.Fatalf("expected stop branch to short-circuit, got %q", output)
+	}
+	if !strings.Contains(output, "DIU daemon started") {
+		t.Fatalf("expected start branch to complete, got %q", output)
+	}
+	if checker.calls < 3 {
+		t.Fatalf("expected at least 3 IsRunning calls, got %d", checker.calls)
+	}
+}
+
+func TestPrintPackageListJSON(t *testing.T) {
+	packages := []*core.PackageInfo{
+		{Name: "ripgrep", Tool: core.ToolHomebrew, Version: "13.0"},
+	}
+	out := captureStdout(t, func() {
+		if err := printPackageList(packages, formatJSON); err != nil {
+			t.Fatalf("printPackageList JSON failed: %v", err)
+		}
+	})
+	if !strings.Contains(out, `"name": "ripgrep"`) {
+		t.Fatalf("expected JSON name, got: %q", out)
+	}
+}
+
+func TestPrintPackageListCSV(t *testing.T) {
+	packages := []*core.PackageInfo{
+		{Name: "ripgrep", Tool: core.ToolHomebrew, Version: "13.0", UsageCount: 5},
+	}
+	out := captureStdout(t, func() {
+		if err := printPackageList(packages, formatCSV); err != nil {
+			t.Fatalf("printPackageList CSV failed: %v", err)
+		}
+	})
+	if !strings.Contains(out, "tool,name,version") {
+		t.Fatalf("expected CSV header, got: %q", out)
+	}
+	if !strings.Contains(out, "ripgrep") {
+		t.Fatalf("expected package row, got: %q", out)
+	}
+}
+
+func TestManagePackagesDryRun(t *testing.T) {
+	config := setupTestHomeConfig(t)
+	store := openTestStore(t, config)
+	updateTestPackage(t, store, &core.PackageInfo{
+		Name:    "ripgrep",
+		Tool:    core.ToolHomebrew,
+		Version: "13.0",
+	})
+	closeTestStore(t, store)
+
+	cmd := manageCommandForTest(t, "--uninstall", "ripgrep", "--dry-run")
+
+	out := captureStdout(t, func() {
+		if err := managePackages(cmd, nil); err != nil {
+			t.Fatalf("managePackages failed: %v", err)
+		}
+	})
+	if !strings.Contains(out, "brew uninstall ripgrep") {
+		t.Fatalf("expected dry-run plan, got: %q", out)
+	}
+}
+
+func TestManagePackagesSearch(t *testing.T) {
+	config := setupTestHomeConfig(t)
+	store := openTestStore(t, config)
+	updateTestPackage(t, store, &core.PackageInfo{
+		Name: "ripgrep",
+		Tool: core.ToolHomebrew,
+	})
+	closeTestStore(t, store)
+
+	cmd := manageCommandForTest(t, "--search", "rip")
+	out := captureStdout(t, func() {
+		if err := managePackages(cmd, nil); err != nil {
+			t.Fatalf("managePackages failed: %v", err)
+		}
+	})
+	if !strings.Contains(out, "ripgrep") {
+		t.Fatalf("expected ripgrep in output, got: %q", out)
+	}
+}
+
+func TestUninstallByNameNotFound(t *testing.T) {
+	setupTestHomeConfig(t)
+	err := uninstallByName("nonexistent", "", true, false)
+	if err == nil {
+		t.Fatal("expected not-found error")
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("expected 'not found', got %v", err)
+	}
+}
+
+func TestUninstallByNameRequiresYes(t *testing.T) {
+	setupTestHomeConfig(t)
+	err := uninstallByName("anything", "", false, false)
+	if err == nil {
+		t.Fatal("expected --yes required error")
+	}
+	if !strings.Contains(err.Error(), "--yes") {
+		t.Fatalf("expected --yes message, got %v", err)
+	}
+}
+
+func TestUninstallByNameMultipleMatches(t *testing.T) {
+	config := setupTestHomeConfig(t)
+	store := openTestStore(t, config)
+	updateTestPackage(t, store, &core.PackageInfo{Name: "lodash", Tool: core.ToolHomebrew})
+	updateTestPackage(t, store, &core.PackageInfo{Name: "lodash", Tool: core.ToolNPM})
+	closeTestStore(t, store)
+
+	err := uninstallByName("lodash", "", true, false)
+	if err == nil {
+		t.Fatal("expected multiple-matches error")
+	}
+	if !strings.Contains(err.Error(), "multiple packages") {
+		t.Fatalf("expected multiple-packages error, got %v", err)
+	}
+}
+
+func TestUninstallByNameDryRun(t *testing.T) {
+	config := setupTestHomeConfig(t)
+	store := openTestStore(t, config)
+	updateTestPackage(t, store, &core.PackageInfo{Name: "typescript", Tool: core.ToolNPM})
+	closeTestStore(t, store)
+
+	out := captureStdout(t, func() {
+		if err := uninstallByName("typescript", "", false, true); err != nil {
+			t.Fatalf("dry-run uninstall failed: %v", err)
+		}
+	})
+	if !strings.Contains(out, "npm uninstall") {
+		t.Fatalf("expected npm uninstall plan, got: %q", out)
+	}
+}
+
+func TestUninstallByNameAssumeYesExecutes(t *testing.T) {
+	prependFakeCommand(t, "npm", "#!/bin/sh\nexit 0\n")
+	config := setupTestHomeConfig(t)
+	store := openTestStore(t, config)
+	updateTestPackage(t, store, &core.PackageInfo{Name: "typescript", Tool: core.ToolNPM})
+	closeTestStore(t, store)
+
+	out := captureStdout(t, func() {
+		if err := uninstallByName("typescript", "", true, false); err != nil {
+			t.Fatalf("uninstall failed: %v", err)
+		}
+	})
+	if !strings.Contains(out, "uninstalled") {
+		t.Fatalf("expected uninstalled, got: %q", out)
+	}
+}
+
+func TestScanPackagesNoEnabledTools(t *testing.T) {
+	setupTestHomeConfig(t)
+	out := captureStdout(t, func() {
+		if err := scanPackages(&command{}, nil); err != nil {
+			t.Fatalf("scanPackages failed: %v", err)
+		}
+	})
+	if !strings.Contains(out, "packages scanned") {
+		t.Fatalf("expected 'packages scanned' message, got: %q", out)
+	}
+}
+
+func TestInstallWrappersSkipsUnknownTool(t *testing.T) {
+	config := setupTestHomeConfig(t)
+	config.Monitoring.EnabledTools = []string{"unknown-tool"}
+
+	if err := installWrappers(config); err != nil {
+		t.Fatalf("expected nil for unknown tool, got %v", err)
+	}
+}
+
+func TestInstallWrappersInitializesKnownTool(t *testing.T) {
+	config := setupTestHomeConfig(t)
+	config.Monitoring.EnabledTools = []string{core.ToolGoBinary}
+
+	if err := installWrappers(config); err != nil {
+		t.Fatalf("installWrappers failed: %v", err)
 	}
 }

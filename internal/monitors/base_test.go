@@ -239,6 +239,121 @@ func TestMonitorRegistryOverwrite(t *testing.T) {
 	}
 }
 
+type enrichMonitor struct {
+	*BaseMonitor
+	parsed *core.ExecutionRecord
+	err    error
+}
+
+func (e *enrichMonitor) Start(ctx context.Context, eventChan chan<- *core.ExecutionRecord) error {
+	return nil
+}
+
+func (e *enrichMonitor) GetInstalledPackages() ([]*core.PackageInfo, error) {
+	return nil, nil
+}
+
+func (e *enrichMonitor) ParseCommand(cmd string, args []string) (*core.ExecutionRecord, error) {
+	return e.parsed, e.err
+}
+
+func TestEnrichExecutionRecordParseError(t *testing.T) {
+	m := &enrichMonitor{BaseMonitor: NewBaseMonitor("m"), err: errors.New("boom")}
+	record := &core.ExecutionRecord{Command: "x"}
+
+	EnrichExecutionRecord(m, record)
+
+	if record.PackagesAffected != nil {
+		t.Fatalf("expected no packages, got %v", record.PackagesAffected)
+	}
+	if record.Metadata != nil {
+		t.Fatalf("expected no metadata, got %v", record.Metadata)
+	}
+}
+
+func TestEnrichExecutionRecordFillsPackages(t *testing.T) {
+	m := &enrichMonitor{
+		BaseMonitor: NewBaseMonitor("m"),
+		parsed: &core.ExecutionRecord{
+			PackagesAffected: []string{"a", "b"},
+		},
+	}
+	record := &core.ExecutionRecord{Command: "x"}
+
+	EnrichExecutionRecord(m, record)
+
+	if len(record.PackagesAffected) != 2 || record.PackagesAffected[0] != "a" {
+		t.Fatalf("packages not filled: %v", record.PackagesAffected)
+	}
+}
+
+func TestEnrichExecutionRecordDoesNotOverwritePackages(t *testing.T) {
+	m := &enrichMonitor{
+		BaseMonitor: NewBaseMonitor("m"),
+		parsed: &core.ExecutionRecord{
+			PackagesAffected: []string{"new"},
+		},
+	}
+	record := &core.ExecutionRecord{PackagesAffected: []string{"existing"}}
+
+	EnrichExecutionRecord(m, record)
+
+	if len(record.PackagesAffected) != 1 || record.PackagesAffected[0] != "existing" {
+		t.Fatalf("expected packages preserved, got %v", record.PackagesAffected)
+	}
+}
+
+func TestEnrichExecutionRecordMergesMetadata(t *testing.T) {
+	m := &enrichMonitor{
+		BaseMonitor: NewBaseMonitor("m"),
+		parsed: &core.ExecutionRecord{
+			Metadata: map[string]interface{}{"new": 1, "shared": "from-parse"},
+		},
+	}
+	record := &core.ExecutionRecord{
+		Metadata: map[string]interface{}{"shared": "from-record"},
+	}
+
+	EnrichExecutionRecord(m, record)
+
+	if record.Metadata["new"] != 1 {
+		t.Fatalf("expected new key added, got %v", record.Metadata["new"])
+	}
+	if record.Metadata["shared"] != "from-record" {
+		t.Fatalf("expected shared preserved, got %v", record.Metadata["shared"])
+	}
+}
+
+func TestEnrichExecutionRecordCreatesMetadataMap(t *testing.T) {
+	m := &enrichMonitor{
+		BaseMonitor: NewBaseMonitor("m"),
+		parsed: &core.ExecutionRecord{
+			Metadata: map[string]interface{}{"k": "v"},
+		},
+	}
+	record := &core.ExecutionRecord{}
+
+	EnrichExecutionRecord(m, record)
+
+	if record.Metadata == nil || record.Metadata["k"] != "v" {
+		t.Fatalf("expected metadata initialized, got %v", record.Metadata)
+	}
+}
+
+func TestEnrichExecutionRecordEmptyMetadataSkipsAlloc(t *testing.T) {
+	m := &enrichMonitor{
+		BaseMonitor: NewBaseMonitor("m"),
+		parsed:      &core.ExecutionRecord{},
+	}
+	record := &core.ExecutionRecord{}
+
+	EnrichExecutionRecord(m, record)
+
+	if record.Metadata != nil {
+		t.Fatalf("expected metadata stays nil, got %v", record.Metadata)
+	}
+}
+
 func TestContainsHelper(t *testing.T) {
 	tests := []struct {
 		slice    []string

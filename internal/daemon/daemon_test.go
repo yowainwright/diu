@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -700,6 +701,14 @@ func TestIsRunning(t *testing.T) {
 		t.Error("Should return false for invalid PID")
 	}
 
+	if err := os.WriteFile(cfg.Daemon.PIDFile, []byte(strconv.Itoa(os.Getpid())+"\n"), core.PrivateFileMode); err != nil {
+		t.Fatalf("Failed to write PID file: %v", err)
+	}
+
+	if !IsRunning(cfg) {
+		t.Error("Should return true for current process PID with trailing newline")
+	}
+
 	if err := os.WriteFile(cfg.Daemon.PIDFile, []byte("999999999"), core.PrivateFileMode); err != nil {
 		t.Fatalf("Failed to write PID file: %v", err)
 	}
@@ -815,7 +824,7 @@ func TestDaemonHTTPServerWithAPI(t *testing.T) {
 	cfg := testConfig(t)
 	cfg.API.Enabled = true
 	cfg.API.Host = "127.0.0.1"
-	cfg.API.Port = 18081
+	cfg.API.Port = 0
 
 	d, err := NewDaemon(cfg)
 	if err != nil {
@@ -832,7 +841,7 @@ func TestDaemonHTTPServerWithAPI(t *testing.T) {
 
 	time.Sleep(100 * time.Millisecond)
 
-	resp, err := http.Get("http://127.0.0.1:18081/api/v1/health")
+	resp, err := http.Get("http://" + d.httpServer.Addr + "/api/v1/health")
 	if err != nil {
 		t.Fatalf("Failed to make HTTP request: %v", err)
 	}
@@ -873,6 +882,46 @@ func TestHandleExecutionsWithLimit(t *testing.T) {
 	if len(executions) != 5 {
 		t.Errorf("Expected 5 executions with limit, got %d", len(executions))
 	}
+}
+
+func TestDaemonWaitUnblocksAfterStop(t *testing.T) {
+	cfg := testConfig(t)
+	d, err := NewDaemon(cfg)
+	if err != nil {
+		t.Fatalf("NewDaemon failed: %v", err)
+	}
+	if err := d.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		d.Wait()
+		close(done)
+	}()
+
+	if err := d.Stop(); err != nil {
+		t.Fatalf("Stop failed: %v", err)
+	}
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Wait did not unblock after Stop")
+	}
+}
+
+func TestDaemonPruneOldRecordsHandlesCleanupError(t *testing.T) {
+	cfg := testConfig(t)
+	d, err := NewDaemon(cfg)
+	if err != nil {
+		t.Fatalf("NewDaemon failed: %v", err)
+	}
+
+	mock := newMockStorage()
+	d.storage = mock
+
+	d.pruneOldRecords()
 }
 
 func TestProcessEventsChannelClose(t *testing.T) {

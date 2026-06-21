@@ -11,6 +11,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -191,7 +192,7 @@ func (d *Daemon) enrichExecution(record *core.ExecutionRecord) {
 	if record.Timestamp.IsZero() {
 		record.Timestamp = time.Now()
 	}
-	
+
 	monitor, ok := d.registry.Get(record.Tool)
 	if !ok {
 		return
@@ -306,21 +307,23 @@ func (d *Daemon) startHTTPServer() error {
 	mux.HandleFunc("/api/v1/health", d.handleHealth)
 
 	addr := fmt.Sprintf("%s:%d", d.config.API.Host, d.config.API.Port)
-	d.httpServer = &http.Server{
-		Addr:              addr,
-		Handler:           mux,
-		ReadHeaderTimeout: core.DefaultShutdownTimeout,
-	}
 
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
 		return fmt.Errorf("failed to listen on %s: %w", addr, err)
 	}
+	actualAddr := listener.Addr().String()
+
+	d.httpServer = &http.Server{
+		Addr:              actualAddr,
+		Handler:           mux,
+		ReadHeaderTimeout: core.DefaultShutdownTimeout,
+	}
 
 	d.wg.Add(1)
 	go func() {
 		defer d.wg.Done()
-		log.Printf("HTTP API server listening on %s", addr)
+		log.Printf("HTTP API server listening on %s", actualAddr)
 		if err := d.httpServer.Serve(listener); err != nil && err != http.ErrServerClosed {
 			log.Printf("HTTP server error: %v", err)
 		}
@@ -471,7 +474,7 @@ func IsRunning(config *core.Config) bool {
 		return false
 	}
 
-	pid, err := strconv.Atoi(string(pidBytes))
+	pid, err := strconv.Atoi(strings.TrimSpace(string(pidBytes)))
 	if err != nil {
 		return false
 	}

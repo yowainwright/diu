@@ -433,8 +433,6 @@ func readPrompt(reader *bufio.Reader, prompt string) (string, error) {
 	return strings.TrimSpace(input), nil
 }
 
-
-
 // newMonitor creates a monitor for the given tool
 func newMonitor(tool string) (monitors.Monitor, error) {
 	switch core.NormalizeToolName(tool) {
