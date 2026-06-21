@@ -48,6 +48,11 @@ func TestDefaultConfig(t *testing.T) {
 	if len(config.Monitoring.EnabledTools) == 0 {
 		t.Error("Expected enabled tools to be configured")
 	}
+	for _, tool := range []string{ToolPNPM, ToolBun, ToolPip, ToolUV, ToolPoetry} {
+		if !containsString(config.Monitoring.EnabledTools, tool) {
+			t.Errorf("Expected %s to be enabled by default, got %#v", tool, config.Monitoring.EnabledTools)
+		}
+	}
 
 	if !config.API.Enabled {
 		t.Error("Expected API to be enabled by default")
@@ -250,4 +255,13 @@ func TestShellEscapeString(t *testing.T) {
 	if got != want {
 		t.Fatalf("ShellEscapeString = %q, want %q", got, want)
 	}
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }

@@ -503,6 +503,14 @@ func runUninstall(pkg *core.PackageInfo) error {
 		return runHomebrewUninstall(pkg.Name, true)
 	case core.ToolNPM:
 		return runNPMUninstall(pkg.Name)
+	case core.ToolPNPM:
+		return runPNPMUninstall(pkg.Name)
+	case core.ToolBun:
+		return runBunUninstall(pkg.Name)
+	case core.ToolPip:
+		return runPipUninstall(pkg.Name)
+	case core.ToolUV:
+		return runUVUninstall(pkg.Name)
 	default:
 		return fmt.Errorf("uninstall is not supported for %s packages", pkg.Tool)
 	}

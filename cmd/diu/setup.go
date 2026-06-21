@@ -224,6 +224,14 @@ func installExecutableWrappers(config *core.Config) error {
 // discoverExecutableWrappers discovers executables to wrap
 func discoverExecutableWrappers(config *core.Config) []executableWrapper {
 	targets := make(map[string]executableWrapper)
+	toolEnabled := func(tool string) bool {
+		for _, enabled := range config.Monitoring.EnabledTools {
+			if core.NormalizeToolName(enabled) == tool {
+				return true
+			}
+		}
+		return false
+	}
 	addExecutableDir := func(tool, dir string) {
 		if dir == "" {
 			return
@@ -260,8 +268,43 @@ func discoverExecutableWrappers(config *core.Config) []executableWrapper {
 	if npmBin := npmGlobalBinDir(); npmBin != "" {
 		addExecutableDir(core.ToolNPM, npmBin)
 	}
+	for _, dir := range config.Monitoring.Filesystem.WatchPaths[core.ToolNPM] {
+		addExecutableDir(core.ToolNPM, dir)
+	}
+	if toolEnabled(core.ToolPNPM) {
+		if pnpmBin := pnpmGlobalBinDir(); pnpmBin != "" {
+			addExecutableDir(core.ToolPNPM, pnpmBin)
+		}
+	}
+	for _, dir := range config.Monitoring.Filesystem.WatchPaths[core.ToolPNPM] {
+		addExecutableDir(core.ToolPNPM, dir)
+	}
+	if toolEnabled(core.ToolBun) {
+		if bunBin := bunGlobalBinDir(); bunBin != "" {
+			addExecutableDir(core.ToolBun, bunBin)
+		}
+	}
+	for _, dir := range config.Monitoring.Filesystem.WatchPaths[core.ToolBun] {
+		addExecutableDir(core.ToolBun, dir)
+	}
 	if goBin := goBinaryDir(config); goBin != "" {
 		addExecutableDir(core.ToolGo, goBin)
+	}
+	if toolEnabled(core.ToolPip) {
+		if pythonBin := pythonUserBaseBinDir(); pythonBin != "" {
+			addExecutableDir(core.ToolPip, pythonBin)
+		}
+	}
+	for _, dir := range config.Monitoring.Filesystem.WatchPaths[core.ToolPip] {
+		addExecutableDir(core.ToolPip, dir)
+	}
+	if toolEnabled(core.ToolUV) {
+		if uvBin := uvToolBinDir(); uvBin != "" {
+			addExecutableDir(core.ToolUV, uvBin)
+		}
+	}
+	for _, dir := range config.Monitoring.Filesystem.WatchPaths[core.ToolUV] {
+		addExecutableDir(core.ToolUV, dir)
 	}
 
 	results := make([]executableWrapper, 0, len(targets))

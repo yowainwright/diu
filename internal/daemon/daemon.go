@@ -53,8 +53,18 @@ func NewDaemon(config *core.Config) (*Daemon, error) {
 			monitor = monitors.NewHomebrewMonitor()
 		case core.ToolNPM:
 			monitor = monitors.NewNPMMonitor()
+		case core.ToolPNPM:
+			monitor = monitors.NewPNPMMonitor()
+		case core.ToolBun:
+			monitor = monitors.NewBunMonitor()
 		case core.ToolGo:
 			monitor = monitors.NewGoMonitor()
+		case core.ToolPip:
+			monitor = monitors.NewPipMonitor()
+		case core.ToolUV:
+			monitor = monitors.NewUVMonitor()
+		case core.ToolPoetry:
+			monitor = monitors.NewPoetryMonitor()
 		default:
 			log.Printf("Unknown tool: %s", tool)
 			continue

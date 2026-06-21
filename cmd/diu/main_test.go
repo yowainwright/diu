@@ -159,6 +159,10 @@ func TestUninstallPlan(t *testing.T) {
 	const (
 		homebrewPackage = "jq"
 		npmPackage      = "eslint"
+		pnpmPackage     = "tsx"
+		bunPackage      = "prettier"
+		pipPackage      = "ruff"
+		uvPackage       = "black"
 		goPackage       = "golangci-lint"
 		goPath          = "/Users/test/go/bin/golangci-lint"
 	)
@@ -177,6 +181,26 @@ func TestUninstallPlan(t *testing.T) {
 			name: "npm",
 			pkg:  &core.PackageInfo{Name: npmPackage, Tool: core.ToolNPM},
 			want: []string{npmCommandName, uninstallSubcommand, npmGlobalFlag, npmPackage},
+		},
+		{
+			name: "pnpm",
+			pkg:  &core.PackageInfo{Name: pnpmPackage, Tool: core.ToolPNPM},
+			want: []string{pnpmCommandName, removeSubcommand, npmGlobalFlag, pnpmPackage},
+		},
+		{
+			name: "bun",
+			pkg:  &core.PackageInfo{Name: bunPackage, Tool: core.ToolBun},
+			want: []string{bunCommandName, removeSubcommand, npmGlobalFlag, bunPackage},
+		},
+		{
+			name: "pip",
+			pkg:  &core.PackageInfo{Name: pipPackage, Tool: core.ToolPip},
+			want: []string{pipCommandName, uninstallSubcommand, pipYesFlag, pipPackage},
+		},
+		{
+			name: "uv",
+			pkg:  &core.PackageInfo{Name: uvPackage, Tool: core.ToolUV},
+			want: []string{uvCommandName, "tool", uninstallSubcommand, uvPackage},
 		},
 		{
 			name: "go executable",
@@ -701,6 +725,49 @@ func TestInstallExecutableWrappersWritesScripts(t *testing.T) {
 	}
 }
 
+func TestDiscoverExecutableWrappersForAdditionalManagers(t *testing.T) {
+	config := setupTestHomeConfig(t)
+	t.Setenv("PATH", t.TempDir())
+
+	pnpmDir := t.TempDir()
+	bunDir := t.TempDir()
+	pipDir := t.TempDir()
+	uvDir := t.TempDir()
+	writeExecutableForTest(t, filepath.Join(pnpmDir, "tsx"), "#!/bin/bash\nexit 0\n")
+	writeExecutableForTest(t, filepath.Join(bunDir, "prettier"), "#!/bin/bash\nexit 0\n")
+	writeExecutableForTest(t, filepath.Join(pipDir, "ruff"), "#!/bin/bash\nexit 0\n")
+	writeExecutableForTest(t, filepath.Join(uvDir, "black"), "#!/bin/bash\nexit 0\n")
+
+	config.Monitoring.Filesystem.WatchPaths = map[string][]string{
+		core.ToolPNPM: {pnpmDir},
+		core.ToolBun:  {bunDir},
+		core.ToolPip:  {pipDir},
+		core.ToolUV:   {uvDir},
+	}
+	config.Tools.Go.GoBin = filepath.Join(t.TempDir(), "missing")
+
+	targets := discoverExecutableWrappers(config)
+	byName := make(map[string]executableWrapper)
+	for _, target := range targets {
+		byName[target.Name] = target
+	}
+
+	for name, wantTool := range map[string]string{
+		"tsx":      core.ToolPNPM,
+		"prettier": core.ToolBun,
+		"ruff":     core.ToolPip,
+		"black":    core.ToolUV,
+	} {
+		target, ok := byName[name]
+		if !ok {
+			t.Fatalf("Expected target %s in %#v", name, targets)
+		}
+		if target.Tool != wantTool || target.Package != name {
+			t.Fatalf("Target %s = %#v, want tool %s package %s", name, target, wantTool, name)
+		}
+	}
+}
+
 func TestUninstallGoBinaryRemovesExecutableWrapperAndState(t *testing.T) {
 	config := setupTestHomeConfig(t)
 	if err := os.MkdirAll(config.Monitoring.Process.WrapperDir, core.OwnerDirectoryMode); err != nil {
@@ -1087,6 +1154,44 @@ func TestRunUninstallNPMDispatch(t *testing.T) {
 	pkg := &core.PackageInfo{Name: "typescript", Tool: core.ToolNPM}
 	if err := runUninstall(pkg); err != nil {
 		t.Fatalf("expected nil, got %v", err)
+	}
+}
+
+func TestRunUninstallAdditionalPackageManagerDispatch(t *testing.T) {
+	tests := []struct {
+		name        string
+		commandName string
+		pkg         *core.PackageInfo
+	}{
+		{
+			name:        "pnpm",
+			commandName: pnpmCommandName,
+			pkg:         &core.PackageInfo{Name: "tsx", Tool: core.ToolPNPM},
+		},
+		{
+			name:        "bun",
+			commandName: bunCommandName,
+			pkg:         &core.PackageInfo{Name: "prettier", Tool: core.ToolBun},
+		},
+		{
+			name:        "pip",
+			commandName: pipCommandName,
+			pkg:         &core.PackageInfo{Name: "ruff", Tool: core.ToolPip},
+		},
+		{
+			name:        "uv",
+			commandName: uvCommandName,
+			pkg:         &core.PackageInfo{Name: "black", Tool: core.ToolUV},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			prependFakeCommand(t, tt.commandName, "#!/bin/sh\nexit 0\n")
+			if err := runUninstall(tt.pkg); err != nil {
+				t.Fatalf("expected nil, got %v", err)
+			}
+		})
 	}
 }
 
