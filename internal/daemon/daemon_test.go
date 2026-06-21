@@ -968,3 +968,43 @@ func TestProcessEventsChannelClose(t *testing.T) {
 		t.Errorf("Expected 1 execution, got %d", mockStore.getExecutionCount())
 	}
 }
+
+func TestProcessEventsDrainsQueuedEventsOnCancel(t *testing.T) {
+	cfg := testConfig(t)
+
+	d, err := NewDaemon(cfg)
+	if err != nil {
+		t.Fatalf("NewDaemon failed: %v", err)
+	}
+
+	mockStore := newMockStorage()
+	d.storage = mockStore
+	d.eventChan = make(chan *core.ExecutionRecord, 2)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	d.ctx = ctx
+	d.cancel = cancel
+
+	d.eventChan <- &core.ExecutionRecord{ID: "one", Tool: "homebrew"}
+	d.eventChan <- &core.ExecutionRecord{ID: "two", Tool: "npm"}
+	cancel()
+
+	d.wg.Add(1)
+	go d.processEvents()
+
+	done := make(chan struct{})
+	go func() {
+		d.wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("processEvents did not exit after cancellation")
+	}
+
+	if got := mockStore.getExecutionCount(); got != 2 {
+		t.Fatalf("Expected 2 drained executions, got %d", got)
+	}
+}

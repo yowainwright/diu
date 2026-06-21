@@ -1,6 +1,7 @@
 package monitors
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -13,6 +14,12 @@ func TestHomebrewMonitor(t *testing.T) {
 
 	if monitor.Name() != "homebrew" {
 		t.Errorf("Expected monitor name 'homebrew', got %s", monitor.Name())
+	}
+}
+
+func TestHomebrewMonitorStart(t *testing.T) {
+	if err := NewHomebrewMonitor().(*HomebrewMonitor).Start(context.Background(), make(chan *core.ExecutionRecord)); err != nil {
+		t.Fatalf("Start failed: %v", err)
 	}
 }
 
@@ -84,6 +91,59 @@ func TestHomebrewParseCommand(t *testing.T) {
 			},
 		},
 		{
+			name: "upgrade package",
+			args: []string{"upgrade", "wget"},
+			expected: struct {
+				packages []string
+				metadata map[string]interface{}
+			}{
+				packages: []string{"wget"},
+				metadata: map[string]interface{}{
+					"subcommand": "upgrade",
+				},
+			},
+		},
+		{
+			name: "reinstall package",
+			args: []string{"reinstall", "wget"},
+			expected: struct {
+				packages []string
+				metadata map[string]interface{}
+			}{
+				packages: []string{"wget"},
+				metadata: map[string]interface{}{
+					"subcommand": "reinstall",
+					"action":     "reinstall",
+				},
+			},
+		},
+		{
+			name: "tap command",
+			args: []string{"tap", "owner/tap"},
+			expected: struct {
+				packages []string
+				metadata map[string]interface{}
+			}{
+				metadata: map[string]interface{}{
+					"subcommand": "tap",
+					"tap":        "owner/tap",
+				},
+			},
+		},
+		{
+			name: "untap command",
+			args: []string{"untap", "owner/tap"},
+			expected: struct {
+				packages []string
+				metadata map[string]interface{}
+			}{
+				metadata: map[string]interface{}{
+					"subcommand": "untap",
+					"untap":      "owner/tap",
+				},
+			},
+		},
+		{
 			name: "list command",
 			args: []string{"list"},
 			expected: struct {
@@ -94,6 +154,46 @@ func TestHomebrewParseCommand(t *testing.T) {
 				metadata: map[string]interface{}{
 					"subcommand": "list",
 					"action":     "list",
+				},
+			},
+		},
+		{
+			name: "search command",
+			args: []string{"search", "postgres", "client"},
+			expected: struct {
+				packages []string
+				metadata map[string]interface{}
+			}{
+				metadata: map[string]interface{}{
+					"subcommand":  "search",
+					"search_term": "postgres client",
+				},
+			},
+		},
+		{
+			name: "info command",
+			args: []string{"info", "wget"},
+			expected: struct {
+				packages []string
+				metadata map[string]interface{}
+			}{
+				packages: []string{"wget"},
+				metadata: map[string]interface{}{
+					"subcommand": "info",
+				},
+			},
+		},
+		{
+			name: "services command",
+			args: []string{"services", "restart", "postgresql"},
+			expected: struct {
+				packages []string
+				metadata map[string]interface{}
+			}{
+				packages: []string{"postgresql"},
+				metadata: map[string]interface{}{
+					"subcommand":     "services",
+					"service_action": "restart",
 				},
 			},
 		},

@@ -250,8 +250,8 @@ func TestEnsureDirectories(t *testing.T) {
 }
 
 func TestShellEscapeString(t *testing.T) {
-	got := ShellEscapeString(`a\b"$c`)
-	want := `a\\b\"\$c`
+	got := ShellEscapeString("a\\b\"$c`date`")
+	want := "a\\\\b\\\"\\$c\\`date\\`"
 	if got != want {
 		t.Fatalf("ShellEscapeString = %q, want %q", got, want)
 	}

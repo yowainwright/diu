@@ -77,6 +77,23 @@ const (
 	packageUsageColumnWidth      = 4
 )
 
+type executablePathDeps struct {
+	getenv        func(string) string
+	userHomeDir   func() (string, error)
+	lookPath      func(string) (string, error)
+	commandOutput func(string, ...string) ([]byte, error)
+}
+
+var defaultExecutablePathDeps = executablePathDeps{
+	getenv:      os.Getenv,
+	userHomeDir: os.UserHomeDir,
+	lookPath:    exec.LookPath,
+	commandOutput: func(name string, args ...string) ([]byte, error) {
+		// #nosec G204 -- callers pass fixed command names and argument lists from allowlisted helpers.
+		return exec.Command(name, args...).Output()
+	},
+}
+
 // closeStore closes the storage and logs any errors
 func closeStore(store storage.Storage) {
 	if err := store.Close(); err != nil {
@@ -264,14 +281,17 @@ func npmGlobalBinDir() string {
 
 // pnpmGlobalBinDir returns the pnpm global executable directory.
 func pnpmGlobalBinDir() string {
-	if pnpmHome := os.Getenv("PNPM_HOME"); pnpmHome != "" {
+	return pnpmGlobalBinDirWithDeps(defaultExecutablePathDeps)
+}
+
+func pnpmGlobalBinDirWithDeps(deps executablePathDeps) string {
+	if pnpmHome := deps.getenv("PNPM_HOME"); pnpmHome != "" {
 		return pnpmHome
 	}
-	if _, err := exec.LookPath(pnpmCommandName); err != nil {
+	if _, err := deps.lookPath(pnpmCommandName); err != nil {
 		return ""
 	}
-	// #nosec G204 -- pnpm command and arguments are fixed constants used only to locate the global bin directory.
-	output, err := exec.Command(pnpmCommandName, "bin", npmGlobalFlag).Output()
+	output, err := deps.commandOutput(pnpmCommandName, "bin", npmGlobalFlag)
 	if err != nil {
 		return ""
 	}
@@ -280,13 +300,17 @@ func pnpmGlobalBinDir() string {
 
 // bunGlobalBinDir returns the Bun global executable directory.
 func bunGlobalBinDir() string {
-	if bunInstall := os.Getenv("BUN_INSTALL"); bunInstall != "" {
+	return bunGlobalBinDirWithDeps(defaultExecutablePathDeps)
+}
+
+func bunGlobalBinDirWithDeps(deps executablePathDeps) string {
+	if bunInstall := deps.getenv("BUN_INSTALL"); bunInstall != "" {
 		return filepath.Join(bunInstall, "bin")
 	}
-	homeDir := os.Getenv("HOME")
+	homeDir := deps.getenv("HOME")
 	if homeDir == "" {
 		var err error
-		homeDir, err = os.UserHomeDir()
+		homeDir, err = deps.userHomeDir()
 		if err != nil {
 			return ""
 		}
@@ -296,12 +320,15 @@ func bunGlobalBinDir() string {
 
 // pythonUserBaseBinDir returns the Python user-base script directory.
 func pythonUserBaseBinDir() string {
-	python, err := firstExistingCommand("python3", "python")
+	return pythonUserBaseBinDirWithDeps(defaultExecutablePathDeps)
+}
+
+func pythonUserBaseBinDirWithDeps(deps executablePathDeps) string {
+	python, err := firstExistingCommandWithDeps(deps, "python3", "python")
 	if err != nil {
 		return ""
 	}
-	// #nosec G204 -- python is resolved from PATH and arguments are fixed constants used only to locate the user script directory.
-	output, err := exec.Command(python, "-m", "site", "--user-base").Output()
+	output, err := deps.commandOutput(python, "-m", "site", "--user-base")
 	if err != nil {
 		return ""
 	}
@@ -314,13 +341,17 @@ func pythonUserBaseBinDir() string {
 
 // uvToolBinDir returns the uv tool executable directory.
 func uvToolBinDir() string {
-	if dir := os.Getenv("UV_TOOL_BIN_DIR"); dir != "" {
+	return uvToolBinDirWithDeps(defaultExecutablePathDeps)
+}
+
+func uvToolBinDirWithDeps(deps executablePathDeps) string {
+	if dir := deps.getenv("UV_TOOL_BIN_DIR"); dir != "" {
 		return dir
 	}
-	homeDir := os.Getenv("HOME")
+	homeDir := deps.getenv("HOME")
 	if homeDir == "" {
 		var err error
-		homeDir, err = os.UserHomeDir()
+		homeDir, err = deps.userHomeDir()
 		if err != nil {
 			return ""
 		}
@@ -329,9 +360,13 @@ func uvToolBinDir() string {
 }
 
 func firstExistingCommand(names ...string) (string, error) {
+	return firstExistingCommandWithDeps(defaultExecutablePathDeps, names...)
+}
+
+func firstExistingCommandWithDeps(deps executablePathDeps, names ...string) (string, error) {
 	var lastErr error
 	for _, name := range names {
-		if _, err := exec.LookPath(name); err == nil {
+		if _, err := deps.lookPath(name); err == nil {
 			return name, nil
 		} else {
 			lastErr = err
@@ -342,18 +377,22 @@ func firstExistingCommand(names ...string) (string, error) {
 
 // goBinaryDir returns the Go binary directory
 func goBinaryDir(config *core.Config) string {
+	return goBinaryDirWithDeps(config, defaultExecutablePathDeps)
+}
+
+func goBinaryDirWithDeps(config *core.Config, deps executablePathDeps) string {
 	if config.Tools.Go.GoBin != "" {
 		return config.Tools.Go.GoBin
 	}
-	if goBin := os.Getenv("GOBIN"); goBin != "" {
+	if goBin := deps.getenv("GOBIN"); goBin != "" {
 		return goBin
 	}
 	goPath := config.Tools.Go.GoPath
 	if goPath == "" {
-		goPath = os.Getenv("GOPATH")
+		goPath = deps.getenv("GOPATH")
 	}
 	if goPath == "" {
-		homeDir, err := os.UserHomeDir()
+		homeDir, err := deps.userHomeDir()
 		if err != nil {
 			return ""
 		}

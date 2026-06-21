@@ -678,6 +678,78 @@ func TestScanPackagesDiscoversExecutableWrappers(t *testing.T) {
 	}
 }
 
+func TestScanPackagesAdditionalManagers(t *testing.T) {
+	config := setupTestHomeConfig(t)
+	t.Setenv("PATH", t.TempDir())
+
+	originalDeps := defaultExecutablePathDeps
+	t.Cleanup(func() {
+		defaultExecutablePathDeps = originalDeps
+	})
+	defaultExecutablePathDeps = fakeExecutablePathDeps(nil, nil, nil, "", errors.New("home failed"))
+
+	prependFakeCommand(t, pnpmCommandName, `#!/bin/sh
+if [ "$1" = "list" ] && [ "$2" = "-g" ] && [ "$3" = "--depth=0" ] && [ "$4" = "--json" ]; then
+  printf '[{"dependencies":{"tsx":{"version":"4.19.0"}}}]\n'
+  exit 0
+fi
+exit 2
+`)
+	prependFakeCommand(t, bunCommandName, `#!/bin/sh
+if [ "$1" = "pm" ] && [ "$2" = "ls" ] && [ "$3" = "-g" ] && [ "$4" = "--json" ]; then
+  printf '{"dependencies":{"prettier":{"version":"3.3.0"}}}\n'
+  exit 0
+fi
+exit 2
+`)
+	prependFakeCommand(t, "pip3", `#!/bin/sh
+if [ "$1" = "list" ] && [ "$2" = "--format=json" ]; then
+  printf '[{"name":"requests","version":"2.32.0"}]\n'
+  exit 0
+fi
+exit 2
+`)
+	prependFakeCommand(t, uvCommandName, `#!/bin/sh
+if [ "$1" = "tool" ] && [ "$2" = "list" ]; then
+  printf 'ruff 0.5.0\n'
+  exit 0
+fi
+exit 2
+`)
+	prependFakeCommand(t, "poetry", "#!/bin/sh\nexit 0\n")
+
+	config.Monitoring.EnabledTools = []string{core.ToolPNPM, core.ToolBun, core.ToolPip, core.ToolUV, core.ToolPoetry}
+	config.Monitoring.Filesystem.WatchPaths = map[string][]string{}
+	if err := config.Save(); err != nil {
+		t.Fatalf("Failed to save config: %v", err)
+	}
+
+	output := captureStdout(t, func() {
+		if err := scanPackages(&command{}, nil); err != nil {
+			t.Fatalf("scanPackages failed: %v", err)
+		}
+	})
+	if !strings.Contains(output, "packages scanned") {
+		t.Fatalf("Unexpected scan output: %q", output)
+	}
+
+	store := openTestStore(t, config)
+	defer closeTestStore(t, store)
+	for _, want := range []struct {
+		tool string
+		name string
+	}{
+		{core.ToolPNPM, "tsx"},
+		{core.ToolBun, "prettier"},
+		{core.ToolPip, "requests"},
+		{core.ToolUV, "ruff"},
+	} {
+		if _, err := store.GetPackage(want.tool, want.name); err != nil {
+			t.Fatalf("Expected scanned package %s/%s: %v", want.tool, want.name, err)
+		}
+	}
+}
+
 func TestInstallExecutableWrappersWritesScripts(t *testing.T) {
 	config := setupTestHomeConfig(t)
 	t.Setenv("PATH", t.TempDir())
@@ -1041,6 +1113,212 @@ func prependFakeCommand(t *testing.T, name, script string) {
 		t.Fatalf("write fake %s: %v", name, err)
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+func fakeExecutablePathDeps(env map[string]string, commands map[string]bool, outputs map[string]string, home string, homeErr error) executablePathDeps {
+	return executablePathDeps{
+		getenv: func(key string) string {
+			return env[key]
+		},
+		userHomeDir: func() (string, error) {
+			if homeErr != nil {
+				return "", homeErr
+			}
+			return home, nil
+		},
+		lookPath: func(name string) (string, error) {
+			if commands[name] {
+				return filepath.Join("/usr/bin", name), nil
+			}
+			return "", errors.New("not found")
+		},
+		commandOutput: func(name string, args ...string) ([]byte, error) {
+			key := strings.Join(append([]string{name}, args...), " ")
+			output, ok := outputs[key]
+			if !ok {
+				return nil, errors.New("command failed")
+			}
+			return []byte(output), nil
+		},
+	}
+}
+
+func TestExecutableBinDirHelpersWithDeps(t *testing.T) {
+	const (
+		homeDir = "/Users/test"
+		userDir = "/Users/fallback"
+	)
+
+	deps := fakeExecutablePathDeps(
+		map[string]string{"PNPM_HOME": "/opt/pnpm"},
+		nil,
+		nil,
+		userDir,
+		nil,
+	)
+	if got := pnpmGlobalBinDirWithDeps(deps); got != "/opt/pnpm" {
+		t.Fatalf("pnpmGlobalBinDirWithDeps env = %s, want /opt/pnpm", got)
+	}
+
+	deps = fakeExecutablePathDeps(
+		nil,
+		map[string]bool{pnpmCommandName: true},
+		map[string]string{"pnpm bin -g": "/opt/pnpm/bin\n"},
+		userDir,
+		nil,
+	)
+	if got := pnpmGlobalBinDirWithDeps(deps); got != "/opt/pnpm/bin" {
+		t.Fatalf("pnpmGlobalBinDirWithDeps command = %s, want /opt/pnpm/bin", got)
+	}
+
+	deps = fakeExecutablePathDeps(nil, nil, nil, userDir, nil)
+	if got := pnpmGlobalBinDirWithDeps(deps); got != "" {
+		t.Fatalf("pnpmGlobalBinDirWithDeps missing = %s, want empty", got)
+	}
+
+	deps = fakeExecutablePathDeps(map[string]string{"BUN_INSTALL": "/opt/bun"}, nil, nil, userDir, nil)
+	if got := bunGlobalBinDirWithDeps(deps); got != "/opt/bun/bin" {
+		t.Fatalf("bunGlobalBinDirWithDeps env = %s, want /opt/bun/bin", got)
+	}
+
+	deps = fakeExecutablePathDeps(map[string]string{"HOME": homeDir}, nil, nil, userDir, nil)
+	if got := bunGlobalBinDirWithDeps(deps); got != filepath.Join(homeDir, ".bun", "bin") {
+		t.Fatalf("bunGlobalBinDirWithDeps HOME = %s", got)
+	}
+
+	deps = fakeExecutablePathDeps(nil, nil, nil, userDir, nil)
+	if got := uvToolBinDirWithDeps(deps); got != filepath.Join(userDir, ".local", "bin") {
+		t.Fatalf("uvToolBinDirWithDeps fallback = %s", got)
+	}
+
+	deps = fakeExecutablePathDeps(map[string]string{"UV_TOOL_BIN_DIR": "/opt/uv/bin"}, nil, nil, userDir, nil)
+	if got := uvToolBinDirWithDeps(deps); got != "/opt/uv/bin" {
+		t.Fatalf("uvToolBinDirWithDeps env = %s, want /opt/uv/bin", got)
+	}
+
+	deps = fakeExecutablePathDeps(
+		nil,
+		map[string]bool{"python": true},
+		map[string]string{"python -m site --user-base": "/Users/test/Library/Python/3.12\n"},
+		userDir,
+		nil,
+	)
+	if got := pythonUserBaseBinDirWithDeps(deps); got != "/Users/test/Library/Python/3.12/bin" {
+		t.Fatalf("pythonUserBaseBinDirWithDeps = %s", got)
+	}
+
+	gotCommand, err := firstExistingCommandWithDeps(deps, "python3", "python")
+	if err != nil || gotCommand != "python" {
+		t.Fatalf("firstExistingCommandWithDeps = %s, %v; want python, nil", gotCommand, err)
+	}
+
+	deps = fakeExecutablePathDeps(nil, nil, nil, "", errors.New("home failed"))
+	if got := bunGlobalBinDirWithDeps(deps); got != "" {
+		t.Fatalf("bunGlobalBinDirWithDeps home error = %s, want empty", got)
+	}
+}
+
+func TestExecutableBinDirPublicHelpersUseDefaultDeps(t *testing.T) {
+	originalDeps := defaultExecutablePathDeps
+	t.Cleanup(func() {
+		defaultExecutablePathDeps = originalDeps
+	})
+
+	defaultExecutablePathDeps = fakeExecutablePathDeps(
+		map[string]string{
+			"HOME":            "/Users/test",
+			"UV_TOOL_BIN_DIR": "/opt/uv/bin",
+		},
+		map[string]bool{
+			pnpmCommandName: true,
+			"python3":       true,
+		},
+		map[string]string{
+			"pnpm bin -g":                    "/opt/pnpm/bin\n",
+			"python3 -m site --user-base":    "/Users/test/Library/Python/3.12\n",
+			"npm config get prefix":          "/unused\n",
+			"unexpected command placeholder": "",
+		},
+		"/Users/fallback",
+		nil,
+	)
+
+	if got := pnpmGlobalBinDir(); got != "/opt/pnpm/bin" {
+		t.Fatalf("pnpmGlobalBinDir = %s", got)
+	}
+	if got := bunGlobalBinDir(); got != "/Users/test/.bun/bin" {
+		t.Fatalf("bunGlobalBinDir = %s", got)
+	}
+	if got := pythonUserBaseBinDir(); got != "/Users/test/Library/Python/3.12/bin" {
+		t.Fatalf("pythonUserBaseBinDir = %s", got)
+	}
+	if got := uvToolBinDir(); got != "/opt/uv/bin" {
+		t.Fatalf("uvToolBinDir = %s", got)
+	}
+	if got, err := firstExistingCommand("python", "python3"); err != nil || got != "python3" {
+		t.Fatalf("firstExistingCommand = %s, %v; want python3, nil", got, err)
+	}
+}
+
+func TestGoBinaryDirWithDeps(t *testing.T) {
+	config := core.DefaultConfig()
+	config.Tools.Go.GoBin = "/explicit/go/bin"
+	deps := fakeExecutablePathDeps(map[string]string{"GOBIN": "/env/go/bin"}, nil, nil, "/Users/test", nil)
+	if got := goBinaryDirWithDeps(config, deps); got != "/explicit/go/bin" {
+		t.Fatalf("goBinaryDirWithDeps GoBin = %s", got)
+	}
+
+	config.Tools.Go.GoBin = ""
+	if got := goBinaryDirWithDeps(config, deps); got != "/env/go/bin" {
+		t.Fatalf("goBinaryDirWithDeps GOBIN = %s", got)
+	}
+
+	config.Tools.Go.GoPath = "/config/gopath"
+	deps = fakeExecutablePathDeps(nil, nil, nil, "/Users/test", nil)
+	if got := goBinaryDirWithDeps(config, deps); got != "/config/gopath/bin" {
+		t.Fatalf("goBinaryDirWithDeps GoPath = %s", got)
+	}
+
+	config.Tools.Go.GoPath = ""
+	deps = fakeExecutablePathDeps(map[string]string{"GOPATH": "/env/gopath"}, nil, nil, "/Users/test", nil)
+	if got := goBinaryDirWithDeps(config, deps); got != "/env/gopath/bin" {
+		t.Fatalf("goBinaryDirWithDeps GOPATH = %s", got)
+	}
+
+	deps = fakeExecutablePathDeps(nil, nil, nil, "/Users/test", nil)
+	if got := goBinaryDirWithDeps(config, deps); got != "/Users/test/go/bin" {
+		t.Fatalf("goBinaryDirWithDeps user home = %s", got)
+	}
+
+	deps = fakeExecutablePathDeps(nil, nil, nil, "", errors.New("home failed"))
+	if got := goBinaryDirWithDeps(config, deps); got != "" {
+		t.Fatalf("goBinaryDirWithDeps home error = %s, want empty", got)
+	}
+}
+
+func TestNewMonitorSupportsConfiguredTools(t *testing.T) {
+	for _, tool := range []string{
+		core.ToolHomebrew,
+		core.ToolNPM,
+		core.ToolPNPM,
+		core.ToolBun,
+		core.ToolGo,
+		core.ToolPip,
+		core.ToolUV,
+		core.ToolPoetry,
+	} {
+		monitor, err := newMonitor(tool)
+		if err != nil {
+			t.Fatalf("newMonitor(%s) failed: %v", tool, err)
+		}
+		if monitor == nil {
+			t.Fatalf("newMonitor(%s) returned nil", tool)
+		}
+	}
+
+	if _, err := newMonitor("bogus"); err == nil {
+		t.Fatal("newMonitor bogus expected error")
+	}
 }
 
 func TestRunPreparedCommandSuccess(t *testing.T) {

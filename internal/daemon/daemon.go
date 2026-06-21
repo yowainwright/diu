@@ -185,14 +185,33 @@ func (d *Daemon) processEvents() {
 			if !ok {
 				return
 			}
-			d.enrichExecution(event)
-			if err := d.storage.AddExecution(event); err != nil {
-				log.Printf("Failed to store execution: %v", err)
-			}
+			d.storeExecution(event)
 
 		case <-d.ctx.Done():
+			d.drainQueuedEvents()
 			return
 		}
+	}
+}
+
+func (d *Daemon) drainQueuedEvents() {
+	for {
+		select {
+		case event, ok := <-d.eventChan:
+			if !ok {
+				return
+			}
+			d.storeExecution(event)
+		default:
+			return
+		}
+	}
+}
+
+func (d *Daemon) storeExecution(event *core.ExecutionRecord) {
+	d.enrichExecution(event)
+	if err := d.storage.AddExecution(event); err != nil {
+		log.Printf("Failed to store execution: %v", err)
 	}
 }
 

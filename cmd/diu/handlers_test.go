@@ -1532,10 +1532,8 @@ func TestStyleRenderTo(t *testing.T) {
 }
 
 func TestShouldRenderColor(t *testing.T) {
-	// Test with NO_COLOR set
 	t.Setenv("NO_COLOR", "1")
 
-	// Create a temp file
 	tmpFile, err := os.CreateTemp(t.TempDir(), "color")
 	if err != nil {
 		t.Fatalf("Failed to create temp file: %v", err)
@@ -1553,6 +1551,17 @@ func TestShouldRenderColor(t *testing.T) {
 
 	if shouldRenderColor(tmpFile) {
 		t.Fatal("shouldRenderColor should return false with NO_COLOR set")
+	}
+
+	t.Setenv("NO_COLOR", "")
+	t.Setenv("TERM", "dumb")
+	if shouldRenderColor(tmpFile) {
+		t.Fatal("shouldRenderColor should return false with TERM=dumb")
+	}
+
+	t.Setenv("TERM", "xterm-256color")
+	if shouldRenderColor(tmpFile) {
+		t.Fatal("shouldRenderColor should return false for a regular file")
 	}
 }
 
