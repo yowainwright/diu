@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -383,6 +384,45 @@ func TestListPackagesUnusedFilter(t *testing.T) {
 	}
 	if !strings.Contains(output, "No unused packages found") && !strings.Contains(output, "old") {
 		t.Fatalf("Expected old package in unused list or no unused message, got: %q", output)
+	}
+}
+
+func TestListPackagesUnusedFilterInvalidDuration(t *testing.T) {
+	config := setupTestHomeConfig(t)
+	store := openTestStore(t, config)
+	updateTestPackage(t, store, &core.PackageInfo{
+		Name:     "recent",
+		Tool:     core.ToolHomebrew,
+		LastUsed: time.Now(),
+	})
+	closeTestStore(t, store)
+
+	err := listPackages(packagesCommandForTest(t, "--unused", "not-a-duration"), nil)
+	if err == nil {
+		t.Fatal("expected invalid duration error, got nil")
+	}
+	if !strings.Contains(err.Error(), "invalid duration") {
+		t.Fatalf("expected invalid duration error, got %v", err)
+	}
+}
+
+func TestListPackagesUnusedFilterNoMatches(t *testing.T) {
+	config := setupTestHomeConfig(t)
+	store := openTestStore(t, config)
+	updateTestPackage(t, store, &core.PackageInfo{
+		Name:     "recent",
+		Tool:     core.ToolHomebrew,
+		LastUsed: time.Now(),
+	})
+	closeTestStore(t, store)
+
+	output := captureStdout(t, func() {
+		if err := listPackages(packagesCommandForTest(t, "--unused", "30d"), nil); err != nil {
+			t.Fatalf("listPackages with unused filter failed: %v", err)
+		}
+	})
+	if !strings.Contains(output, "No unused packages found") {
+		t.Fatalf("expected no unused packages message, got: %q", output)
 	}
 }
 
@@ -1749,6 +1789,83 @@ func TestRestartDaemonStopsThenStarts(t *testing.T) {
 	}
 	if checker.calls < 3 {
 		t.Fatalf("expected at least 3 IsRunning calls, got %d", checker.calls)
+	}
+}
+
+func TestForkDaemonBackgroundStarterError(t *testing.T) {
+	oldStarter := daemonProcessStarter
+	daemonProcessStarter = func(string, []string, *syscall.ProcAttr) error {
+		return errors.New("fork failed")
+	}
+	defer func() {
+		daemonProcessStarter = oldStarter
+	}()
+
+	var err error
+	captureStdout(t, func() {
+		err = forkDaemonBackground(&core.Config{})
+	})
+	if err == nil {
+		t.Fatal("expected fork error, got nil")
+	}
+	if !strings.Contains(err.Error(), "failed to fork daemon") {
+		t.Fatalf("expected fork failure, got %v", err)
+	}
+}
+
+func TestStopDaemonWithConfigMissingPIDFile(t *testing.T) {
+	config := setupTestHomeConfig(t)
+	restore := SetDaemonChecker(MockDaemonChecker{isRunning: true})
+	defer restore()
+
+	err := stopDaemonWithConfig(config)
+	if err == nil {
+		t.Fatal("expected missing PID file error, got nil")
+	}
+	if !strings.Contains(err.Error(), "failed to read PID file") {
+		t.Fatalf("expected PID read error, got %v", err)
+	}
+}
+
+func TestStopDaemonWithConfigInvalidPID(t *testing.T) {
+	config := setupTestHomeConfig(t)
+	restore := SetDaemonChecker(MockDaemonChecker{isRunning: true})
+	defer restore()
+
+	if err := config.EnsureDirectories(); err != nil {
+		t.Fatalf("failed to ensure directories: %v", err)
+	}
+	if err := os.WriteFile(config.Daemon.PIDFile, []byte("not-a-pid"), core.PrivateFileMode); err != nil {
+		t.Fatalf("failed to write PID file: %v", err)
+	}
+
+	err := stopDaemonWithConfig(config)
+	if err == nil {
+		t.Fatal("expected invalid PID error, got nil")
+	}
+	if !strings.Contains(err.Error(), "invalid PID") {
+		t.Fatalf("expected invalid PID error, got %v", err)
+	}
+}
+
+func TestStopDaemonWithConfigSignalError(t *testing.T) {
+	config := setupTestHomeConfig(t)
+	restore := SetDaemonChecker(MockDaemonChecker{isRunning: true})
+	defer restore()
+
+	if err := config.EnsureDirectories(); err != nil {
+		t.Fatalf("failed to ensure directories: %v", err)
+	}
+	if err := os.WriteFile(config.Daemon.PIDFile, []byte("999999999"), core.PrivateFileMode); err != nil {
+		t.Fatalf("failed to write PID file: %v", err)
+	}
+
+	err := stopDaemonWithConfig(config)
+	if err == nil {
+		t.Fatal("expected signal error, got nil")
+	}
+	if !strings.Contains(err.Error(), "failed to stop daemon") {
+		t.Fatalf("expected signal error, got %v", err)
 	}
 }
 
