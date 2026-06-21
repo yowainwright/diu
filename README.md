@@ -1,8 +1,8 @@
-# DIU - Do I Use
-
-> Know which global development tools you actually use before uninstalling them.
+# DIU [Do I Use]
 
 [![Codecov](https://codecov.io/gh/yowainwright/diu/branch/main/graph/badge.svg)](https://codecov.io/gh/yowainwright/diu)
+
+> Know which global development tools you **actually** use
 
 DIU tracks executions of global tools installed through Homebrew, npm, and Go. It keeps a small local JSON inventory so you can answer questions like:
 
