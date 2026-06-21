@@ -2,6 +2,8 @@ package monitors
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/yowainwright/diu/internal/core"
@@ -83,6 +85,40 @@ exit 2
 	}
 }
 
+func TestPipGetInstalledPackagesFallsBackToPipCommand(t *testing.T) {
+	binDir := t.TempDir()
+	pipPath := filepath.Join(binDir, pipCommandName)
+	script := `#!/bin/sh
+if [ "$1" = "list" ] && [ "$2" = "--format=json" ]; then
+  printf '%s\n' '[{"name":"click","version":"8.1.7"}]'
+  exit 0
+fi
+exit 2
+`
+	if err := os.WriteFile(pipPath, []byte(script), 0o700); err != nil {
+		t.Fatalf("Failed to write fake pip command: %v", err)
+	}
+	t.Setenv("PATH", binDir)
+
+	config := core.DefaultConfig()
+	config.Monitoring.Process.AutoInstallWrappers = false
+
+	monitor := NewPipMonitor().(*PipMonitor)
+	if err := monitor.Initialize(config); err != nil {
+		t.Fatalf("Initialize failed: %v", err)
+	}
+	if monitor.commandName != pipCommandName {
+		t.Fatalf("commandName = %s, want %s", monitor.commandName, pipCommandName)
+	}
+	packages, err := monitor.GetInstalledPackages()
+	if err != nil {
+		t.Fatalf("GetInstalledPackages failed: %v", err)
+	}
+	if len(packages) != 1 || packages[0].Name != "click" || packages[0].Version != "8.1.7" {
+		t.Fatalf("Unexpected packages: %#v", packages)
+	}
+}
+
 func TestPipGetInstalledPackagesFallsBackToText(t *testing.T) {
 	prependFakeCommand(t, pip3CommandName, `#!/bin/sh
 if [ "$1" = "list" ] && [ "$2" = "--format=json" ]; then
@@ -109,6 +145,15 @@ exit 2
 	}
 	if len(packages) != 2 || packages[0].Name != "requests" || packages[0].Version != "2.32.0" {
 		t.Fatalf("Unexpected packages: %#v", packages)
+	}
+}
+
+func TestPipGetInstalledPackagesRejectsUnsupportedCommand(t *testing.T) {
+	monitor := NewPipMonitor().(*PipMonitor)
+	monitor.commandName = "python"
+
+	if _, err := monitor.GetInstalledPackages(); err == nil {
+		t.Fatal("Expected unsupported pip command error")
 	}
 }
 
@@ -144,6 +189,7 @@ func TestUVParseCommandVariants(t *testing.T) {
 		{name: "pip freeze", args: []string{"pip", "freeze"}, wantAction: "pip_freeze"},
 		{name: "tool uninstall", args: []string{"tool", "uninstall", "ruff"}, wantAction: "tool_uninstall", wantPackage: "ruff"},
 		{name: "tool run", args: []string{"tool", "run", "ruff"}, wantAction: "tool_run", wantPackage: "ruff"},
+		{name: "tool run from package", args: []string{"tool", "run", "--from", "ruff", "ruff"}, wantAction: "tool_run", wantPackage: "ruff"},
 		{name: "tool list", args: []string{"tool", "list"}, wantAction: "tool_list"},
 		{name: "add", args: []string{"add", "pytest"}, wantAction: "add", wantPackage: "pytest"},
 		{name: "remove", args: []string{"remove", "pytest"}, wantAction: "remove", wantPackage: "pytest"},

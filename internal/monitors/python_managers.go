@@ -75,14 +75,14 @@ func (m *PipMonitor) ParseCommand(cmd string, args []string) (*core.ExecutionRec
 }
 
 func (m *PipMonitor) GetInstalledPackages() ([]*core.PackageInfo, error) {
-	output, err := exec.Command(m.commandName, "list", pythonListFormat).Output()
+	output, err := runPipListCommandOutput(m.commandName, true)
 	if err == nil && len(output) > 0 {
 		if packages, parseErr := parsePythonPackageJSON(core.ToolPip, output); parseErr == nil {
 			return packages, nil
 		}
 	}
 
-	output, err = exec.Command(m.commandName, "list").Output()
+	output, err = runPipListCommandOutput(m.commandName, false)
 	if err != nil && len(output) == 0 {
 		return nil, fmt.Errorf("failed to list pip packages: %w", err)
 	}
@@ -231,6 +231,23 @@ func firstAvailableCommand(names ...string) (string, error) {
 	return "", lastErr
 }
 
+func runPipListCommandOutput(commandName string, formatted bool) ([]byte, error) {
+	switch commandName {
+	case pip3CommandName:
+		if formatted {
+			return exec.Command(pip3CommandName, "list", pythonListFormat).Output()
+		}
+		return exec.Command(pip3CommandName, "list").Output()
+	case pipCommandName:
+		if formatted {
+			return exec.Command(pipCommandName, "list", pythonListFormat).Output()
+		}
+		return exec.Command(pipCommandName, "list").Output()
+	default:
+		return nil, fmt.Errorf("unsupported pip command: %s", commandName)
+	}
+}
+
 func parseUVPipCommand(record *core.ExecutionRecord, args []string) {
 	if len(args) == 0 {
 		return
@@ -311,6 +328,7 @@ func extractPythonPackages(args []string) []string {
 		"--group":           true,
 		"--with":            true,
 		"--without":         true,
+		"--from":            true,
 		"-E":                true,
 		"--extras":          true,
 	}
