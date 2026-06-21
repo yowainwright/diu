@@ -1,6 +1,8 @@
 package core
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -27,14 +29,15 @@ const (
 	DefaultMaxBackups      = 7
 	DefaultEventBuffer     = 100
 	DefaultShutdownTimeout = 5 * time.Second
+	DefaultSocketReadTimeout = 30 * time.Second
 
 	OwnerDirectoryMode  = 0o700
 	PrivateFileMode     = 0o600
 	OwnerExecutableMode = 0o700
 	ExecutableModeMask  = 0o111
 
-	DefaultPIDFile    = "/tmp/diu.pid"
-	DefaultSocketPath = "/tmp/diu.sock"
+	DefaultPIDFileName    = "diu.pid"
+	DefaultSocketFileName = "diu.sock"
 
 	StorageBackendJSON = "json"
 
@@ -80,4 +83,23 @@ func NormalizeToolName(tool string) string {
 	default:
 		return strings.ToLower(strings.TrimSpace(tool))
 	}
+}
+
+func DefaultDataDir() string {
+	homeDir := os.Getenv("HOME")
+	if dir, err := os.UserHomeDir(); err == nil {
+		homeDir = dir
+	}
+	if homeDir == "" {
+		return filepath.Join(os.TempDir(), "diu")
+	}
+	return filepath.Join(homeDir, ".local", "share", "diu")
+}
+
+func DefaultPIDFilePath(dataDir string) string {
+	return filepath.Join(dataDir, DefaultPIDFileName)
+}
+
+func DefaultSocketPath(dataDir string) string {
+	return filepath.Join(dataDir, DefaultSocketFileName)
 }

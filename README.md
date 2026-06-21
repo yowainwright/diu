@@ -128,6 +128,50 @@ diu stats [options]
   --top             Show top N most used packages
 ```
 
+## HTTP API
+
+Start the daemon to enable the local API:
+
+```bash
+diu daemon start
+```
+
+Base URL: `http://127.0.0.1:8081/api/v1`
+
+```bash
+# Health
+curl http://127.0.0.1:8081/api/v1/health
+
+# Recent executions
+curl "http://127.0.0.1:8081/api/v1/executions?tool=homebrew&limit=10"
+
+# Tracked packages
+curl "http://127.0.0.1:8081/api/v1/packages?tool=npm"
+
+# Statistics
+curl http://127.0.0.1:8081/api/v1/stats
+
+# Record an execution
+curl -X POST http://127.0.0.1:8081/api/v1/executions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "tool": "npm",
+    "command": "npm install express",
+    "args": ["install", "express"],
+    "exit_code": 0,
+    "duration_ms": 5432,
+    "user": "test"
+  }'
+```
+
+Implemented endpoints:
+
+- `GET /health`
+- `GET /executions`
+- `POST /executions`
+- `GET /packages`
+- `GET /stats`
+
 ## Configuration
 
 Configuration is stored in `~/.config/diu/config.json`
@@ -135,6 +179,7 @@ Configuration is stored in `~/.config/diu/config.json`
 Default configuration includes:
 - Enabled tools: homebrew, npm, go
 - Storage location: `~/.local/share/diu/executions.json`
+- Daemon PID/socket files: `~/.local/share/diu/diu.pid` and `~/.local/share/diu/diu.sock`
 - Retention: 365 days
 - Storage limits: 50,000 executions, 10 MiB active JSON file
 - Automatic backups: enabled
@@ -189,6 +234,37 @@ mise run lint                 # Run linters
 mise run build                # Build the binary
 mise run dev                  # Run in development mode
 mise run release-snapshot     # Create a release snapshot
+```
+
+### Release Checks
+
+Before cutting a release, run:
+
+```bash
+gofmt -w cmd internal pkg scripts e2e
+go test ./...
+go test -race ./...
+go vet ./...
+golangci-lint run ./...
+go build -o /tmp/diu-release-check ./cmd/diu
+goreleaser check
+```
+
+The tag release workflow runs vet, lint, race tests, darwin `amd64`/`arm64` builds, then GoReleaser.
+
+### Troubleshooting
+
+```bash
+# See daemon logs in the foreground
+DIU_DAEMON_FOREGROUND=1 diu daemon start
+
+# Inspect configured paths
+diu config get storage.json_file
+diu config get daemon.pid_file
+diu config get daemon.socket_path
+
+# Reinstall wrappers after changing shell or package paths
+diu setup
 ```
 
 ### Architecture

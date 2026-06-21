@@ -1,6 +1,8 @@
 package monitors
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/yowainwright/diu/internal/core"
@@ -136,5 +138,109 @@ func TestHomebrewInitialize(t *testing.T) {
 	err := monitor.Initialize(config)
 	if err != nil {
 		t.Fatalf("Failed to initialize monitor: %v", err)
+	}
+}
+
+func TestHomebrewDetectAndListWithFakeBrew(t *testing.T) {
+	prependFakeCommand(t, homebrewCommandName, `#!/bin/sh
+if [ "$1" = "--cellar" ]; then
+  printf '%s\n' "$FAKE_BREW_CELLAR"
+  exit 0
+fi
+if [ "$1" = "--prefix" ]; then
+  printf '%s\n' "$FAKE_BREW_PREFIX"
+  exit 0
+fi
+if [ "$1" = "list" ] && [ "$2" = "--formula" ] && [ "$3" = "--json=v2" ]; then
+  printf '%s\n' '{"formulae":[{"name":"jq","full_name":"jq","version":"1.7","installed_time":"2024-01-02T03:04:05Z","dependencies":["oniguruma"]}]}'
+  exit 0
+fi
+if [ "$1" = "list" ] && [ "$2" = "--cask" ]; then
+  printf 'firefox\n'
+  exit 0
+fi
+exit 2
+`)
+
+	tempDir := t.TempDir()
+	cellar := filepath.Join(tempDir, "Cellar")
+	prefix := filepath.Join(tempDir, "prefix")
+	caskroom := filepath.Join(prefix, "Caskroom")
+	for _, dir := range []string{cellar, caskroom} {
+		if err := os.MkdirAll(dir, core.OwnerDirectoryMode); err != nil {
+			t.Fatalf("Failed to create %s: %v", dir, err)
+		}
+	}
+	t.Setenv("FAKE_BREW_CELLAR", cellar)
+	t.Setenv("FAKE_BREW_PREFIX", prefix)
+
+	config := core.DefaultConfig()
+	config.Monitoring.Process.AutoInstallWrappers = false
+	config.Tools.Homebrew.CellarPaths = nil
+	config.Tools.Homebrew.TrackCasks = true
+
+	monitor := NewHomebrewMonitor().(*HomebrewMonitor)
+	if err := monitor.Initialize(config); err != nil {
+		t.Fatalf("Initialize failed: %v", err)
+	}
+	if !contains(monitor.cellarPaths, cellar) {
+		t.Fatalf("cellarPaths = %#v, want %s", monitor.cellarPaths, cellar)
+	}
+	if monitor.caskroom == "" {
+		t.Fatalf("caskroom was not detected")
+	}
+
+	packages, err := monitor.GetInstalledPackages()
+	if err != nil {
+		t.Fatalf("GetInstalledPackages failed: %v", err)
+	}
+	if len(packages) != 2 {
+		t.Fatalf("Expected formula and cask packages, got %#v", packages)
+	}
+	byName := make(map[string]*core.PackageInfo)
+	for _, pkg := range packages {
+		byName[pkg.Name] = pkg
+	}
+	if byName["jq"].Version != "1.7" || byName["jq"].Tool != core.ToolHomebrew {
+		t.Fatalf("Unexpected jq package: %#v", byName["jq"])
+	}
+	if byName["firefox"].Tool != homebrewCaskTool {
+		t.Fatalf("Unexpected firefox package: %#v", byName["firefox"])
+	}
+}
+
+func TestHomebrewFormulaFallbackWithFakeBrew(t *testing.T) {
+	prependFakeCommand(t, homebrewCommandName, `#!/bin/sh
+if [ "$1" = "--prefix" ]; then
+  printf '%s\n' "$FAKE_BREW_PREFIX"
+  exit 0
+fi
+if [ "$1" = "list" ] && [ "$2" = "--formula" ] && [ "$3" = "--json=v2" ]; then
+  printf 'not json\n'
+  exit 0
+fi
+if [ "$1" = "list" ] && [ "$2" = "--formula" ]; then
+  printf 'jq\nripgrep\n'
+  exit 0
+fi
+exit 2
+`)
+	t.Setenv("FAKE_BREW_PREFIX", t.TempDir())
+
+	config := core.DefaultConfig()
+	config.Monitoring.Process.AutoInstallWrappers = false
+	config.Tools.Homebrew.TrackCasks = false
+
+	monitor := NewHomebrewMonitor().(*HomebrewMonitor)
+	if err := monitor.Initialize(config); err != nil {
+		t.Fatalf("Initialize failed: %v", err)
+	}
+
+	packages, err := monitor.getFormulae()
+	if err != nil {
+		t.Fatalf("getFormulae failed: %v", err)
+	}
+	if len(packages) != 2 || packages[0].Name != "jq" || packages[1].Name != "ripgrep" {
+		t.Fatalf("Unexpected fallback packages: %#v", packages)
 	}
 }

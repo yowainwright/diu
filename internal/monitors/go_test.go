@@ -422,7 +422,7 @@ func TestGoGetBinaries(t *testing.T) {
 	}
 
 	executablePath := filepath.Join(tmpDir, "testbin")
-	if err := os.WriteFile(executablePath, []byte("#!/bin/bash\necho test"), core.PrivateFileMode); err != nil {
+	if err := os.WriteFile(executablePath, []byte("#!/bin/bash\necho 'testbin version v1.0.0'"), core.PrivateFileMode); err != nil {
 		t.Fatalf("Failed to create test executable: %v", err)
 	}
 	if err := os.Chmod(executablePath, core.OwnerExecutableMode); err != nil {
@@ -455,6 +455,59 @@ func TestGoGetBinaries(t *testing.T) {
 		if packages[0].Tool != core.ToolGoBinary {
 			t.Errorf("Expected tool '%s', got %s", core.ToolGoBinary, packages[0].Tool)
 		}
+		if packages[0].Version != "v1.0.0" {
+			t.Errorf("Expected version v1.0.0, got %s", packages[0].Version)
+		}
+	}
+}
+
+func TestGoGetModulesWithFakeGo(t *testing.T) {
+	prependFakeCommand(t, "go", `#!/bin/sh
+if [ "$1" = "list" ] && [ "$2" = "-m" ] && [ "$3" = "all" ]; then
+  printf 'example.com/app\ngithub.com/pkg/errors v0.9.1\ngolang.org/x/mod v0.22.0\n'
+  exit 0
+fi
+exit 2
+`)
+
+	monitor := NewGoMonitor().(*GoMonitor)
+	packages, err := monitor.getModules()
+	if err != nil {
+		t.Fatalf("getModules failed: %v", err)
+	}
+	if len(packages) != 2 {
+		t.Fatalf("Expected 2 dependency modules, got %#v", packages)
+	}
+	if packages[0].Name != "github.com/pkg/errors" || packages[0].Version != "v0.9.1" {
+		t.Fatalf("Unexpected first module: %#v", packages[0])
+	}
+}
+
+func TestGoGetBinaryVersionFallsBackToVersionFlag(t *testing.T) {
+	binaryPath := filepath.Join(t.TempDir(), "tool")
+	if err := os.WriteFile(binaryPath, []byte(`#!/bin/sh
+if [ "$1" = "version" ]; then
+  exit 1
+fi
+if [ "$1" = "--version" ]; then
+  printf 'tool version v1.2.3\n'
+  exit 0
+fi
+exit 2
+`), core.PrivateFileMode); err != nil {
+		t.Fatalf("Failed to write binary: %v", err)
+	}
+	if err := os.Chmod(binaryPath, core.OwnerExecutableMode); err != nil {
+		t.Fatalf("Failed to chmod binary: %v", err)
+	}
+
+	monitor := NewGoMonitor().(*GoMonitor)
+	version, err := monitor.getBinaryVersion(binaryPath)
+	if err != nil {
+		t.Fatalf("getBinaryVersion failed: %v", err)
+	}
+	if version != "v1.2.3" {
+		t.Fatalf("version = %s, want v1.2.3", version)
 	}
 }
 

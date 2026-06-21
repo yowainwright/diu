@@ -4,7 +4,8 @@ daemon:
   port: 8080
   log_level: info
   data_dir: ~/.local/share/diu
-  pid_file: /tmp/diu.pid
+  pid_file: ~/.local/share/diu/diu.pid
+  socket_path: ~/.local/share/diu/diu.sock
 
 storage:
   backend: json

@@ -306,8 +306,8 @@ func (m *GoMonitor) getBinaryVersion(binaryPath string) (string, error) {
 			if strings.Contains(strings.ToLower(line), "version") {
 				parts := strings.Fields(line)
 				for _, part := range parts {
-					if strings.HasPrefix(part, "v") || strings.Contains(part, ".") {
-						return part, nil
+					if versionToken := cleanVersionToken(part); versionToken != "" {
+						return versionToken, nil
 					}
 				}
 			}
@@ -315,6 +315,20 @@ func (m *GoMonitor) getBinaryVersion(binaryPath string) (string, error) {
 	}
 
 	return "", fmt.Errorf("version not found")
+}
+
+func cleanVersionToken(token string) string {
+	token = strings.Trim(token, " ,;()[]{}")
+	if token == "" || strings.EqualFold(token, "version") {
+		return ""
+	}
+	if strings.HasPrefix(token, "v") && len(token) > 1 && token[1] >= '0' && token[1] <= '9' {
+		return token
+	}
+	if strings.Contains(token, ".") {
+		return token
+	}
+	return ""
 }
 
 func (m *GoMonitor) Start(ctx context.Context, eventChan chan<- *core.ExecutionRecord) error {
