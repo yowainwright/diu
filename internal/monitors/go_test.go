@@ -1,6 +1,7 @@
 package monitors
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -13,6 +14,12 @@ func TestGoMonitor(t *testing.T) {
 
 	if monitor.Name() != core.ToolGo {
 		t.Errorf("Expected monitor name '%s', got %s", core.ToolGo, monitor.Name())
+	}
+}
+
+func TestGoMonitorStart(t *testing.T) {
+	if err := NewGoMonitor().(*GoMonitor).Start(context.Background(), make(chan *core.ExecutionRecord)); err != nil {
+		t.Fatalf("Start failed: %v", err)
 	}
 }
 

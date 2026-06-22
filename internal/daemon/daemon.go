@@ -53,8 +53,18 @@ func NewDaemon(config *core.Config) (*Daemon, error) {
 			monitor = monitors.NewHomebrewMonitor()
 		case core.ToolNPM:
 			monitor = monitors.NewNPMMonitor()
+		case core.ToolPNPM:
+			monitor = monitors.NewPNPMMonitor()
+		case core.ToolBun:
+			monitor = monitors.NewBunMonitor()
 		case core.ToolGo:
 			monitor = monitors.NewGoMonitor()
+		case core.ToolPip:
+			monitor = monitors.NewPipMonitor()
+		case core.ToolUV:
+			monitor = monitors.NewUVMonitor()
+		case core.ToolPoetry:
+			monitor = monitors.NewPoetryMonitor()
 		default:
 			log.Printf("Unknown tool: %s", tool)
 			continue
@@ -175,14 +185,33 @@ func (d *Daemon) processEvents() {
 			if !ok {
 				return
 			}
-			d.enrichExecution(event)
-			if err := d.storage.AddExecution(event); err != nil {
-				log.Printf("Failed to store execution: %v", err)
-			}
+			d.storeExecution(event)
 
 		case <-d.ctx.Done():
+			d.drainQueuedEvents()
 			return
 		}
+	}
+}
+
+func (d *Daemon) drainQueuedEvents() {
+	for {
+		select {
+		case event, ok := <-d.eventChan:
+			if !ok {
+				return
+			}
+			d.storeExecution(event)
+		default:
+			return
+		}
+	}
+}
+
+func (d *Daemon) storeExecution(event *core.ExecutionRecord) {
+	d.enrichExecution(event)
+	if err := d.storage.AddExecution(event); err != nil {
+		log.Printf("Failed to store execution: %v", err)
 	}
 }
 

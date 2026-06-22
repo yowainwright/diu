@@ -1,17 +1,26 @@
-# DIU - Do I Use
-
-> Know which global development tools you actually use before uninstalling them.
+# DIU [Do I Use]
 
 [![Codecov](https://codecov.io/gh/yowainwright/diu/branch/main/graph/badge.svg)](https://codecov.io/gh/yowainwright/diu)
 
-DIU tracks executions of global tools installed through Homebrew, npm, and Go. It keeps a small local JSON inventory so you can answer questions like:
+> Know which global development tools you **actually** use
+
+DIU tracks package-manager commands and global CLI tools from Homebrew, npm, pnpm, Bun, Go, pip, uv, and Poetry. It keeps a small local JSON inventory so you can answer questions like:
 
 - Did I use `jq` recently?
-- Which global npm packages have I not touched in months?
+- Which global JavaScript or Python packages have I not touched in months?
 - What are my most-used command-line tools?
 - What would DIU uninstall before I actually run it?
 
 DIU is macOS-first, written in Go, and uses only the Go standard library at runtime.
+
+## Supported Managers
+
+| Ecosystem | Managers | What DIU tracks |
+| --- | --- | --- |
+| macOS | Homebrew | Formulae, casks, and wrapped executables. |
+| JavaScript | npm, pnpm, Bun | Global packages and their command usage. |
+| Go | Go | Installed binaries in `GOBIN` or `GOPATH/bin`. |
+| Python | pip, uv, Poetry | pip packages, uv tools, and Poetry command/plugin usage. |
 
 ## Quick Start
 
@@ -28,6 +37,7 @@ diu scan
 # Use your tools normally
 jq --version
 npm --version
+uv tool run ruff --version
 
 # Ask DIU what it has seen
 diu check jq
@@ -83,6 +93,7 @@ Review recent executions:
 ```bash
 diu query --last 7d --limit 10
 diu query --tool npm --package eslint --format json
+diu query --tool uv --last 24h
 ```
 
 Preview an uninstall command before running it:
@@ -102,6 +113,8 @@ Skip confirmation when scripting:
 
 ```bash
 diu manage --uninstall typescript --tool npm --yes
+diu manage --uninstall tsx --tool pnpm --yes
+diu manage --uninstall ruff --tool pip --yes
 ```
 
 ## How It Works
@@ -128,7 +141,7 @@ The daemon is optional. When it is running, wrappers send events to a local Unix
 
 ```mermaid
 flowchart LR
-    command["brew / npm / go / wrapped executable"] --> wrapper["DIU wrapper"]
+    command["brew / npm / pnpm / bun / go / pip / uv / poetry / wrapped executable"] --> wrapper["DIU wrapper"]
     wrapper --> original["Original executable"]
     wrapper --> daemon{"Daemon running?"}
     daemon -- yes --> socket["Unix socket"]
@@ -161,10 +174,11 @@ Useful filters:
 ```bash
 diu check rip --tool homebrew --limit 5
 diu packages --tool npm
+diu packages --tool pip
 diu packages --unused 30d
-diu query --tool go --last 24h --format csv
+diu query --tool poetry --last 24h --format csv
 diu stats --daily
-diu stats --tool homebrew --top 20
+diu stats --tool uv --top 20
 ```
 
 ## Local API
@@ -186,7 +200,7 @@ Examples:
 ```bash
 curl http://127.0.0.1:8081/api/v1/health
 curl "http://127.0.0.1:8081/api/v1/executions?tool=homebrew&limit=10"
-curl "http://127.0.0.1:8081/api/v1/packages?tool=npm"
+curl "http://127.0.0.1:8081/api/v1/packages?tool=pnpm"
 curl http://127.0.0.1:8081/api/v1/stats
 ```
 
@@ -196,9 +210,9 @@ Record an event manually:
 curl -X POST http://127.0.0.1:8081/api/v1/executions \
   -H "Content-Type: application/json" \
   -d '{
-    "tool": "npm",
-    "command": "npm install express",
-    "args": ["install", "express"],
+    "tool": "uv",
+    "command": "uv tool install ruff",
+    "args": ["tool", "install", "ruff"],
     "exit_code": 0,
     "duration_ms": 5432,
     "user": "jeff"
@@ -220,7 +234,7 @@ Common config edits:
 ```bash
 diu config get storage.json_file
 diu config set storage.retention_days 180
-diu config set monitoring.enabled_tools homebrew,npm,go
+diu config set monitoring.enabled_tools homebrew,npm,pnpm,bun,go,pip,uv,poetry
 diu config list
 ```
 

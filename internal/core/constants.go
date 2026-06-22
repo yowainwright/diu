@@ -13,22 +13,26 @@ const (
 
 	ToolHomebrew = "homebrew"
 	ToolNPM      = "npm"
+	ToolPNPM     = "pnpm"
+	ToolBun      = "bun"
 	ToolGo       = "go"
 	ToolPip      = "pip"
+	ToolUV       = "uv"
+	ToolPoetry   = "poetry"
 	ToolGem      = "gem"
 	ToolCargo    = "cargo"
 	ToolGoBinary = "go-binary"
 
-	DefaultDaemonPort      = 8080
-	DefaultAPIPort         = 8081
-	DefaultAPIHost         = "127.0.0.1"
-	DefaultLogLevel        = "info"
-	DefaultRetentionDays   = 365
-	DefaultMaxExecutions   = 50000
-	DefaultMaxStorageBytes = 10 * 1024 * 1024
-	DefaultMaxBackups      = 7
-	DefaultEventBuffer     = 100
-	DefaultShutdownTimeout = 5 * time.Second
+	DefaultDaemonPort        = 8080
+	DefaultAPIPort           = 8081
+	DefaultAPIHost           = "127.0.0.1"
+	DefaultLogLevel          = "info"
+	DefaultRetentionDays     = 365
+	DefaultMaxExecutions     = 50000
+	DefaultMaxStorageBytes   = 10 * 1024 * 1024
+	DefaultMaxBackups        = 7
+	DefaultEventBuffer       = 100
+	DefaultShutdownTimeout   = 5 * time.Second
 	DefaultSocketReadTimeout = 30 * time.Second
 
 	OwnerDirectoryMode  = 0o700
@@ -49,7 +53,12 @@ var (
 	DefaultEnabledTools = []string{
 		ToolHomebrew,
 		ToolNPM,
+		ToolPNPM,
+		ToolBun,
 		ToolGo,
+		ToolPip,
+		ToolUV,
+		ToolPoetry,
 	}
 
 	DefaultMonitorMethods = []string{
@@ -71,6 +80,7 @@ func ShellEscapeString(s string) string {
 	s = strings.ReplaceAll(s, `\`, `\\`)
 	s = strings.ReplaceAll(s, `"`, `\"`)
 	s = strings.ReplaceAll(s, `$`, `\$`)
+	s = strings.ReplaceAll(s, "`", "\\`")
 	return s
 }
 
@@ -80,6 +90,8 @@ func NormalizeToolName(tool string) string {
 		return ToolHomebrew
 	case "golang":
 		return ToolGo
+	case "pip3", "python", "python3":
+		return ToolPip
 	default:
 		return strings.ToLower(strings.TrimSpace(tool))
 	}

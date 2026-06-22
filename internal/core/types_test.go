@@ -102,6 +102,8 @@ func TestNormalizeToolName(t *testing.T) {
 		goAlias     = "golang"
 		npmWithPad  = " npm "
 		homebrewCap = "Homebrew"
+		pip3Alias   = "pip3"
+		pythonAlias = "python3"
 	)
 
 	tests := map[string]string{
@@ -109,6 +111,8 @@ func TestNormalizeToolName(t *testing.T) {
 		homebrewCap: ToolHomebrew,
 		goAlias:     ToolGo,
 		npmWithPad:  ToolNPM,
+		pip3Alias:   ToolPip,
+		pythonAlias: ToolPip,
 	}
 
 	for input, expected := range tests {

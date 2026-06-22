@@ -129,6 +129,8 @@ func DefaultConfig() *Config {
 				WatchPaths: map[string][]string{
 					ToolHomebrew: HomebrewBinPaths,
 					ToolNPM:      {filepath.Join(homeDir, ".npm", "bin"), "/usr/local/lib/node_modules"},
+					ToolPNPM:     {filepath.Join(homeDir, "Library", "pnpm"), filepath.Join(homeDir, ".local", "share", "pnpm")},
+					ToolBun:      {filepath.Join(homeDir, ".bun", "bin")},
 				},
 			},
 		},

@@ -612,6 +612,7 @@ func TestScanPackages(t *testing.T) {
 	config.Monitoring.Filesystem.WatchPaths = map[string][]string{
 		core.ToolHomebrew: {binDir},
 	}
+	config.Monitoring.EnabledTools = []string{core.ToolHomebrew}
 	config.Tools.Go.GoBin = filepath.Join(t.TempDir(), "missing")
 	if err := config.Save(); err != nil {
 		t.Fatalf("Failed to save config: %v", err)
@@ -1532,10 +1533,8 @@ func TestStyleRenderTo(t *testing.T) {
 }
 
 func TestShouldRenderColor(t *testing.T) {
-	// Test with NO_COLOR set
 	t.Setenv("NO_COLOR", "1")
 
-	// Create a temp file
 	tmpFile, err := os.CreateTemp(t.TempDir(), "color")
 	if err != nil {
 		t.Fatalf("Failed to create temp file: %v", err)
@@ -1553,6 +1552,17 @@ func TestShouldRenderColor(t *testing.T) {
 
 	if shouldRenderColor(tmpFile) {
 		t.Fatal("shouldRenderColor should return false with NO_COLOR set")
+	}
+
+	t.Setenv("NO_COLOR", "")
+	t.Setenv("TERM", "dumb")
+	if shouldRenderColor(tmpFile) {
+		t.Fatal("shouldRenderColor should return false with TERM=dumb")
+	}
+
+	t.Setenv("TERM", "xterm-256color")
+	if shouldRenderColor(tmpFile) {
+		t.Fatal("shouldRenderColor should return false for a regular file")
 	}
 }
 
@@ -1993,6 +2003,25 @@ func TestUninstallByNameDryRun(t *testing.T) {
 	})
 	if !strings.Contains(out, "npm uninstall") {
 		t.Fatalf("expected npm uninstall plan, got: %q", out)
+	}
+}
+
+func TestUninstallByNameDryRunPipUsesResolvedCommand(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	prependFakeCommand(t, pip3CommandName, "#!/bin/sh\nexit 0\n")
+
+	config := setupTestHomeConfig(t)
+	store := openTestStore(t, config)
+	updateTestPackage(t, store, &core.PackageInfo{Name: "ruff", Tool: core.ToolPip})
+	closeTestStore(t, store)
+
+	out := captureStdout(t, func() {
+		if err := uninstallByName("ruff", "", false, true); err != nil {
+			t.Fatalf("dry-run uninstall failed: %v", err)
+		}
+	})
+	if !strings.Contains(out, "pip3 uninstall -y ruff") {
+		t.Fatalf("expected pip3 uninstall plan, got: %q", out)
 	}
 }
 

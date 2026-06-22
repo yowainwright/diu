@@ -47,15 +47,22 @@ const (
 
 	homebrewCommandName = "brew"
 	npmCommandName      = "npm"
+	pnpmCommandName     = "pnpm"
+	bunCommandName      = "bun"
+	pipCommandName      = "pip"
+	pip3CommandName     = "pip3"
+	uvCommandName       = "uv"
 
 	homebrewCaskTool = "homebrew-cask"
 	homebrewCaskFlag = "--cask"
 	npmGlobalFlag    = "-g"
+	pipYesFlag       = "-y"
 
 	configSubcommand    = "config"
 	getSubcommand       = "get"
 	npmPrefixConfigName = "prefix"
 	uninstallSubcommand = "uninstall"
+	removeSubcommand    = "remove"
 
 	actionQuit      = "q"
 	actionNext      = "n"
@@ -70,6 +77,23 @@ const (
 	packageNameColumnWidth       = 34
 	packageUsageColumnWidth      = 4
 )
+
+type executablePathDeps struct {
+	getenv        func(string) string
+	userHomeDir   func() (string, error)
+	lookPath      func(string) (string, error)
+	commandOutput func(string, ...string) ([]byte, error)
+}
+
+var defaultExecutablePathDeps = executablePathDeps{
+	getenv:      os.Getenv,
+	userHomeDir: os.UserHomeDir,
+	lookPath:    exec.LookPath,
+	commandOutput: func(name string, args ...string) ([]byte, error) {
+		// #nosec G204 -- callers pass fixed command names and argument lists from allowlisted helpers.
+		return exec.Command(name, args...).Output()
+	},
+}
 
 // closeStore closes the storage and logs any errors
 func closeStore(store storage.Storage) {
@@ -142,9 +166,13 @@ func getToolColor(tool string) color {
 		return color("214") // Orange
 	case "npm":
 		return color("196") // Red
+	case "pnpm":
+		return color("208") // Orange
+	case "bun":
+		return color("230") // Cream
 	case "go":
 		return color("86") // Cyan
-	case "pip", "python":
+	case "pip", "python", "uv", "poetry":
 		return color("226") // Yellow
 	case "gem", "ruby":
 		return color("160") // Red
@@ -177,7 +205,7 @@ func truncate(value string, maxLength int) string {
 // shouldSkipExecutableWrapper returns true if the executable should not be wrapped
 func shouldSkipExecutableWrapper(name string) bool {
 	switch name {
-	case "", ".", "..", "diu", "brew", core.ToolNPM, core.ToolGo:
+	case "", ".", "..", "diu", "brew", core.ToolNPM, core.ToolPNPM, core.ToolBun, core.ToolGo, core.ToolPip, "pip3", core.ToolUV, core.ToolPoetry:
 		return true
 	default:
 		return strings.HasPrefix(name, ".")
@@ -197,7 +225,7 @@ func packageNameForExecutable(tool, path, name string) string {
 		if pkg := pathSegmentAfter(slashPath, "/Cellar/"); pkg != "" {
 			return pkg
 		}
-	case core.ToolNPM:
+	case core.ToolNPM, core.ToolPNPM, core.ToolBun:
 		if pkg := npmPackageFromPath(slashPath); pkg != "" {
 			return pkg
 		}
@@ -252,20 +280,120 @@ func npmGlobalBinDir() string {
 	return filepath.Join(prefix, "bin")
 }
 
+// pnpmGlobalBinDir returns the pnpm global executable directory.
+func pnpmGlobalBinDir() string {
+	return pnpmGlobalBinDirWithDeps(defaultExecutablePathDeps)
+}
+
+func pnpmGlobalBinDirWithDeps(deps executablePathDeps) string {
+	if pnpmHome := deps.getenv("PNPM_HOME"); pnpmHome != "" {
+		return pnpmHome
+	}
+	if _, err := deps.lookPath(pnpmCommandName); err != nil {
+		return ""
+	}
+	output, err := deps.commandOutput(pnpmCommandName, "bin", npmGlobalFlag)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(output))
+}
+
+// bunGlobalBinDir returns the Bun global executable directory.
+func bunGlobalBinDir() string {
+	return bunGlobalBinDirWithDeps(defaultExecutablePathDeps)
+}
+
+func bunGlobalBinDirWithDeps(deps executablePathDeps) string {
+	if bunInstall := deps.getenv("BUN_INSTALL"); bunInstall != "" {
+		return filepath.Join(bunInstall, "bin")
+	}
+	homeDir := deps.getenv("HOME")
+	if homeDir == "" {
+		var err error
+		homeDir, err = deps.userHomeDir()
+		if err != nil {
+			return ""
+		}
+	}
+	return filepath.Join(homeDir, ".bun", "bin")
+}
+
+// pythonUserBaseBinDir returns the Python user-base script directory.
+func pythonUserBaseBinDir() string {
+	return pythonUserBaseBinDirWithDeps(defaultExecutablePathDeps)
+}
+
+func pythonUserBaseBinDirWithDeps(deps executablePathDeps) string {
+	python, err := firstExistingCommandWithDeps(deps, "python3", "python")
+	if err != nil {
+		return ""
+	}
+	output, err := deps.commandOutput(python, "-m", "site", "--user-base")
+	if err != nil {
+		return ""
+	}
+	base := strings.TrimSpace(string(output))
+	if base == "" {
+		return ""
+	}
+	return filepath.Join(base, "bin")
+}
+
+// uvToolBinDir returns the uv tool executable directory.
+func uvToolBinDir() string {
+	return uvToolBinDirWithDeps(defaultExecutablePathDeps)
+}
+
+func uvToolBinDirWithDeps(deps executablePathDeps) string {
+	if dir := deps.getenv("UV_TOOL_BIN_DIR"); dir != "" {
+		return dir
+	}
+	homeDir := deps.getenv("HOME")
+	if homeDir == "" {
+		var err error
+		homeDir, err = deps.userHomeDir()
+		if err != nil {
+			return ""
+		}
+	}
+	return filepath.Join(homeDir, ".local", "bin")
+}
+
+func firstExistingCommand(names ...string) (string, error) {
+	return firstExistingCommandWithDeps(defaultExecutablePathDeps, names...)
+}
+
+func firstExistingCommandWithDeps(deps executablePathDeps, names ...string) (string, error) {
+	var lastErr error
+	for _, name := range names {
+		if _, err := deps.lookPath(name); err == nil {
+			return name, nil
+		} else {
+			lastErr = err
+		}
+	}
+	return "", lastErr
+}
+
 // goBinaryDir returns the Go binary directory
 func goBinaryDir(config *core.Config) string {
+	return goBinaryDirWithDeps(config, defaultExecutablePathDeps)
+}
+
+func goBinaryDirWithDeps(config *core.Config, deps executablePathDeps) string {
 	if config.Tools.Go.GoBin != "" {
 		return config.Tools.Go.GoBin
 	}
-	if goBin := os.Getenv("GOBIN"); goBin != "" {
+	if goBin := deps.getenv("GOBIN"); goBin != "" {
 		return goBin
 	}
 	goPath := config.Tools.Go.GoPath
 	if goPath == "" {
-		goPath = os.Getenv("GOPATH")
+		goPath = deps.getenv("GOPATH")
 	}
 	if goPath == "" {
-		homeDir, err := os.UserHomeDir()
+		homeDir, err := deps.userHomeDir()
 		if err != nil {
 			return ""
 		}
@@ -440,8 +568,18 @@ func newMonitor(tool string) (monitors.Monitor, error) {
 		return monitors.NewHomebrewMonitor(), nil
 	case core.ToolNPM:
 		return monitors.NewNPMMonitor(), nil
+	case core.ToolPNPM:
+		return monitors.NewPNPMMonitor(), nil
+	case core.ToolBun:
+		return monitors.NewBunMonitor(), nil
 	case core.ToolGo:
 		return monitors.NewGoMonitor(), nil
+	case core.ToolPip:
+		return monitors.NewPipMonitor(), nil
+	case core.ToolUV:
+		return monitors.NewUVMonitor(), nil
+	case core.ToolPoetry:
+		return monitors.NewPoetryMonitor(), nil
 	default:
 		return nil, fmt.Errorf("unsupported tool: %s", tool)
 	}
@@ -471,7 +609,7 @@ func enrichExecutionRecord(config *core.Config, record *core.ExecutionRecord) {
 // supportsUninstall returns true if the package tool supports uninstall
 func supportsUninstall(pkg *core.PackageInfo) bool {
 	switch pkg.Tool {
-	case core.ToolHomebrew, homebrewCaskTool, core.ToolNPM, core.ToolGo, core.ToolGoBinary:
+	case core.ToolHomebrew, homebrewCaskTool, core.ToolNPM, core.ToolPNPM, core.ToolBun, core.ToolPip, core.ToolUV, core.ToolGo, core.ToolGoBinary:
 		return true
 	default:
 		return false
@@ -517,6 +655,74 @@ func runNPMUninstall(name string) error {
 	return runPreparedCommand(command)
 }
 
+// runPNPMUninstall runs pnpm remove -g for a package.
+func runPNPMUninstall(name string) error {
+	if err := validatePackageManagerName(name); err != nil {
+		return err
+	}
+
+	// #nosec G204 -- command is allowlisted and package name is validated before execution.
+	command := exec.Command(pnpmCommandName, removeSubcommand, npmGlobalFlag, name)
+	return runPreparedCommand(command)
+}
+
+// runBunUninstall runs bun remove -g for a package.
+func runBunUninstall(name string) error {
+	if err := validatePackageManagerName(name); err != nil {
+		return err
+	}
+
+	// #nosec G204 -- command is allowlisted and package name is validated before execution.
+	command := exec.Command(bunCommandName, removeSubcommand, npmGlobalFlag, name)
+	return runPreparedCommand(command)
+}
+
+// runPipUninstall runs pip uninstall -y for a package.
+func runPipUninstall(name string) error {
+	if err := validatePackageManagerName(name); err != nil {
+		return err
+	}
+
+	commandName, err := pipCommandForUninstall()
+	if err != nil {
+		return fmt.Errorf("pip not found: %w", err)
+	}
+
+	command, err := pipUninstallCommand(commandName, name)
+	if err != nil {
+		return err
+	}
+	return runPreparedCommand(command)
+}
+
+func pipCommandForUninstall() (string, error) {
+	return firstExistingCommand(pip3CommandName, pipCommandName)
+}
+
+func pipUninstallCommand(commandName, name string) (*exec.Cmd, error) {
+	switch commandName {
+	case pip3CommandName:
+		// #nosec G204 -- command is allowlisted and package name is validated before execution.
+		return exec.Command(pip3CommandName, uninstallSubcommand, pipYesFlag, name), nil
+	case pipCommandName:
+		// #nosec G204 -- command is allowlisted and package name is validated before execution.
+		return exec.Command(pipCommandName, uninstallSubcommand, pipYesFlag, name), nil
+	default:
+		return nil, fmt.Errorf("unsupported pip command: %s", commandName)
+	}
+}
+
+// runUVUninstall runs uv tool uninstall for a package.
+func runUVUninstall(name string) error {
+	if err := validatePackageManagerName(name); err != nil {
+		return err
+	}
+
+	// #nosec G204 -- command is allowlisted and package name is validated before execution.
+	command := exec.Command(uvCommandName, "tool", uninstallSubcommand, name)
+	return runPreparedCommand(command)
+}
+
 // removeGoBinary removes a Go binary
 func removeGoBinary(pkg *core.PackageInfo) error {
 	binaryPath, err := validateRemovableExecutablePath(pkg.Path)
@@ -547,6 +753,30 @@ func uninstallPlan(pkg *core.PackageInfo) ([]string, error) {
 			return nil, err
 		}
 		return []string{npmCommandName, uninstallSubcommand, npmGlobalFlag, pkg.Name}, nil
+	case core.ToolPNPM:
+		if err := validatePackageManagerName(pkg.Name); err != nil {
+			return nil, err
+		}
+		return []string{pnpmCommandName, removeSubcommand, npmGlobalFlag, pkg.Name}, nil
+	case core.ToolBun:
+		if err := validatePackageManagerName(pkg.Name); err != nil {
+			return nil, err
+		}
+		return []string{bunCommandName, removeSubcommand, npmGlobalFlag, pkg.Name}, nil
+	case core.ToolPip:
+		if err := validatePackageManagerName(pkg.Name); err != nil {
+			return nil, err
+		}
+		commandName, err := pipCommandForUninstall()
+		if err != nil {
+			return nil, fmt.Errorf("pip not found: %w", err)
+		}
+		return []string{commandName, uninstallSubcommand, pipYesFlag, pkg.Name}, nil
+	case core.ToolUV:
+		if err := validatePackageManagerName(pkg.Name); err != nil {
+			return nil, err
+		}
+		return []string{uvCommandName, "tool", uninstallSubcommand, pkg.Name}, nil
 	case core.ToolGo, core.ToolGoBinary:
 		if pkg.Path == "" {
 			return nil, fmt.Errorf("go package %s has no executable path to remove", pkg.Name)

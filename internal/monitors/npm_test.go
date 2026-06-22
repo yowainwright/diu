@@ -1,6 +1,7 @@
 package monitors
 
 import (
+	"context"
 	"path/filepath"
 	"testing"
 
@@ -12,6 +13,12 @@ func TestNPMMonitor(t *testing.T) {
 
 	if monitor.Name() != core.ToolNPM {
 		t.Errorf("Expected monitor name '%s', got %s", core.ToolNPM, monitor.Name())
+	}
+}
+
+func TestNPMMonitorStart(t *testing.T) {
+	if err := NewNPMMonitor().(*NPMMonitor).Start(context.Background(), make(chan *core.ExecutionRecord)); err != nil {
+		t.Fatalf("Start failed: %v", err)
 	}
 }
 
