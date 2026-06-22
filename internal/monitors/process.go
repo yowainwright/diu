@@ -59,7 +59,14 @@ func (m *ProcessMonitor) Initialize(config *core.Config) error {
 
 func (m *ProcessMonitor) findOriginalBinary() (string, error) {
 	if filepath.IsAbs(m.binaryPath) {
-		return validateExecutablePath(m.binaryPath)
+		validatedPath, err := validateExecutablePath(m.binaryPath)
+		if err != nil {
+			return "", err
+		}
+		if pathWithinDirectory(validatedPath, m.config.Monitoring.Process.WrapperDir) {
+			return "", fmt.Errorf("original binary %q resolves inside wrapper directory %s", validatedPath, filepath.Clean(m.config.Monitoring.Process.WrapperDir))
+		}
+		return validatedPath, nil
 	}
 
 	paths := filepath.SplitList(os.Getenv("PATH"))
@@ -77,6 +84,35 @@ func (m *ProcessMonitor) findOriginalBinary() (string, error) {
 		}
 	}
 	return "", fmt.Errorf("original binary %q not found in PATH outside wrapper directory %s", filepath.Base(m.binaryPath), wrapperDir)
+}
+
+func pathWithinDirectory(path, dir string) bool {
+	if strings.TrimSpace(path) == "" || strings.TrimSpace(dir) == "" {
+		return false
+	}
+
+	cleanPath := filepath.Clean(path)
+	cleanDir := filepath.Clean(dir)
+	if !filepath.IsAbs(cleanPath) {
+		absPath, err := filepath.Abs(cleanPath)
+		if err != nil {
+			return false
+		}
+		cleanPath = absPath
+	}
+	if !filepath.IsAbs(cleanDir) {
+		absDir, err := filepath.Abs(cleanDir)
+		if err != nil {
+			return false
+		}
+		cleanDir = absDir
+	}
+
+	relativePath, err := filepath.Rel(cleanDir, cleanPath)
+	if err != nil {
+		return false
+	}
+	return relativePath == "." || (relativePath != ".." && !strings.HasPrefix(relativePath, ".."+string(filepath.Separator)))
 }
 
 func (m *ProcessMonitor) InstallWrapper() error {

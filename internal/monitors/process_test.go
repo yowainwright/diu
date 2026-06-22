@@ -314,6 +314,27 @@ func TestProcessMonitorFindOriginalBinarySkipsWrapperDir(t *testing.T) {
 	}
 }
 
+func TestProcessMonitorFindOriginalBinaryRejectsAbsoluteWrapperPath(t *testing.T) {
+	wrapperDir := t.TempDir()
+	wrapperPath := filepath.Join(wrapperDir, "mytool")
+	if err := os.WriteFile(wrapperPath, []byte("#!/bin/bash\nexit 0\n"), core.PrivateFileMode); err != nil {
+		t.Fatalf("Failed to create wrapper: %v", err)
+	}
+	if err := os.Chmod(wrapperPath, core.OwnerExecutableMode); err != nil {
+		t.Fatalf("Failed to mark wrapper executable: %v", err)
+	}
+
+	config := core.DefaultConfig()
+	config.Monitoring.Process.WrapperDir = wrapperDir
+
+	monitor := NewProcessMonitor("mytool", wrapperPath)
+	monitor.config = config
+
+	if _, err := monitor.findOriginalBinary(); err == nil {
+		t.Fatal("Expected absolute wrapper path to be rejected")
+	}
+}
+
 func TestProcessMonitorInstallWrapperFailsWhenOriginalMissing(t *testing.T) {
 	wrapperDir := t.TempDir()
 	t.Setenv("PATH", wrapperDir)
