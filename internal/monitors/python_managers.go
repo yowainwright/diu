@@ -231,21 +231,31 @@ func firstAvailableCommand(names ...string) (string, error) {
 	return "", lastErr
 }
 
+var pipListCommandOutputs = map[string]func(bool) ([]byte, error){
+	pip3CommandName: runPip3ListCommandOutput,
+	pipCommandName:  runPipCommandListOutput,
+}
+
 func runPipListCommandOutput(commandName string, formatted bool) ([]byte, error) {
-	switch commandName {
-	case pip3CommandName:
-		if formatted {
-			return exec.Command(pip3CommandName, "list", pythonListFormat).Output()
-		}
-		return exec.Command(pip3CommandName, "list").Output()
-	case pipCommandName:
-		if formatted {
-			return exec.Command(pipCommandName, "list", pythonListFormat).Output()
-		}
-		return exec.Command(pipCommandName, "list").Output()
-	default:
+	runCommand, ok := pipListCommandOutputs[commandName]
+	if !ok {
 		return nil, fmt.Errorf("unsupported pip command: %s", commandName)
 	}
+	return runCommand(formatted)
+}
+
+func runPip3ListCommandOutput(formatted bool) ([]byte, error) {
+	if formatted {
+		return exec.Command(pip3CommandName, "list", pythonListFormat).Output()
+	}
+	return exec.Command(pip3CommandName, "list").Output()
+}
+
+func runPipCommandListOutput(formatted bool) ([]byte, error) {
+	if formatted {
+		return exec.Command(pipCommandName, "list", pythonListFormat).Output()
+	}
+	return exec.Command(pipCommandName, "list").Output()
 }
 
 func parseUVPipCommand(record *core.ExecutionRecord, args []string) {

@@ -50,6 +50,7 @@ const (
 	pnpmCommandName     = "pnpm"
 	bunCommandName      = "bun"
 	pipCommandName      = "pip"
+	pip3CommandName     = "pip3"
 	uvCommandName       = "uv"
 
 	homebrewCaskTool = "homebrew-cask"
@@ -682,14 +683,33 @@ func runPipUninstall(name string) error {
 		return err
 	}
 
-	commandName, err := firstExistingCommand(pipCommandName, "pip3")
+	commandName, err := pipCommandForUninstall()
 	if err != nil {
 		return fmt.Errorf("pip not found: %w", err)
 	}
 
-	// #nosec G204 -- command is allowlisted and package name is validated before execution.
-	command := exec.Command(commandName, uninstallSubcommand, pipYesFlag, name)
+	command, err := pipUninstallCommand(commandName, name)
+	if err != nil {
+		return err
+	}
 	return runPreparedCommand(command)
+}
+
+func pipCommandForUninstall() (string, error) {
+	return firstExistingCommand(pip3CommandName, pipCommandName)
+}
+
+func pipUninstallCommand(commandName, name string) (*exec.Cmd, error) {
+	switch commandName {
+	case pip3CommandName:
+		// #nosec G204 -- command is allowlisted and package name is validated before execution.
+		return exec.Command(pip3CommandName, uninstallSubcommand, pipYesFlag, name), nil
+	case pipCommandName:
+		// #nosec G204 -- command is allowlisted and package name is validated before execution.
+		return exec.Command(pipCommandName, uninstallSubcommand, pipYesFlag, name), nil
+	default:
+		return nil, fmt.Errorf("unsupported pip command: %s", commandName)
+	}
 }
 
 // runUVUninstall runs uv tool uninstall for a package.
@@ -747,7 +767,11 @@ func uninstallPlan(pkg *core.PackageInfo) ([]string, error) {
 		if err := validatePackageManagerName(pkg.Name); err != nil {
 			return nil, err
 		}
-		return []string{pipCommandName, uninstallSubcommand, pipYesFlag, pkg.Name}, nil
+		commandName, err := pipCommandForUninstall()
+		if err != nil {
+			return nil, fmt.Errorf("pip not found: %w", err)
+		}
+		return []string{commandName, uninstallSubcommand, pipYesFlag, pkg.Name}, nil
 	case core.ToolUV:
 		if err := validatePackageManagerName(pkg.Name); err != nil {
 			return nil, err

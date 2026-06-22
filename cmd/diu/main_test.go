@@ -156,6 +156,9 @@ func TestPrintPackageListNumbersFromOne(t *testing.T) {
 }
 
 func TestUninstallPlan(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	prependFakeCommand(t, pip3CommandName, "#!/bin/sh\nexit 0\n")
+
 	const (
 		homebrewPackage = "jq"
 		npmPackage      = "eslint"
@@ -195,7 +198,7 @@ func TestUninstallPlan(t *testing.T) {
 		{
 			name: "pip",
 			pkg:  &core.PackageInfo{Name: pipPackage, Tool: core.ToolPip},
-			want: []string{pipCommandName, uninstallSubcommand, pipYesFlag, pipPackage},
+			want: []string{pip3CommandName, uninstallSubcommand, pipYesFlag, pipPackage},
 		},
 		{
 			name: "uv",
@@ -1406,9 +1409,20 @@ func TestRunNPMUninstallCommandFails(t *testing.T) {
 
 func TestRunPipUninstallFallsBackToPip3(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
-	prependFakeCommand(t, "pip3", "#!/bin/sh\nexit 0\n")
+	prependFakeCommand(t, pip3CommandName, "#!/bin/sh\nexit 0\n")
 	if err := runPipUninstall("ruff"); err != nil {
 		t.Fatalf("expected nil, got %v", err)
+	}
+}
+
+func TestRunPipUninstallPrefersPip3(t *testing.T) {
+	binDir := t.TempDir()
+	t.Setenv("PATH", binDir)
+	writeExecutableForTest(t, filepath.Join(binDir, pipCommandName), "#!/bin/sh\nexit 12\n")
+	writeExecutableForTest(t, filepath.Join(binDir, pip3CommandName), "#!/bin/sh\nexit 0\n")
+
+	if err := runPipUninstall("ruff"); err != nil {
+		t.Fatalf("expected pip3 to be selected, got %v", err)
 	}
 }
 
@@ -1480,7 +1494,7 @@ func TestRunUninstallAdditionalPackageManagerDispatch(t *testing.T) {
 		},
 		{
 			name:        "pip",
-			commandName: pipCommandName,
+			commandName: pip3CommandName,
 			pkg:         &core.PackageInfo{Name: "ruff", Tool: core.ToolPip},
 		},
 		{

@@ -2006,6 +2006,25 @@ func TestUninstallByNameDryRun(t *testing.T) {
 	}
 }
 
+func TestUninstallByNameDryRunPipUsesResolvedCommand(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	prependFakeCommand(t, pip3CommandName, "#!/bin/sh\nexit 0\n")
+
+	config := setupTestHomeConfig(t)
+	store := openTestStore(t, config)
+	updateTestPackage(t, store, &core.PackageInfo{Name: "ruff", Tool: core.ToolPip})
+	closeTestStore(t, store)
+
+	out := captureStdout(t, func() {
+		if err := uninstallByName("ruff", "", false, true); err != nil {
+			t.Fatalf("dry-run uninstall failed: %v", err)
+		}
+	})
+	if !strings.Contains(out, "pip3 uninstall -y ruff") {
+		t.Fatalf("expected pip3 uninstall plan, got: %q", out)
+	}
+}
+
 func TestUninstallByNameAssumeYesExecutes(t *testing.T) {
 	prependFakeCommand(t, "npm", "#!/bin/sh\nexit 0\n")
 	config := setupTestHomeConfig(t)
