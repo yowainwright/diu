@@ -141,6 +141,28 @@ func TestQueryExecutionsCSV(t *testing.T) {
 	}
 }
 
+func TestQueryExecutionsCSVWriterError(t *testing.T) {
+	config := setupTestHomeConfig(t)
+	store := openTestStore(t, config)
+	addTestExecution(t, store, &core.ExecutionRecord{
+		Tool:      core.ToolHomebrew,
+		Command:   strings.Repeat("x", 8192),
+		Args:      []string{"upgrade"},
+		Timestamp: time.Now(),
+		Duration:  3000 * time.Millisecond,
+		ExitCode:  0,
+	})
+	closeTestStore(t, store)
+
+	var err error
+	withReadOnlyStdout(t, func() {
+		err = queryExecutions(queryCommandForTest(t, "--format", "csv"), nil)
+	})
+	if err == nil {
+		t.Fatal("Expected CSV writer error")
+	}
+}
+
 func TestQueryExecutionsWithTimeFilter(t *testing.T) {
 	config := setupTestHomeConfig(t)
 	store := openTestStore(t, config)
@@ -593,6 +615,35 @@ func TestSetupProject(t *testing.T) {
 	// Verify storage file was created
 	if _, err := os.Stat(config.Storage.JSONFile); err != nil {
 		t.Fatalf("Expected storage file to exist: %v", err)
+	}
+}
+
+func TestSetupProjectReturnsSaveError(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+
+	config := core.DefaultConfig()
+	config.Monitoring.EnabledTools = []string{}
+	config.Monitoring.Filesystem.WatchPaths = map[string][]string{}
+	config.Monitoring.Process.AutoInstallWrappers = false
+
+	configPath := filepath.Join(homeDir, ".config", "diu", "config.json")
+	if err := config.SaveTo(configPath); err != nil {
+		t.Fatalf("Failed to save test config: %v", err)
+	}
+	if err := os.Chmod(configPath, 0400); err != nil {
+		t.Fatalf("Failed to make config read-only: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chmod(configPath, core.PrivateFileMode)
+	})
+
+	err := setupProject(&command{}, nil)
+	if err == nil {
+		t.Fatal("Expected setupProject to fail")
+	}
+	if !strings.Contains(err.Error(), "failed to save config") {
+		t.Fatalf("Expected save error, got: %v", err)
 	}
 }
 
@@ -1907,6 +1958,20 @@ func TestPrintPackageListCSV(t *testing.T) {
 	}
 	if !strings.Contains(out, `"rip,grep"`) {
 		t.Fatalf("expected package row, got: %q", out)
+	}
+}
+
+func TestPrintPackageListCSVWriterError(t *testing.T) {
+	packages := []*core.PackageInfo{
+		{Name: strings.Repeat("x", 8192), Tool: core.ToolHomebrew, Version: "13.0", UsageCount: 5},
+	}
+
+	var err error
+	withReadOnlyStdout(t, func() {
+		err = printPackageList(packages, formatCSV)
+	})
+	if err == nil {
+		t.Fatal("Expected CSV writer error")
 	}
 }
 
