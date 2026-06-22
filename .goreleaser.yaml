@@ -40,6 +40,7 @@ brews:
   - repository:
       owner: yowainwright
       name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
     name: diu
     homepage: "https://github.com/yowainwright/diu"
     description: "Do I Use - Package Manager Execution Tracker"
