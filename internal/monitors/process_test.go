@@ -272,9 +272,9 @@ func TestProcessMonitorFindOriginalBinary(t *testing.T) {
 	monitor := NewProcessMonitor("ls", "ls")
 	monitor.config = config
 
-	original := monitor.findOriginalBinary()
+	original, err := monitor.findOriginalBinary()
 
-	if original == "" {
+	if err != nil {
 		t.Skip("ls not found in PATH")
 	}
 
@@ -304,10 +304,32 @@ func TestProcessMonitorFindOriginalBinarySkipsWrapperDir(t *testing.T) {
 	monitor := NewProcessMonitor("mytool", "mytool")
 	monitor.config = config
 
-	original := monitor.findOriginalBinary()
+	original, err := monitor.findOriginalBinary()
+	if err != nil {
+		return
+	}
 
 	if original == wrapperBinary {
 		t.Error("Should not return wrapper directory binary as original")
+	}
+}
+
+func TestProcessMonitorInstallWrapperFailsWhenOriginalMissing(t *testing.T) {
+	wrapperDir := t.TempDir()
+	t.Setenv("PATH", wrapperDir)
+
+	config := core.DefaultConfig()
+	config.Monitoring.Process.WrapperDir = wrapperDir
+	config.Monitoring.Process.AutoInstallWrappers = true
+
+	monitor := NewProcessMonitor("missing", "missing")
+	err := monitor.Initialize(config)
+	if err == nil {
+		t.Fatal("Expected Initialize to fail when original binary cannot be resolved")
+	}
+
+	if _, statErr := os.Stat(filepath.Join(wrapperDir, "missing")); !os.IsNotExist(statErr) {
+		t.Fatalf("Expected no wrapper to be written, stat err=%v", statErr)
 	}
 }
 

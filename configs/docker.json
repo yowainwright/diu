@@ -1,0 +1,23 @@
+{
+  "daemon": {
+    "data_dir": "/var/lib/diu",
+    "pid_file": "/var/lib/diu/diu.pid",
+    "socket_path": "/var/lib/diu/diu.sock"
+  },
+  "storage": {
+    "json_file": "/var/lib/diu/executions.json"
+  },
+  "monitoring": {
+    "enabled_tools": [],
+    "process": {
+      "wrapper_dir": "/var/lib/diu/wrappers",
+      "auto_install_wrappers": false
+    },
+    "filesystem": {
+      "watch_paths": {}
+    }
+  },
+  "api": {
+    "host": "0.0.0.0"
+  }
+}

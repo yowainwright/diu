@@ -47,10 +47,6 @@ diu stats --weekly --top 5
 ## Install
 
 ```bash
-# mise
-mise install diu
-mise use -g diu
-
 # Homebrew
 brew tap yowainwright/tap
 brew install diu
@@ -182,6 +178,8 @@ diu stats --tool uv --top 20
 ```
 
 ## Local API
+
+The local API is unauthenticated and intended for local development use. Keep `api.host` bound to `127.0.0.1` unless you deliberately want other processes on your network to reach it.
 
 Start the daemon:
 

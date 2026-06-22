@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -239,17 +240,24 @@ func printPackageList(packages []*core.PackageInfo, format string) error {
 		enc.SetIndent("", "  ")
 		return enc.Encode(packages)
 	case formatCSV:
-		fmt.Println("tool,name,version,usage_count,last_used,path")
+		writer := csv.NewWriter(os.Stdout)
+		if err := writer.Write([]string{"tool", "name", "version", "usage_count", "last_used", "path"}); err != nil {
+			return err
+		}
 		for _, pkg := range packages {
-			fmt.Printf("%s,%s,%s,%d,%s,%s\n",
+			if err := writer.Write([]string{
 				pkg.Tool,
 				pkg.Name,
 				pkg.Version,
-				pkg.UsageCount,
+				strconv.Itoa(pkg.UsageCount),
 				formatLastUsed(pkg.LastUsed),
 				pkg.Path,
-			)
+			}); err != nil {
+				return err
+			}
 		}
+		writer.Flush()
+		return writer.Error()
 	default:
 		if len(packages) == 0 {
 			fmt.Println(infoStyle.Render("No packages found"))

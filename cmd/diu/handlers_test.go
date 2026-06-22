@@ -115,7 +115,7 @@ func TestQueryExecutionsCSV(t *testing.T) {
 	store := openTestStore(t, config)
 	addTestExecution(t, store, &core.ExecutionRecord{
 		Tool:      core.ToolHomebrew,
-		Command:   "brew upgrade",
+		Command:   "brew upgrade,all",
 		Args:      []string{"upgrade"},
 		Timestamp: time.Now(),
 		Duration:  3000 * time.Millisecond,
@@ -136,7 +136,7 @@ func TestQueryExecutionsCSV(t *testing.T) {
 	if !strings.Contains(lines[0], "tool,command,timestamp,duration_ms,exit_code") {
 		t.Fatalf("Expected CSV header, got: %s", lines[0])
 	}
-	if !strings.Contains(output, "brew upgrade") {
+	if !strings.Contains(output, `"brew upgrade,all"`) {
 		t.Fatalf("Expected command in CSV output, got: %q", output)
 	}
 }
@@ -1895,7 +1895,7 @@ func TestPrintPackageListJSON(t *testing.T) {
 
 func TestPrintPackageListCSV(t *testing.T) {
 	packages := []*core.PackageInfo{
-		{Name: "ripgrep", Tool: core.ToolHomebrew, Version: "13.0", UsageCount: 5},
+		{Name: "rip,grep", Tool: core.ToolHomebrew, Version: "13.0", UsageCount: 5},
 	}
 	out := captureStdout(t, func() {
 		if err := printPackageList(packages, formatCSV); err != nil {
@@ -1905,7 +1905,7 @@ func TestPrintPackageListCSV(t *testing.T) {
 	if !strings.Contains(out, "tool,name,version") {
 		t.Fatalf("expected CSV header, got: %q", out)
 	}
-	if !strings.Contains(out, "ripgrep") {
+	if !strings.Contains(out, `"rip,grep"`) {
 		t.Fatalf("expected package row, got: %q", out)
 	}
 }

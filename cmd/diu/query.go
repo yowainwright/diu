@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -55,16 +56,23 @@ func queryExecutions(cmd *command, args []string) error {
 		return enc.Encode(executions)
 
 	case "csv":
-		fmt.Println("tool,command,timestamp,duration_ms,exit_code")
+		writer := csv.NewWriter(os.Stdout)
+		if err := writer.Write([]string{"tool", "command", "timestamp", "duration_ms", "exit_code"}); err != nil {
+			return err
+		}
 		for _, exec := range executions {
-			fmt.Printf("%s,%s,%s,%d,%d\n",
+			if err := writer.Write([]string{
 				exec.Tool,
 				exec.Command,
 				exec.Timestamp.Format(time.RFC3339),
-				exec.Duration.Milliseconds(),
-				exec.ExitCode,
-			)
+				fmt.Sprintf("%d", exec.Duration.Milliseconds()),
+				fmt.Sprintf("%d", exec.ExitCode),
+			}); err != nil {
+				return err
+			}
 		}
+		writer.Flush()
+		return writer.Error()
 
 	default: // table
 		if len(executions) == 0 {

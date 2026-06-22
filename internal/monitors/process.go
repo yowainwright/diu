@@ -40,7 +40,15 @@ func (m *ProcessMonitor) Initialize(config *core.Config) error {
 	}
 
 	m.wrapperPath = filepath.Join(config.Monitoring.Process.WrapperDir, filepath.Base(m.binaryPath))
-	m.originalPath = m.findOriginalBinary()
+	originalPath, err := m.findOriginalBinary()
+	if err != nil {
+		if config.Monitoring.Process.AutoInstallWrappers {
+			return err
+		}
+		m.originalPath = m.binaryPath
+	} else {
+		m.originalPath = originalPath
+	}
 
 	if config.Monitoring.Process.AutoInstallWrappers {
 		return m.InstallWrapper()
@@ -49,7 +57,11 @@ func (m *ProcessMonitor) Initialize(config *core.Config) error {
 	return nil
 }
 
-func (m *ProcessMonitor) findOriginalBinary() string {
+func (m *ProcessMonitor) findOriginalBinary() (string, error) {
+	if filepath.IsAbs(m.binaryPath) {
+		return validateExecutablePath(m.binaryPath)
+	}
+
 	paths := filepath.SplitList(os.Getenv("PATH"))
 	wrapperDir := filepath.Clean(m.config.Monitoring.Process.WrapperDir)
 	for _, path := range paths {
@@ -60,11 +72,11 @@ func (m *ProcessMonitor) findOriginalBinary() string {
 		candidate := filepath.Join(path, filepath.Base(m.binaryPath))
 		if info, err := safefs.Stat(candidate); err == nil && !info.IsDir() {
 			if info.Mode()&core.ExecutableModeMask != 0 {
-				return candidate
+				return candidate, nil
 			}
 		}
 	}
-	return m.binaryPath
+	return "", fmt.Errorf("original binary %q not found in PATH outside wrapper directory %s", filepath.Base(m.binaryPath), wrapperDir)
 }
 
 func (m *ProcessMonitor) InstallWrapper() error {

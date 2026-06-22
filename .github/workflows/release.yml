@@ -50,14 +50,6 @@ jobs:
         run: |
           goreleaser release --clean
 
-      - name: Update mise registry
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          echo "Would update mise registry here"
-          # mise plugins update
-          # mise install diu@latest
-
   homebrew:
     name: Update Homebrew Formula
     runs-on: macos-latest
