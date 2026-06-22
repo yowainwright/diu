@@ -30,6 +30,9 @@ func setupProject(cmd *command, args []string) error {
 	if err := config.EnsureDirectories(); err != nil {
 		return err
 	}
+	if err := config.Save(); err != nil {
+		return fmt.Errorf("failed to save config: %w", err)
+	}
 
 	store, err := storage.NewJSONStorage(config)
 	if err != nil {

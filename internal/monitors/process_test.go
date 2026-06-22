@@ -272,9 +272,9 @@ func TestProcessMonitorFindOriginalBinary(t *testing.T) {
 	monitor := NewProcessMonitor("ls", "ls")
 	monitor.config = config
 
-	original := monitor.findOriginalBinary()
+	original, err := monitor.findOriginalBinary()
 
-	if original == "" {
+	if err != nil {
 		t.Skip("ls not found in PATH")
 	}
 
@@ -304,10 +304,220 @@ func TestProcessMonitorFindOriginalBinarySkipsWrapperDir(t *testing.T) {
 	monitor := NewProcessMonitor("mytool", "mytool")
 	monitor.config = config
 
-	original := monitor.findOriginalBinary()
+	original, err := monitor.findOriginalBinary()
+	if err != nil {
+		return
+	}
 
 	if original == wrapperBinary {
 		t.Error("Should not return wrapper directory binary as original")
+	}
+}
+
+func TestProcessMonitorFindOriginalBinaryRejectsAbsoluteWrapperPath(t *testing.T) {
+	wrapperDir := t.TempDir()
+	wrapperPath := filepath.Join(wrapperDir, "mytool")
+	if err := os.WriteFile(wrapperPath, []byte("#!/bin/bash\nexit 0\n"), core.PrivateFileMode); err != nil {
+		t.Fatalf("Failed to create wrapper: %v", err)
+	}
+	if err := os.Chmod(wrapperPath, core.OwnerExecutableMode); err != nil {
+		t.Fatalf("Failed to mark wrapper executable: %v", err)
+	}
+
+	config := core.DefaultConfig()
+	config.Monitoring.Process.WrapperDir = wrapperDir
+
+	monitor := NewProcessMonitor("mytool", wrapperPath)
+	monitor.config = config
+
+	if _, err := monitor.findOriginalBinary(); err == nil {
+		t.Fatal("Expected absolute wrapper path to be rejected")
+	}
+}
+
+func TestProcessMonitorFindOriginalBinaryReturnsAbsoluteNonWrapperPath(t *testing.T) {
+	wrapperDir := t.TempDir()
+	binaryPath := filepath.Join(t.TempDir(), "mytool")
+	if err := os.WriteFile(binaryPath, []byte("#!/bin/bash\nexit 0\n"), core.PrivateFileMode); err != nil {
+		t.Fatalf("Failed to create binary: %v", err)
+	}
+	if err := os.Chmod(binaryPath, core.OwnerExecutableMode); err != nil {
+		t.Fatalf("Failed to mark binary executable: %v", err)
+	}
+
+	config := core.DefaultConfig()
+	config.Monitoring.Process.WrapperDir = wrapperDir
+
+	monitor := NewProcessMonitor("mytool", binaryPath)
+	monitor.config = config
+
+	original, err := monitor.findOriginalBinary()
+	if err != nil {
+		t.Fatalf("findOriginalBinary failed: %v", err)
+	}
+	expectedPath, err := filepath.EvalSymlinks(binaryPath)
+	if err != nil {
+		t.Fatalf("Failed to resolve binary path: %v", err)
+	}
+	if original != expectedPath {
+		t.Fatalf("original path = %s, want %s", original, expectedPath)
+	}
+}
+
+func TestProcessMonitorFindOriginalBinaryRejectsAbsoluteSymlinkToWrapperPath(t *testing.T) {
+	wrapperDir := t.TempDir()
+	wrapperPath := filepath.Join(wrapperDir, "mytool")
+	if err := os.WriteFile(wrapperPath, []byte("#!/bin/bash\nexit 0\n"), core.PrivateFileMode); err != nil {
+		t.Fatalf("Failed to create wrapper: %v", err)
+	}
+	if err := os.Chmod(wrapperPath, core.OwnerExecutableMode); err != nil {
+		t.Fatalf("Failed to mark wrapper executable: %v", err)
+	}
+
+	symlinkPath := filepath.Join(t.TempDir(), "mytool")
+	if err := os.Symlink(wrapperPath, symlinkPath); err != nil {
+		t.Skipf("Symlinks are not available: %v", err)
+	}
+
+	config := core.DefaultConfig()
+	config.Monitoring.Process.WrapperDir = wrapperDir
+
+	monitor := NewProcessMonitor("mytool", symlinkPath)
+	monitor.config = config
+
+	if _, err := monitor.findOriginalBinary(); err == nil {
+		t.Fatal("Expected symlink to wrapper path to be rejected")
+	}
+}
+
+func TestProcessMonitorFindOriginalBinarySkipsPathSymlinkToWrapperPath(t *testing.T) {
+	wrapperDir := t.TempDir()
+	wrapperPath := filepath.Join(wrapperDir, "mytool")
+	if err := os.WriteFile(wrapperPath, []byte("#!/bin/bash\nexit 0\n"), core.PrivateFileMode); err != nil {
+		t.Fatalf("Failed to create wrapper: %v", err)
+	}
+	if err := os.Chmod(wrapperPath, core.OwnerExecutableMode); err != nil {
+		t.Fatalf("Failed to mark wrapper executable: %v", err)
+	}
+
+	pathDir := t.TempDir()
+	symlinkPath := filepath.Join(pathDir, "mytool")
+	if err := os.Symlink(wrapperPath, symlinkPath); err != nil {
+		t.Skipf("Symlinks are not available: %v", err)
+	}
+	t.Setenv("PATH", pathDir)
+
+	config := core.DefaultConfig()
+	config.Monitoring.Process.WrapperDir = wrapperDir
+
+	monitor := NewProcessMonitor("mytool", "mytool")
+	monitor.config = config
+
+	if _, err := monitor.findOriginalBinary(); err == nil {
+		t.Fatal("Expected PATH symlink to wrapper path to be skipped")
+	}
+}
+
+func TestProcessMonitorFindOriginalBinarySkipsResolvedWrapperDirFromPath(t *testing.T) {
+	realWrapperDir := t.TempDir()
+	wrapperPath := filepath.Join(realWrapperDir, "mytool")
+	if err := os.WriteFile(wrapperPath, []byte("#!/bin/bash\nexit 0\n"), core.PrivateFileMode); err != nil {
+		t.Fatalf("Failed to create wrapper: %v", err)
+	}
+	if err := os.Chmod(wrapperPath, core.OwnerExecutableMode); err != nil {
+		t.Fatalf("Failed to mark wrapper executable: %v", err)
+	}
+
+	wrapperAlias := filepath.Join(t.TempDir(), "wrappers")
+	if err := os.Symlink(realWrapperDir, wrapperAlias); err != nil {
+		t.Skipf("Symlinks are not available: %v", err)
+	}
+	t.Setenv("PATH", realWrapperDir)
+
+	config := core.DefaultConfig()
+	config.Monitoring.Process.WrapperDir = wrapperAlias
+
+	monitor := NewProcessMonitor("mytool", "mytool")
+	monitor.config = config
+
+	if _, err := monitor.findOriginalBinary(); err == nil {
+		t.Fatal("Expected resolved wrapper directory candidate to be skipped")
+	}
+}
+
+func TestPathWithinDirectory(t *testing.T) {
+	parent := t.TempDir()
+	childDir := filepath.Join(parent, "child")
+	if err := os.MkdirAll(childDir, core.OwnerDirectoryMode); err != nil {
+		t.Fatalf("Failed to create child dir: %v", err)
+	}
+	childPath := filepath.Join(childDir, "tool")
+	if err := os.WriteFile(childPath, []byte("#!/bin/bash\nexit 0\n"), core.PrivateFileMode); err != nil {
+		t.Fatalf("Failed to create child path: %v", err)
+	}
+
+	if !pathWithinDirectory(childPath, parent) {
+		t.Fatal("Expected child path to be within parent")
+	}
+	if !pathWithinDirectory(parent, parent) {
+		t.Fatal("Expected directory to be within itself")
+	}
+	if pathWithinDirectory(filepath.Join(t.TempDir(), "tool"), parent) {
+		t.Fatal("Expected outside path to be outside parent")
+	}
+	if pathWithinDirectory("", parent) {
+		t.Fatal("Expected empty path to be outside parent")
+	}
+	if pathWithinDirectory(childPath, "") {
+		t.Fatal("Expected empty directory to reject containment")
+	}
+}
+
+func TestPathWithinDirectoryRelativePaths(t *testing.T) {
+	workingDir := t.TempDir()
+	originalWorkingDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Failed to get working directory: %v", err)
+	}
+	if err := os.Chdir(workingDir); err != nil {
+		t.Fatalf("Failed to change working directory: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(originalWorkingDir); err != nil {
+			t.Fatalf("Failed to restore working directory: %v", err)
+		}
+	})
+
+	childDir := filepath.Join("root", "child")
+	if err := os.MkdirAll(childDir, core.OwnerDirectoryMode); err != nil {
+		t.Fatalf("Failed to create relative child dir: %v", err)
+	}
+	childPath := filepath.Join(childDir, "tool")
+	if err := os.WriteFile(childPath, []byte("#!/bin/bash\nexit 0\n"), core.PrivateFileMode); err != nil {
+		t.Fatalf("Failed to create relative child path: %v", err)
+	}
+
+	if !pathWithinDirectory(childPath, "root") {
+		t.Fatal("Expected relative child path to be within relative parent")
+	}
+}
+
+func TestProcessMonitorInstallWrapperFailsWhenOriginalMissing(t *testing.T) {
+	wrapperDir := t.TempDir()
+	t.Setenv("PATH", wrapperDir)
+
+	config := core.DefaultConfig()
+	config.Monitoring.Process.WrapperDir = wrapperDir
+	config.Monitoring.Process.AutoInstallWrappers = true
+
+	monitor := NewProcessMonitor("missing", "missing")
+	err := monitor.Initialize(config)
+	if err == nil {
+		t.Fatal("Expected Initialize to fail when original binary cannot be resolved")
+	}
+
+	if _, statErr := os.Stat(filepath.Join(wrapperDir, "missing")); !os.IsNotExist(statErr) {
+		t.Fatalf("Expected no wrapper to be written, stat err=%v", statErr)
 	}
 }
 
@@ -407,8 +617,12 @@ func TestValidateExecutablePath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("validateExecutablePath failed: %v", err)
 	}
-	if validated != executablePath {
-		t.Fatalf("validated path = %s, want %s", validated, executablePath)
+	expectedPath, err := filepath.EvalSymlinks(executablePath)
+	if err != nil {
+		t.Fatalf("Failed to resolve executable path: %v", err)
+	}
+	if validated != expectedPath {
+		t.Fatalf("validated path = %s, want %s", validated, expectedPath)
 	}
 
 	nonExecutablePath := filepath.Join(tempDir, "notes.txt")

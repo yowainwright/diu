@@ -40,7 +40,15 @@ func (m *ProcessMonitor) Initialize(config *core.Config) error {
 	}
 
 	m.wrapperPath = filepath.Join(config.Monitoring.Process.WrapperDir, filepath.Base(m.binaryPath))
-	m.originalPath = m.findOriginalBinary()
+	originalPath, err := m.findOriginalBinary()
+	if err != nil {
+		if config.Monitoring.Process.AutoInstallWrappers {
+			return err
+		}
+		m.originalPath = m.binaryPath
+	} else {
+		m.originalPath = originalPath
+	}
 
 	if config.Monitoring.Process.AutoInstallWrappers {
 		return m.InstallWrapper()
@@ -49,7 +57,18 @@ func (m *ProcessMonitor) Initialize(config *core.Config) error {
 	return nil
 }
 
-func (m *ProcessMonitor) findOriginalBinary() string {
+func (m *ProcessMonitor) findOriginalBinary() (string, error) {
+	if filepath.IsAbs(m.binaryPath) {
+		validatedPath, err := validateExecutablePath(m.binaryPath)
+		if err != nil {
+			return "", err
+		}
+		if pathWithinDirectory(validatedPath, m.config.Monitoring.Process.WrapperDir) {
+			return "", fmt.Errorf("original binary %q resolves inside wrapper directory %s", validatedPath, filepath.Clean(m.config.Monitoring.Process.WrapperDir))
+		}
+		return validatedPath, nil
+	}
+
 	paths := filepath.SplitList(os.Getenv("PATH"))
 	wrapperDir := filepath.Clean(m.config.Monitoring.Process.WrapperDir)
 	for _, path := range paths {
@@ -60,11 +79,53 @@ func (m *ProcessMonitor) findOriginalBinary() string {
 		candidate := filepath.Join(path, filepath.Base(m.binaryPath))
 		if info, err := safefs.Stat(candidate); err == nil && !info.IsDir() {
 			if info.Mode()&core.ExecutableModeMask != 0 {
-				return candidate
+				validatedPath, err := validateExecutablePath(candidate)
+				if err != nil {
+					continue
+				}
+				if pathWithinDirectory(validatedPath, wrapperDir) {
+					continue
+				}
+				return validatedPath, nil
 			}
 		}
 	}
-	return m.binaryPath
+	return "", fmt.Errorf("original binary %q not found in PATH outside wrapper directory %s", filepath.Base(m.binaryPath), wrapperDir)
+}
+
+func pathWithinDirectory(path, dir string) bool {
+	if strings.TrimSpace(path) == "" || strings.TrimSpace(dir) == "" {
+		return false
+	}
+
+	cleanPath := filepath.Clean(path)
+	cleanDir := filepath.Clean(dir)
+	if !filepath.IsAbs(cleanPath) {
+		absPath, err := filepath.Abs(cleanPath)
+		if err != nil {
+			return false
+		}
+		cleanPath = absPath
+	}
+	if !filepath.IsAbs(cleanDir) {
+		absDir, err := filepath.Abs(cleanDir)
+		if err != nil {
+			return false
+		}
+		cleanDir = absDir
+	}
+	if resolvedPath, err := filepath.EvalSymlinks(cleanPath); err == nil {
+		cleanPath = resolvedPath
+	}
+	if resolvedDir, err := filepath.EvalSymlinks(cleanDir); err == nil {
+		cleanDir = resolvedDir
+	}
+
+	relativePath, err := filepath.Rel(cleanDir, cleanPath)
+	if err != nil {
+		return false
+	}
+	return relativePath == "." || (relativePath != ".." && !strings.HasPrefix(relativePath, ".."+string(filepath.Separator)))
 }
 
 func (m *ProcessMonitor) InstallWrapper() error {
@@ -282,18 +343,23 @@ func validateExecutablePath(path string) (string, error) {
 		return "", fmt.Errorf("executable path must be absolute: %s", path)
 	}
 
-	info, err := safefs.Stat(cleanPath)
+	resolvedPath, err := filepath.EvalSymlinks(cleanPath)
 	if err != nil {
-		return "", fmt.Errorf("failed to inspect executable %s: %w", cleanPath, err)
-	}
-	if info.IsDir() {
-		return "", fmt.Errorf("executable path is a directory: %s", cleanPath)
-	}
-	if info.Mode()&core.ExecutableModeMask == 0 {
-		return "", fmt.Errorf("executable path is not executable: %s", cleanPath)
+		return "", fmt.Errorf("failed to resolve executable %s: %w", cleanPath, err)
 	}
 
-	return cleanPath, nil
+	info, err := safefs.Stat(resolvedPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to inspect executable %s: %w", resolvedPath, err)
+	}
+	if info.IsDir() {
+		return "", fmt.Errorf("executable path is a directory: %s", resolvedPath)
+	}
+	if info.Mode()&core.ExecutableModeMask == 0 {
+		return "", fmt.Errorf("executable path is not executable: %s", resolvedPath)
+	}
+
+	return resolvedPath, nil
 }
 
 func (m *ProcessMonitor) GetInstalledPackages() ([]*core.PackageInfo, error) {

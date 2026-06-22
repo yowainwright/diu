@@ -966,6 +966,30 @@ func captureStdout(t *testing.T, fn func()) string {
 	return string(data)
 }
 
+func withReadOnlyStdout(t *testing.T, fn func()) {
+	t.Helper()
+
+	stdoutPath := filepath.Join(t.TempDir(), "stdout")
+	if err := os.WriteFile(stdoutPath, nil, core.PrivateFileMode); err != nil {
+		t.Fatalf("Failed to create read-only stdout target: %v", err)
+	}
+	file, err := os.Open(stdoutPath)
+	if err != nil {
+		t.Fatalf("Failed to open read-only stdout target: %v", err)
+	}
+
+	oldStdout := os.Stdout
+	os.Stdout = file
+	defer func() {
+		os.Stdout = oldStdout
+		if err := file.Close(); err != nil {
+			t.Fatalf("Failed to close read-only stdout target: %v", err)
+		}
+	}()
+
+	fn()
+}
+
 func setupTestHomeConfig(t *testing.T) *core.Config {
 	t.Helper()
 

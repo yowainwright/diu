@@ -1,15 +1,12 @@
-version: '3.8'
-
 services:
   diu:
     build: .
     container_name: diu-daemon
-    ports:
-      - "8080:8080"  # Daemon port
-      - "8081:8081"  # API port
+    expose:
+      - "8081"
     volumes:
       - diu-data:/var/lib/diu
-      - ./configs/default.yaml:/etc/diu/config.yaml:ro
+      - ./configs/docker.json:/var/lib/diu/.config/diu/config.json:ro
     environment:
       - DIU_LOG_LEVEL=debug
     restart: unless-stopped
