@@ -130,7 +130,7 @@ func TestStorageData(t *testing.T) {
 			LastUpdated: time.Now(),
 			Hostname:    "test-host",
 			User:        "testuser",
-			DIUVersion:  "0.1.0",
+			DIUVersion:  Version,
 		},
 		Executions: []ExecutionRecord{},
 		Packages:   make(map[string]map[string]PackageInfo),

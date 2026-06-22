@@ -13,7 +13,7 @@ body:
     attributes:
       label: DIU version
       description: Run `diu --version` if available.
-      placeholder: "0.1.0"
+      placeholder: "0.1.1"
     validations:
       required: true
   - type: dropdown

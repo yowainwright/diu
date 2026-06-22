@@ -1438,8 +1438,8 @@ func TestCoreVersion(t *testing.T) {
 	if version == "" {
 		t.Fatal("coreVersion returned empty")
 	}
-	// Should be either the build version or the default core version
-	expectedVersions := []string{"0.1.0", version} // version is from build, 0.1.0 is from core
+	// Should be either the build version or the default core version.
+	expectedVersions := []string{core.Version, version}
 	found := false
 	for _, v := range expectedVersions {
 		if version == v {

@@ -6,9 +6,8 @@ WORKDIR /app
 # Install test dependencies
 RUN apk add --no-cache bash curl jq git npm python3 py3-pip
 
-# Install package managers for testing
-RUN npm install -g yarn pnpm && \
-    pip3 install --upgrade pip
+# Install package managers for testing. py3-pip is installed by apk above.
+RUN npm install -g yarn pnpm
 
 # Copy test files
 COPY go.mod go.sum ./
