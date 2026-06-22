@@ -335,6 +335,60 @@ func TestProcessMonitorFindOriginalBinaryRejectsAbsoluteWrapperPath(t *testing.T
 	}
 }
 
+func TestProcessMonitorFindOriginalBinaryRejectsAbsoluteSymlinkToWrapperPath(t *testing.T) {
+	wrapperDir := t.TempDir()
+	wrapperPath := filepath.Join(wrapperDir, "mytool")
+	if err := os.WriteFile(wrapperPath, []byte("#!/bin/bash\nexit 0\n"), core.PrivateFileMode); err != nil {
+		t.Fatalf("Failed to create wrapper: %v", err)
+	}
+	if err := os.Chmod(wrapperPath, core.OwnerExecutableMode); err != nil {
+		t.Fatalf("Failed to mark wrapper executable: %v", err)
+	}
+
+	symlinkPath := filepath.Join(t.TempDir(), "mytool")
+	if err := os.Symlink(wrapperPath, symlinkPath); err != nil {
+		t.Skipf("Symlinks are not available: %v", err)
+	}
+
+	config := core.DefaultConfig()
+	config.Monitoring.Process.WrapperDir = wrapperDir
+
+	monitor := NewProcessMonitor("mytool", symlinkPath)
+	monitor.config = config
+
+	if _, err := monitor.findOriginalBinary(); err == nil {
+		t.Fatal("Expected symlink to wrapper path to be rejected")
+	}
+}
+
+func TestProcessMonitorFindOriginalBinarySkipsPathSymlinkToWrapperPath(t *testing.T) {
+	wrapperDir := t.TempDir()
+	wrapperPath := filepath.Join(wrapperDir, "mytool")
+	if err := os.WriteFile(wrapperPath, []byte("#!/bin/bash\nexit 0\n"), core.PrivateFileMode); err != nil {
+		t.Fatalf("Failed to create wrapper: %v", err)
+	}
+	if err := os.Chmod(wrapperPath, core.OwnerExecutableMode); err != nil {
+		t.Fatalf("Failed to mark wrapper executable: %v", err)
+	}
+
+	pathDir := t.TempDir()
+	symlinkPath := filepath.Join(pathDir, "mytool")
+	if err := os.Symlink(wrapperPath, symlinkPath); err != nil {
+		t.Skipf("Symlinks are not available: %v", err)
+	}
+	t.Setenv("PATH", pathDir)
+
+	config := core.DefaultConfig()
+	config.Monitoring.Process.WrapperDir = wrapperDir
+
+	monitor := NewProcessMonitor("mytool", "mytool")
+	monitor.config = config
+
+	if _, err := monitor.findOriginalBinary(); err == nil {
+		t.Fatal("Expected PATH symlink to wrapper path to be skipped")
+	}
+}
+
 func TestProcessMonitorInstallWrapperFailsWhenOriginalMissing(t *testing.T) {
 	wrapperDir := t.TempDir()
 	t.Setenv("PATH", wrapperDir)
@@ -450,8 +504,12 @@ func TestValidateExecutablePath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("validateExecutablePath failed: %v", err)
 	}
-	if validated != executablePath {
-		t.Fatalf("validated path = %s, want %s", validated, executablePath)
+	expectedPath, err := filepath.EvalSymlinks(executablePath)
+	if err != nil {
+		t.Fatalf("Failed to resolve executable path: %v", err)
+	}
+	if validated != expectedPath {
+		t.Fatalf("validated path = %s, want %s", validated, expectedPath)
 	}
 
 	nonExecutablePath := filepath.Join(tempDir, "notes.txt")

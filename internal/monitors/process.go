@@ -79,7 +79,14 @@ func (m *ProcessMonitor) findOriginalBinary() (string, error) {
 		candidate := filepath.Join(path, filepath.Base(m.binaryPath))
 		if info, err := safefs.Stat(candidate); err == nil && !info.IsDir() {
 			if info.Mode()&core.ExecutableModeMask != 0 {
-				return candidate, nil
+				validatedPath, err := validateExecutablePath(candidate)
+				if err != nil {
+					continue
+				}
+				if pathWithinDirectory(validatedPath, wrapperDir) {
+					continue
+				}
+				return validatedPath, nil
 			}
 		}
 	}
@@ -106,6 +113,12 @@ func pathWithinDirectory(path, dir string) bool {
 			return false
 		}
 		cleanDir = absDir
+	}
+	if resolvedPath, err := filepath.EvalSymlinks(cleanPath); err == nil {
+		cleanPath = resolvedPath
+	}
+	if resolvedDir, err := filepath.EvalSymlinks(cleanDir); err == nil {
+		cleanDir = resolvedDir
 	}
 
 	relativePath, err := filepath.Rel(cleanDir, cleanPath)
@@ -330,18 +343,23 @@ func validateExecutablePath(path string) (string, error) {
 		return "", fmt.Errorf("executable path must be absolute: %s", path)
 	}
 
-	info, err := safefs.Stat(cleanPath)
+	resolvedPath, err := filepath.EvalSymlinks(cleanPath)
 	if err != nil {
-		return "", fmt.Errorf("failed to inspect executable %s: %w", cleanPath, err)
-	}
-	if info.IsDir() {
-		return "", fmt.Errorf("executable path is a directory: %s", cleanPath)
-	}
-	if info.Mode()&core.ExecutableModeMask == 0 {
-		return "", fmt.Errorf("executable path is not executable: %s", cleanPath)
+		return "", fmt.Errorf("failed to resolve executable %s: %w", cleanPath, err)
 	}
 
-	return cleanPath, nil
+	info, err := safefs.Stat(resolvedPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to inspect executable %s: %w", resolvedPath, err)
+	}
+	if info.IsDir() {
+		return "", fmt.Errorf("executable path is a directory: %s", resolvedPath)
+	}
+	if info.Mode()&core.ExecutableModeMask == 0 {
+		return "", fmt.Errorf("executable path is not executable: %s", resolvedPath)
+	}
+
+	return resolvedPath, nil
 }
 
 func (m *ProcessMonitor) GetInstalledPackages() ([]*core.PackageInfo, error) {
