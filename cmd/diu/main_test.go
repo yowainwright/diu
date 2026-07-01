@@ -555,9 +555,13 @@ func TestDurationAndWrapperHelpers(t *testing.T) {
 	if err != nil || weeks != 7*24*time.Hour {
 		t.Fatalf("parseDuration 1w = %s, %v", weeks, err)
 	}
-	months, err := parseDuration("1m")
+	months, err := parseDuration("1mo")
 	if err != nil || months != 30*24*time.Hour {
-		t.Fatalf("parseDuration 1m = %s, %v", months, err)
+		t.Fatalf("parseDuration 1mo = %s, %v", months, err)
+	}
+	minutes, err := parseDuration("30m")
+	if err != nil || minutes != 30*time.Minute {
+		t.Fatalf("parseDuration 30m = %s, %v", minutes, err)
 	}
 	hours, err := parseDuration("3h")
 	if err != nil || hours != 3*time.Hour {
@@ -794,6 +798,9 @@ func TestInstallExecutableWrappersWritesScripts(t *testing.T) {
 	}
 	if !strings.Contains(string(content), originalPath) || !strings.Contains(string(content), config.Daemon.SocketPath) {
 		t.Fatalf("Wrapper content missing original path or socket:\n%s", content)
+	}
+	if !strings.Contains(string(content), `DIU_BINARY="diu"`) {
+		t.Fatalf("Wrapper content should resolve diu by command name:\n%s", content)
 	}
 	if bashPath, err := exec.LookPath("bash"); err == nil {
 		if output, err := exec.Command(bashPath, "-n", wrapperPath).CombinedOutput(); err != nil {

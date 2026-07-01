@@ -48,8 +48,7 @@ diu stats --weekly --top 5
 
 ```bash
 # Homebrew
-brew tap yowainwright/tap
-brew install diu
+brew install yowainwright/tap/diu
 
 # Go
 go install github.com/yowainwright/diu/cmd/diu@latest
@@ -80,7 +79,7 @@ homebrew  jq  used 12 times  last: 2026-06-20
 Find packages that have not been used recently:
 
 ```bash
-diu packages --unused 6m
+diu packages --unused 6mo
 diu check --unused 90d --format csv
 ```
 
@@ -269,7 +268,8 @@ gofmt -w cmd internal pkg scripts e2e
 go test ./...
 go test -race ./...
 go vet ./...
-golangci-lint run ./...
+LINT_PACKAGE="github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.4.0"
+go run "$LINT_PACKAGE" run ./...
 goreleaser check
 ```
 

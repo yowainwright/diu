@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -20,6 +21,11 @@ import (
 	"github.com/yowainwright/diu/internal/core"
 	"github.com/yowainwright/diu/internal/monitors"
 	"github.com/yowainwright/diu/internal/storage"
+)
+
+const (
+	maxExecutionRecordBodyBytes = 1 << 20
+	maxRecordedCommandLength    = 4096
 )
 
 type Daemon struct {
@@ -346,7 +352,10 @@ func (d *Daemon) startHTTPServer() error {
 	d.httpServer = &http.Server{
 		Addr:              actualAddr,
 		Handler:           mux,
+		ReadTimeout:       core.DefaultSocketReadTimeout,
 		ReadHeaderTimeout: core.DefaultShutdownTimeout,
+		WriteTimeout:      core.DefaultSocketReadTimeout,
+		IdleTimeout:       core.DefaultSocketReadTimeout,
 	}
 
 	d.wg.Add(1)
@@ -370,9 +379,12 @@ func (d *Daemon) handleExecutions(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if limitStr := r.URL.Query().Get("limit"); limitStr != "" {
-			if limit, err := strconv.Atoi(limitStr); err == nil {
-				opts.Limit = limit
+			limit, err := strconv.Atoi(limitStr)
+			if err != nil || limit < 0 {
+				http.Error(w, "invalid limit", http.StatusBadRequest)
+				return
 			}
+			opts.Limit = limit
 		}
 
 		executions, err := d.storage.GetExecutions(opts)
@@ -387,14 +399,14 @@ func (d *Daemon) handleExecutions(w http.ResponseWriter, r *http.Request) {
 		}
 
 	case http.MethodPost:
-		var record core.ExecutionRecord
-		if err := json.NewDecoder(r.Body).Decode(&record); err != nil {
+		record, err := decodeExecutionRecordRequest(w, r)
+		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 
 		select {
-		case d.eventChan <- &record:
+		case d.eventChan <- record:
 			w.WriteHeader(http.StatusAccepted)
 		case <-d.ctx.Done():
 			http.Error(w, "Daemon stopping", http.StatusServiceUnavailable)
@@ -405,6 +417,44 @@ func (d *Daemon) handleExecutions(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}
+}
+
+func decodeExecutionRecordRequest(w http.ResponseWriter, r *http.Request) (*core.ExecutionRecord, error) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxExecutionRecordBodyBytes)
+
+	decoder := json.NewDecoder(r.Body)
+	var record core.ExecutionRecord
+	if err := decoder.Decode(&record); err != nil {
+		return nil, err
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return nil, fmt.Errorf("request body must contain a single JSON object")
+	}
+	if err := validateExecutionRecord(record); err != nil {
+		return nil, err
+	}
+	return &record, nil
+}
+
+func validateExecutionRecord(record core.ExecutionRecord) error {
+	if strings.TrimSpace(record.Tool) == "" {
+		return fmt.Errorf("tool is required")
+	}
+	if strings.TrimSpace(record.Command) == "" {
+		return fmt.Errorf("command is required")
+	}
+	if len(record.Command) > maxRecordedCommandLength {
+		return fmt.Errorf("command exceeds %d bytes", maxRecordedCommandLength)
+	}
+	if record.Duration < 0 {
+		return fmt.Errorf("duration_ms must be non-negative")
+	}
+	for _, pkg := range record.PackagesAffected {
+		if strings.TrimSpace(pkg) == "" {
+			return fmt.Errorf("packages_affected cannot contain empty values")
+		}
+	}
+	return nil
 }
 
 func (d *Daemon) handlePackages(w http.ResponseWriter, r *http.Request) {

@@ -105,7 +105,8 @@ func TestProcessMonitorGenerateWrapperScript(t *testing.T) {
 		shebangText           = "#!/bin/bash"
 		toolAssignment        = `DIU_TOOL="brew"`
 		socketAssignment      = `DIU_SOCKET=`
-		recordFallbackCmd     = `"$DIU_BINARY" record`
+		recordLookupCmd       = `command -v "$DIU_BINARY"`
+		recordFallbackCmd     = `"$DIU_RECORD_BINARY" record`
 		toolJSONField         = `"tool": "$DIU_TOOL"`
 		argsJSONField         = `"args": $args_json`
 		exitCodeForwardingCmd = "exit $EXIT_CODE"
@@ -127,6 +128,10 @@ func TestProcessMonitorGenerateWrapperScript(t *testing.T) {
 
 	if !strings.Contains(script, socketAssignment) {
 		t.Error("Script should configure the DIU socket path")
+	}
+
+	if !strings.Contains(script, recordLookupCmd) {
+		t.Error("Script should resolve diu at runtime")
 	}
 
 	if !strings.Contains(script, recordFallbackCmd) {
@@ -578,6 +583,14 @@ func TestProcessMonitorUpdateShellConfig(t *testing.T) {
 	if err := os.WriteFile(zshrc, []byte("# existing\n"), core.PrivateFileMode); err != nil {
 		t.Fatalf("Failed to write shell config: %v", err)
 	}
+	fishDir := filepath.Join(homeDir, ".config", "fish")
+	if err := os.MkdirAll(fishDir, core.OwnerDirectoryMode); err != nil {
+		t.Fatalf("Failed to create fish config dir: %v", err)
+	}
+	fishConfig := filepath.Join(fishDir, "config.fish")
+	if err := os.WriteFile(fishConfig, []byte("# existing\n"), core.PrivateFileMode); err != nil {
+		t.Fatalf("Failed to write fish config: %v", err)
+	}
 
 	config := core.DefaultConfig()
 	config.Monitoring.Process.WrapperDir = filepath.Join(homeDir, "wrappers")
@@ -600,6 +613,18 @@ func TestProcessMonitorUpdateShellConfig(t *testing.T) {
 	exportLine := `export PATH="` + config.Monitoring.Process.WrapperDir + `:$PATH"`
 	if strings.Count(string(content), exportLine) != 1 {
 		t.Fatalf("shell config content = %q, want one export line", content)
+	}
+
+	fishContent, err := os.ReadFile(fishConfig)
+	if err != nil {
+		t.Fatalf("Failed to read fish config: %v", err)
+	}
+	fishLine := `set -gx PATH "` + config.Monitoring.Process.WrapperDir + `" $PATH`
+	if strings.Count(string(fishContent), fishLine) != 1 {
+		t.Fatalf("fish config content = %q, want one fish path line", fishContent)
+	}
+	if strings.Contains(string(fishContent), "export PATH=") {
+		t.Fatalf("fish config content = %q, should not use POSIX export", fishContent)
 	}
 }
 

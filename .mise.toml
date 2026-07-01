@@ -1,11 +1,11 @@
 [tools]
-go = "1.25"
-golangci-lint = "latest"
+go = "1.26.4"
 goreleaser = "latest"
 
 [env]
 CGO_ENABLED = "0"
 GOFLAGS = "-mod=readonly"
+GOLANGCI_LINT_VERSION = "v2.4.0"
 
 [tasks.build]
 description = "Build the DIU binary"
@@ -35,7 +35,8 @@ open coverage.html
 description = "Run linters"
 run = """
 go vet ./...
-golangci-lint run ./...
+LINT_PACKAGE="github.com/golangci/golangci-lint/v2/cmd/golangci-lint@${GOLANGCI_LINT_VERSION}"
+go run "$LINT_PACKAGE" run ./...
 """
 
 [tasks.fmt]
@@ -110,7 +111,7 @@ run = "./diu stats --top 10"
 
 [tasks.unused]
 description = "Show unused packages"
-run = "./diu packages --unused 6m"
+run = "./diu packages --unused 6mo"
 
 # Release tasks
 [tasks.release-snapshot]

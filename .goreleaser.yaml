@@ -17,7 +17,7 @@ builds:
       - amd64
       - arm64
     ldflags:
-      - -s -w -X main.version={{.Version}} -X main.commit={{.Commit}} -X main.date={{.Date}}
+      - -s -w -X main.version={{.Version}} -X main.commit={{.Commit}} -X main.date={{.Date}} -X github.com/yowainwright/diu/internal/core.Version={{.Version}}
 
 archives:
   - id: diu
@@ -35,29 +35,6 @@ changelog:
     exclude:
       - '^docs:'
       - '^test:'
-
-brews:
-  - repository:
-      owner: yowainwright
-      name: homebrew-tap
-      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
-    name: diu
-    homepage: "https://github.com/yowainwright/diu"
-    description: "Do I Use - Package Manager Execution Tracker"
-    license: "MIT"
-    directory: Formula
-    install: |
-      bin.install "diu"
-    test: |
-      assert_match "diu", shell_output("#{bin}/diu --version")
-      system bin/"diu", "--help"
-    caveats: |
-      DIU stores configuration in ~/.config/diu/config.json
-      and execution data in ~/.local/share/diu.
-
-      Quick start:
-        diu daemon start
-        diu daemon status
 
 # No Linux packages needed for Mac-only release
 

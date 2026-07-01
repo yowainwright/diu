@@ -129,9 +129,8 @@ func flagBool(cmd *command, name string) bool {
 	return value
 }
 
-// parseDuration parses duration strings like "24h", "7d", "30d", "1w", "1m"
+// parseDuration parses duration strings like "24h", "7d", "30d", "1w", "1mo"
 func parseDuration(s string) (time.Duration, error) {
-	// Support formats like "24h", "7d", "30d"
 	if strings.HasSuffix(s, "d") {
 		days, err := strconv.Atoi(strings.TrimSuffix(s, "d"))
 		if err != nil {
@@ -148,8 +147,8 @@ func parseDuration(s string) (time.Duration, error) {
 		return time.Duration(weeks) * 7 * 24 * time.Hour, nil
 	}
 
-	if strings.HasSuffix(s, "m") && !strings.Contains(s, "h") {
-		months, err := strconv.Atoi(strings.TrimSuffix(s, "m"))
+	if strings.HasSuffix(s, "mo") {
+		months, err := strconv.Atoi(strings.TrimSuffix(s, "mo"))
 		if err != nil {
 			return 0, err
 		}

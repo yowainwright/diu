@@ -328,11 +328,6 @@ func discoverExecutableWrappers(config *core.Config) []executableWrapper {
 
 // writeExecutableWrapper writes a wrapper script for an executable
 func writeExecutableWrapper(config *core.Config, target executableWrapper) error {
-	diuPath, err := os.Executable()
-	if err != nil {
-		return fmt.Errorf("failed to resolve diu executable: %w", err)
-	}
-
 	wrapperPath, err := executableWrapperPath(config.Monitoring.Process.WrapperDir, target.Name)
 	if err != nil {
 		return err
@@ -402,13 +397,16 @@ EOF
         fi
     fi
 
-    if [ "$sent" != true ] && [ -x "$DIU_BINARY" ]; then
-        printf '%%s\n' "$payload" | "$DIU_BINARY" record >/dev/null 2>&1
+    if [ "$sent" != true ]; then
+        DIU_RECORD_BINARY="$(command -v "$DIU_BINARY" 2>/dev/null || true)"
+        if [ -n "$DIU_RECORD_BINARY" ] && [ -x "$DIU_RECORD_BINARY" ]; then
+            printf '%%s\n' "$payload" | "$DIU_RECORD_BINARY" record >/dev/null 2>&1
+        fi
     fi
 } &>/dev/null &
 
 exit $EXIT_CODE
-`, core.ShellEscapeString(config.Daemon.SocketPath), core.ShellEscapeString(diuPath), core.ShellEscapeString(target.OriginalPath), core.ShellEscapeString(target.Tool), core.ShellEscapeString(target.Package), core.ShellEscapeString(target.Name))
+`, core.ShellEscapeString(config.Daemon.SocketPath), "diu", core.ShellEscapeString(target.OriginalPath), core.ShellEscapeString(target.Tool), core.ShellEscapeString(target.Package), core.ShellEscapeString(target.Name))
 
 	return writeOwnerExecutableFile(wrapperPath, []byte(script))
 }
