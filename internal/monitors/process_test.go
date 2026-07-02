@@ -593,7 +593,7 @@ func TestProcessMonitorUpdateShellConfig(t *testing.T) {
 	}
 
 	config := core.DefaultConfig()
-	config.Monitoring.Process.WrapperDir = filepath.Join(homeDir, "wrappers")
+	config.Monitoring.Process.WrapperDir = filepath.Join(homeDir, "wrap$dir\"with`chars")
 
 	monitor := NewProcessMonitor("testtool", "testtool")
 	monitor.config = config
@@ -610,7 +610,7 @@ func TestProcessMonitorUpdateShellConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to read shell config: %v", err)
 	}
-	exportLine := `export PATH="` + config.Monitoring.Process.WrapperDir + `:$PATH"`
+	exportLine := posixPathLine(config.Monitoring.Process.WrapperDir)
 	if strings.Count(string(content), exportLine) != 1 {
 		t.Fatalf("shell config content = %q, want one export line", content)
 	}
@@ -619,7 +619,7 @@ func TestProcessMonitorUpdateShellConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to read fish config: %v", err)
 	}
-	fishLine := `set -gx PATH "` + config.Monitoring.Process.WrapperDir + `" $PATH`
+	fishLine := fishPathLine(config.Monitoring.Process.WrapperDir)
 	if strings.Count(string(fishContent), fishLine) != 1 {
 		t.Fatalf("fish config content = %q, want one fish path line", fishContent)
 	}

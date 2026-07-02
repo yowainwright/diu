@@ -244,9 +244,9 @@ func (m *ProcessMonitor) updateShellConfig() error {
 	posixLine := posixPathLine(wrapperDir)
 	fishLine := fishPathLine(wrapperDir)
 
-	appendPathConfigIfPresent(bashPath, wrapperDir, posixLine)
-	appendPathConfigIfPresent(zshPath, wrapperDir, posixLine)
-	appendPathConfigIfPresent(fishPath, wrapperDir, fishLine)
+	appendPathConfigIfPresent(bashPath, posixLine)
+	appendPathConfigIfPresent(zshPath, posixLine)
+	appendPathConfigIfPresent(fishPath, fishLine)
 
 	return nil
 }
@@ -261,7 +261,7 @@ func fishPathLine(wrapperDir string) string {
 	return fmt.Sprintf("if not contains \"%s\" $PATH\n    set -gx PATH \"%s\" $PATH\nend", quotedWrapperDir, quotedWrapperDir)
 }
 
-func appendPathConfigIfPresent(path, contains, line string) {
+func appendPathConfigIfPresent(path, line string) {
 	if _, err := safefs.Stat(path); err != nil {
 		return
 	}
@@ -270,7 +270,7 @@ func appendPathConfigIfPresent(path, contains, line string) {
 		return
 	}
 	contentText := string(content)
-	if strings.Contains(contentText, contains) {
+	if strings.Contains(contentText, line) {
 		return
 	}
 	lineWithNewline := line + "\n"
