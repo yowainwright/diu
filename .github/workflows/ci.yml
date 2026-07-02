@@ -7,7 +7,8 @@ on:
     branches: [ main ]
 
 env:
-  GO_VERSION: '1.25'
+  GO_VERSION: '1.26.4'
+  GOLANGCI_LINT_VERSION: 'v2.4.0'
 
 jobs:
   lint:
@@ -29,21 +30,18 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-go-
 
-      - name: Install golangci-lint
-        run: |
-          brew install golangci-lint
-
       - name: Run linters
         run: |
-          golangci-lint run ./...
           go vet ./...
+          LINT_PACKAGE="github.com/golangci/golangci-lint/v2/cmd/golangci-lint@${GOLANGCI_LINT_VERSION}"
+          go run "$LINT_PACKAGE" run ./...
 
   test:
     name: Test
     runs-on: macos-latest
     strategy:
       matrix:
-        go: ['1.25']
+        go: ['1.25.11', '1.26.4']
     steps:
       - uses: actions/checkout@v4
 
@@ -66,7 +64,7 @@ jobs:
           go tool cover -func=coverage.out
 
       - name: Upload coverage to Codecov
-        if: matrix.go == '1.25'
+        if: matrix.go == '1.26.4'
         uses: codecov/codecov-action@v6
         with:
           files: ./coverage.out
@@ -123,36 +121,90 @@ jobs:
       - name: Download binary
         uses: actions/download-artifact@v4
         with:
-          name: diu-darwin-arm64
+          pattern: diu-darwin-*
           path: .
+          merge-multiple: true
+
+      - name: Select binary
+        run: |
+          if [ "$(uname -m)" = "arm64" ]; then
+            echo "DIU_BINARY=./diu-darwin-arm64" >> "$GITHUB_ENV"
+          else
+            echo "DIU_BINARY=./diu-darwin-amd64" >> "$GITHUB_ENV"
+          fi
 
       - name: Make binary executable
-        run: chmod +x ./diu-darwin-arm64
+        run: chmod +x "$DIU_BINARY"
 
       - name: Test daemon start/stop
         run: |
-          ./diu-darwin-arm64 daemon start &
+          "$DIU_BINARY" daemon start &
           sleep 5
-          ./diu-darwin-arm64 daemon status
-          ./diu-darwin-arm64 daemon stop
+          "$DIU_BINARY" daemon status
+          "$DIU_BINARY" daemon stop
 
       - name: Test CLI commands
         run: |
-          ./diu-darwin-arm64 --help
-          ./diu-darwin-arm64 query --help
-          ./diu-darwin-arm64 stats --help
+          "$DIU_BINARY" --help
+          "$DIU_BINARY" query --help
+          "$DIU_BINARY" stats --help
 
-  homebrew-test:
-    name: Homebrew Formula Test
+  release-config:
+    name: Release Config
     runs-on: macos-latest
     needs: build
     steps:
       - uses: actions/checkout@v4
 
-      - name: Test Homebrew formula (dry-run)
+      - name: Install GoReleaser
         run: |
-          # This would test the Homebrew formula once published
-          echo "Homebrew formula test would run here"
+          brew install goreleaser
+
+      - name: Check GoReleaser config
+        run: |
+          goreleaser check
+
+      - name: Check Homebrew formula
+        run: |
+          TMP_DIR="${RUNNER_TEMP}/diu-homebrew-formula"
+          SOURCE_ARCHIVE="${TMP_DIR}/diu-0.0.0.tar.gz"
+          FORMULA_PATH="${TMP_DIR}/diu.rb"
+          SHA_FILE="${TMP_DIR}/sha256"
+          TEST_TAP="yowainwright/diu-check"
+          TEST_FORMULA="${TEST_TAP}/diu"
+
+          cleanup_formula() {
+            brew uninstall --force --ignore-dependencies diu || true
+            brew untap "$TEST_TAP" || true
+          }
+
+          trap cleanup_formula EXIT
+          brew untap "$TEST_TAP" || true
+
+          rm -rf "$TMP_DIR"
+          mkdir -p "$TMP_DIR"
+
+          tar -C "$GITHUB_WORKSPACE" \
+            --exclude ".git" \
+            --exclude "dist" \
+            --exclude ".beads" \
+            -czf "$SOURCE_ARCHIVE" .
+
+          shasum -a 256 "$SOURCE_ARCHIVE" > "$SHA_FILE"
+          read -r SOURCE_SHA256 _ < "$SHA_FILE"
+
+          scripts/render-homebrew-formula.sh \
+            "0.0.0" \
+            "file://$SOURCE_ARCHIVE" \
+            "$SOURCE_SHA256" > "$FORMULA_PATH"
+
+          ruby -c "$FORMULA_PATH"
+          brew tap-new --no-git "$TEST_TAP"
+          TEST_TAP_REPO="$(brew --repository "$TEST_TAP")"
+          cp "$FORMULA_PATH" "$TEST_TAP_REPO/Formula/diu.rb"
+
+          brew install --build-from-source "$TEST_FORMULA"
+          brew test "$TEST_FORMULA"
 
   security:
     name: Security Scan
@@ -172,6 +224,11 @@ jobs:
         run: |
           go install github.com/securego/gosec/v2/cmd/gosec@latest
           gosec -fmt sarif -out gosec-results.sarif ./...
+
+      - name: Run govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
 
       - name: Upload security results
         uses: github/codeql-action/upload-sarif@v4

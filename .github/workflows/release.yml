@@ -9,6 +9,9 @@ permissions:
   contents: write
   packages: write
 
+env:
+  GOLANGCI_LINT_VERSION: 'v2.4.0'
+
 jobs:
   release:
     name: Release
@@ -21,43 +24,102 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.25'
+          go-version: '1.26.4'
 
       - name: Install dependencies
         run: |
           brew install goreleaser
-          brew install golangci-lint
           brew install mise
 
       - name: Run vet
         run: go vet ./...
 
       - name: Run linters
-        run: golangci-lint run ./...
+        run: |
+          LINT_PACKAGE="github.com/golangci/golangci-lint/v2/cmd/golangci-lint@${GOLANGCI_LINT_VERSION}"
+          go run "$LINT_PACKAGE" run ./...
 
       - name: Run race tests
         run: go test -v -race ./...
+
+      - name: Run govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
 
       - name: Build release targets
         run: |
           GOOS=darwin GOARCH=amd64 go build -v -o /tmp/diu-darwin-amd64 ./cmd/diu
           GOOS=darwin GOARCH=arm64 go build -v -o /tmp/diu-darwin-arm64 ./cmd/diu
 
+      - name: Render Homebrew formula
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          VERSION="${TAG_NAME#v}"
+          SOURCE_URL="https://github.com/yowainwright/diu/archive/refs/tags/${TAG_NAME}.tar.gz"
+          SOURCE_ARCHIVE="${RUNNER_TEMP}/diu-${VERSION}.tar.gz"
+          FORMULA_PATH="${RUNNER_TEMP}/diu.rb"
+          SHA_FILE="${RUNNER_TEMP}/diu-source.sha256"
+
+          curl -fsSL "$SOURCE_URL" -o "$SOURCE_ARCHIVE"
+          shasum -a 256 "$SOURCE_ARCHIVE" > "$SHA_FILE"
+          read -r SOURCE_SHA256 _ < "$SHA_FILE"
+
+          scripts/render-homebrew-formula.sh "$VERSION" "$SOURCE_URL" "$SOURCE_SHA256" > "$FORMULA_PATH"
+          ruby -c "$FORMULA_PATH"
+
+          echo "FORMULA_PATH=$FORMULA_PATH" >> "$GITHUB_ENV"
+
+      - name: Test Homebrew formula
+        run: |
+          TEST_TAP="yowainwright/diu-check"
+          TEST_FORMULA="${TEST_TAP}/diu"
+
+          cleanup_formula() {
+            brew uninstall --force --ignore-dependencies diu || true
+            brew untap "$TEST_TAP" || true
+          }
+
+          trap cleanup_formula EXIT
+          brew untap "$TEST_TAP" || true
+
+          brew tap-new --no-git "$TEST_TAP"
+          TEST_TAP_REPO="$(brew --repository "$TEST_TAP")"
+          cp "$FORMULA_PATH" "$TEST_TAP_REPO/Formula/diu.rb"
+
+          brew audit --strict --online "$TEST_FORMULA"
+          brew install --build-from-source "$TEST_FORMULA"
+          brew test "$TEST_FORMULA"
+
       - name: Run GoReleaser
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
         run: |
           goreleaser release --clean
 
-  homebrew:
-    name: Update Homebrew Formula
-    runs-on: macos-latest
-    needs: release
-    steps:
-      - name: Update Homebrew tap
+      - name: Check out Homebrew tap
+        uses: actions/checkout@v4
+        with:
+          repository: yowainwright/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
+          path: homebrew-tap
+
+      - name: Publish Homebrew formula
         env:
-          GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
+          TAG_NAME: ${{ github.ref_name }}
         run: |
-          # This is handled by goreleaser, but we can add additional steps here
-          echo "Homebrew formula updated via goreleaser"
+          mkdir -p homebrew-tap/Formula
+          cp "$FORMULA_PATH" homebrew-tap/Formula/diu.rb
+
+          cd homebrew-tap
+          if git diff --quiet -- Formula/diu.rb; then
+            echo "Formula/diu.rb is already current"
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/diu.rb
+          git commit -m "diu ${TAG_NAME}"
+          git push

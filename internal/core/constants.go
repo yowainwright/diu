@@ -7,8 +7,9 @@ import (
 	"time"
 )
 
+var Version = "0.1.1"
+
 const (
-	Version       = "0.1.1"
 	ConfigVersion = "1.0"
 
 	ToolHomebrew = "homebrew"

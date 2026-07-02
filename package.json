@@ -1,6 +1,7 @@
 {
   "name": "diu",
   "version": "0.1.1",
+  "private": true,
   "description": "Do I Use - Package Manager Execution Tracker",
   "keywords": [
     "package-manager",

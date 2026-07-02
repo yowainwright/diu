@@ -31,6 +31,20 @@ func updatePackage(t *testing.T, store Storage, pkg *core.PackageInfo) {
 	}
 }
 
+func newTestStorage(t *testing.T) Storage {
+	t.Helper()
+	config := &core.Config{
+		Storage: core.StorageConfig{
+			JSONFile: filepath.Join(t.TempDir(), "test.json"),
+		},
+	}
+	storage, err := NewJSONStorage(config)
+	if err != nil {
+		t.Fatalf("Failed to create storage: %v", err)
+	}
+	return storage
+}
+
 func TestJSONStorage(t *testing.T) {
 	const storageFileName = "test.json"
 
@@ -108,6 +122,53 @@ func TestAddExecution(t *testing.T) {
 	}
 }
 
+func TestExecutionRecordsAreReturnedAsCopies(t *testing.T) {
+	storage := newTestStorage(t)
+	defer closeStorage(t, storage)
+
+	record := &core.ExecutionRecord{
+		ID:               "copy-test",
+		Tool:             "npm",
+		Command:          "npm install eslint",
+		Args:             []string{"install", "eslint"},
+		Timestamp:        time.Now(),
+		Environment:      map[string]string{"NODE_ENV": "test"},
+		PackagesAffected: []string{"eslint"},
+		Metadata:         map[string]interface{}{"action": "install"},
+	}
+	addExecution(t, storage, record)
+
+	record.Args[0] = "mutated"
+	record.Environment["NODE_ENV"] = "mutated"
+	record.PackagesAffected[0] = "mutated"
+	record.Metadata["action"] = "mutated"
+	assertStoredExecutionCopy(t, storage)
+}
+
+func assertStoredExecutionCopy(t *testing.T, storage Storage) {
+	t.Helper()
+	executions, err := storage.GetExecutions(QueryOptions{})
+	if err != nil {
+		t.Fatalf("Failed to get executions: %v", err)
+	}
+	executions[0].Args[0] = "changed"
+	executions[0].Environment["NODE_ENV"] = "changed"
+	executions[0].PackagesAffected[0] = "changed"
+	executions[0].Metadata["action"] = "changed"
+
+	reloaded, err := storage.GetExecutionByID("copy-test")
+	if err != nil {
+		t.Fatalf("Failed to get execution by ID: %v", err)
+	}
+	recordWasChanged := reloaded.Args[0] != "install" ||
+		reloaded.Environment["NODE_ENV"] != "test" ||
+		reloaded.PackagesAffected[0] != "eslint" ||
+		reloaded.Metadata["action"] != "install"
+	if recordWasChanged {
+		t.Fatalf("stored execution was mutated through returned pointer")
+	}
+}
+
 func TestGetExecutions(t *testing.T) {
 	tempDir := t.TempDir()
 	config := &core.Config{
@@ -152,6 +213,47 @@ func TestGetExecutions(t *testing.T) {
 
 	if len(limited) != 2 {
 		t.Errorf("Expected 2 executions with limit, got %d", len(limited))
+	}
+}
+
+func TestPackagesAndStatsAreReturnedAsCopies(t *testing.T) {
+	storage := newTestStorage(t)
+	defer closeStorage(t, storage)
+
+	updatePackage(t, storage, &core.PackageInfo{
+		Name:         "eslint",
+		Tool:         "npm",
+		Dependencies: []string{"chalk"},
+	})
+	addExecution(t, storage, &core.ExecutionRecord{Tool: "npm", Command: "npm --version", Timestamp: time.Now()})
+
+	pkg, err := storage.GetPackage("npm", "eslint")
+	if err != nil {
+		t.Fatalf("Failed to get package: %v", err)
+	}
+	pkg.Dependencies[0] = "mutated"
+
+	stats, err := storage.GetStatistics()
+	if err != nil {
+		t.Fatalf("Failed to get stats: %v", err)
+	}
+	stats.ToolsUsed[0] = "mutated"
+	stats.ExecutionFrequency["npm"] = 99
+	assertStoredPackageAndStatsCopy(t, storage)
+}
+
+func assertStoredPackageAndStatsCopy(t *testing.T, storage Storage) {
+	t.Helper()
+	pkg, err := storage.GetPackage("npm", "eslint")
+	if err != nil {
+		t.Fatalf("Failed to reload package: %v", err)
+	}
+	stats, err := storage.GetStatistics()
+	if err != nil {
+		t.Fatalf("Failed to reload stats: %v", err)
+	}
+	if pkg.Dependencies[0] != "chalk" || stats.ToolsUsed[0] != "npm" || stats.ExecutionFrequency["npm"] != 1 {
+		t.Fatalf("stored package or stats were mutated through returned pointer")
 	}
 }
 

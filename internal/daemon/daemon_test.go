@@ -503,6 +503,18 @@ func TestDaemonHTTPAPI(t *testing.T) {
 		}
 	})
 
+	t.Run("GET /api/v1/executions with invalid limit", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/executions?limit=-1", nil)
+		w := httptest.NewRecorder()
+
+		d.handleExecutions(w, req)
+
+		resp := w.Result()
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("Expected status 400, got %d", resp.StatusCode)
+		}
+	})
+
 	t.Run("POST /api/v1/executions", func(t *testing.T) {
 		record := core.ExecutionRecord{
 			ID:        "test-2",
@@ -520,6 +532,32 @@ func TestDaemonHTTPAPI(t *testing.T) {
 		resp := w.Result()
 		if resp.StatusCode != http.StatusAccepted {
 			t.Errorf("Expected status 202, got %d", resp.StatusCode)
+		}
+	})
+
+	t.Run("POST /api/v1/executions missing command", func(t *testing.T) {
+		body := `{"tool":"npm"}`
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/executions", strings.NewReader(body))
+		w := httptest.NewRecorder()
+
+		d.handleExecutions(w, req)
+
+		resp := w.Result()
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("Expected status 400, got %d", resp.StatusCode)
+		}
+	})
+
+	t.Run("POST /api/v1/executions too large", func(t *testing.T) {
+		body := `{"tool":"npm","command":"` + strings.Repeat("x", maxExecutionRecordBodyBytes) + `"}`
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/executions", strings.NewReader(body))
+		w := httptest.NewRecorder()
+
+		d.handleExecutions(w, req)
+
+		resp := w.Result()
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("Expected status 400, got %d", resp.StatusCode)
 		}
 	})
 

@@ -129,20 +129,21 @@ func (j *JSONStorage) AddExecution(record *core.ExecutionRecord) error {
 			record.ID = fmt.Sprintf("exec_%s_%s", time.Now().Format("20060102_150405"), generateID())
 		}
 
-		j.data.Executions = append(j.data.Executions, *record)
+		storedRecord := copyExecutionValue(*record)
+		j.data.Executions = append(j.data.Executions, storedRecord)
 		j.data.Statistics.TotalExecutions++
 
 		if j.data.Statistics.ExecutionFrequency == nil {
 			j.data.Statistics.ExecutionFrequency = make(map[string]int)
 		}
-		if _, exists := j.data.Statistics.ExecutionFrequency[record.Tool]; !exists {
-			j.data.Statistics.ExecutionFrequency[record.Tool] = 0
-			j.data.Statistics.ToolsUsed = append(j.data.Statistics.ToolsUsed, record.Tool)
+		if _, exists := j.data.Statistics.ExecutionFrequency[storedRecord.Tool]; !exists {
+			j.data.Statistics.ExecutionFrequency[storedRecord.Tool] = 0
+			j.data.Statistics.ToolsUsed = append(j.data.Statistics.ToolsUsed, storedRecord.Tool)
 		}
-		j.data.Statistics.ExecutionFrequency[record.Tool]++
+		j.data.Statistics.ExecutionFrequency[storedRecord.Tool]++
 
-		for _, pkg := range record.PackagesAffected {
-			if err := j.updatePackageInternal(record.Tool, pkg, record.Timestamp); err != nil {
+		for _, pkg := range storedRecord.PackagesAffected {
+			if err := j.updatePackageInternal(storedRecord.Tool, pkg, storedRecord.Timestamp); err != nil {
 				return err
 			}
 		}
@@ -189,7 +190,8 @@ func (j *JSONStorage) GetExecutions(opts QueryOptions) ([]*core.ExecutionRecord,
 			continue
 		}
 
-		results = append(results, exec)
+		copy := copyExecutionValue(*exec)
+		results = append(results, &copy)
 	}
 
 	sort.Slice(results, func(i, j int) bool {
@@ -209,7 +211,8 @@ func (j *JSONStorage) GetExecutionByID(id string) (*core.ExecutionRecord, error)
 
 	for i := range j.data.Executions {
 		if j.data.Executions[i].ID == id {
-			return &j.data.Executions[i], nil
+			copy := copyExecutionValue(j.data.Executions[i])
+			return &copy, nil
 		}
 	}
 
@@ -233,7 +236,7 @@ func (j *JSONStorage) UpdatePackage(pkg *core.PackageInfo) error {
 			j.data.Packages[pkg.Tool] = make(map[string]core.PackageInfo)
 		}
 
-		j.data.Packages[pkg.Tool][pkg.Name] = *pkg
+		j.data.Packages[pkg.Tool][pkg.Name] = copyPackageValue(*pkg)
 		return j.save()
 	})
 }
@@ -278,7 +281,8 @@ func (j *JSONStorage) GetPackage(tool, name string) (*core.PackageInfo, error) {
 		return nil, fmt.Errorf("package not found: %s/%s", tool, name)
 	}
 
-	return &pkg, nil
+	copy := copyPackageValue(pkg)
+	return &copy, nil
 }
 
 func (j *JSONStorage) GetPackages(tool string) ([]*core.PackageInfo, error) {
@@ -290,14 +294,14 @@ func (j *JSONStorage) GetPackages(tool string) ([]*core.PackageInfo, error) {
 	if tool == "" {
 		for _, toolPackages := range j.data.Packages {
 			for _, pkg := range toolPackages {
-				p := pkg
+				p := copyPackageValue(pkg)
 				results = append(results, &p)
 			}
 		}
 	} else {
 		if j.data.Packages[tool] != nil {
 			for _, pkg := range j.data.Packages[tool] {
-				p := pkg
+				p := copyPackageValue(pkg)
 				results = append(results, &p)
 			}
 		}
@@ -314,7 +318,7 @@ func (j *JSONStorage) GetAllPackages() (map[string]map[string]*core.PackageInfo,
 	for tool, packages := range j.data.Packages {
 		result[tool] = make(map[string]*core.PackageInfo)
 		for name, pkg := range packages {
-			p := pkg
+			p := copyPackageValue(pkg)
 			result[tool][name] = &p
 		}
 	}
@@ -345,7 +349,7 @@ func (j *JSONStorage) GetStatistics() (*core.StorageStatistics, error) {
 	j.mu.RLock()
 	defer j.mu.RUnlock()
 
-	stats := j.data.Statistics
+	stats := copyStorageStatistics(j.data.Statistics)
 	return &stats, nil
 }
 
@@ -733,4 +737,63 @@ func generateID() string {
 		return string(b)
 	}
 	return fmt.Sprintf("%06x", time.Now().UnixNano()&0xFFFFFF)
+}
+
+func copyExecutionValue(record core.ExecutionRecord) core.ExecutionRecord {
+	record.Args = copyStringSlice(record.Args)
+	record.Environment = copyStringMap(record.Environment)
+	record.PackagesAffected = copyStringSlice(record.PackagesAffected)
+	record.Metadata = copyMetadataMap(record.Metadata)
+	return record
+}
+
+func copyPackageValue(pkg core.PackageInfo) core.PackageInfo {
+	pkg.Dependencies = copyStringSlice(pkg.Dependencies)
+	return pkg
+}
+
+func copyStorageStatistics(stats core.StorageStatistics) core.StorageStatistics {
+	stats.ToolsUsed = copyStringSlice(stats.ToolsUsed)
+	stats.ExecutionFrequency = copyStringIntMap(stats.ExecutionFrequency)
+	return stats
+}
+
+func copyStringSlice(values []string) []string {
+	if values == nil {
+		return nil
+	}
+	return append([]string(nil), values...)
+}
+
+func copyStringMap(values map[string]string) map[string]string {
+	if values == nil {
+		return nil
+	}
+	copy := make(map[string]string, len(values))
+	for key, value := range values {
+		copy[key] = value
+	}
+	return copy
+}
+
+func copyStringIntMap(values map[string]int) map[string]int {
+	if values == nil {
+		return nil
+	}
+	copy := make(map[string]int, len(values))
+	for key, value := range values {
+		copy[key] = value
+	}
+	return copy
+}
+
+func copyMetadataMap(values map[string]interface{}) map[string]interface{} {
+	if values == nil {
+		return nil
+	}
+	copy := make(map[string]interface{}, len(values))
+	for key, value := range values {
+		copy[key] = value
+	}
+	return copy
 }
