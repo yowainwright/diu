@@ -1,6 +1,8 @@
-# DIU [Do I Use]
+# DIU .oO(...)
 
 [![Codecov](https://codecov.io/gh/yowainwright/diu/branch/main/graph/badge.svg)](https://codecov.io/gh/yowainwright/diu)
+
+## Do I Use?
 
 > Know which global development tools you **actually** use
 
