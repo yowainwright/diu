@@ -92,18 +92,23 @@ jobs:
           brew install --build-from-source "$TEST_FORMULA"
           brew test "$TEST_FORMULA"
 
-      - name: Run GoReleaser
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          goreleaser release --clean
-
       - name: Check out Homebrew tap
         uses: actions/checkout@v4
         with:
           repository: yowainwright/homebrew-tap
           token: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
           path: homebrew-tap
+
+      - name: Verify tap push access
+        run: |
+          cd homebrew-tap
+          git push --dry-run origin HEAD
+
+      - name: Run GoReleaser
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          goreleaser release --clean
 
       - name: Publish Homebrew formula
         env:
