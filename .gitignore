@@ -34,6 +34,9 @@ go.work.sum
 .claude/
 CLAUDE.md
 
+# Homebrew tap checkout during release workflow
+homebrew-tap/
+
 # Node.js
 node_modules/
 npm-debug.log*
