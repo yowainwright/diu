@@ -102,7 +102,7 @@ jobs:
       - name: Verify tap push access
         run: |
           cd homebrew-tap
-          git push --dry-run origin HEAD
+          git push --dry-run origin HEAD:main
 
       - name: Run GoReleaser
         env:

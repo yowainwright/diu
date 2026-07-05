@@ -1,4 +1,4 @@
-# DIU .oO(...)
+# DIU
 
 [![Codecov](https://codecov.io/gh/yowainwright/diu/branch/main/graph/badge.svg)](https://codecov.io/gh/yowainwright/diu)
 
