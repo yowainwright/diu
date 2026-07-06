@@ -265,15 +265,21 @@ mise run build
 
 Release checks:
 
+<!-- release flow from release automation config -->
+
 ```bash
-gofmt -w cmd internal pkg scripts e2e
-go test ./...
-go test -race ./...
-go vet ./...
-LINT_PACKAGE="github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.4.0"
-go run "$LINT_PACKAGE" run ./...
-goreleaser check
+mise run release-preview
 ```
+
+Release Please opens release PRs from conventional commits on `main`. Merging
+the release PR updates the changelog and version, creates the `v*` tag, and
+lets the tag workflow publish the GitHub Release, GoReleaser artifacts, and
+Homebrew formula.
+
+Required for full automation:
+
+- `RELEASE_PLEASE_TOKEN`
+- `HOMEBREW_TAP_GITHUB_TOKEN`
 
 ## Requirements
 
