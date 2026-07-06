@@ -19,7 +19,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Create or update release PR
-        uses: googleapis/release-please-action@v4
+        uses: googleapis/release-please-action@a02a34c4d625e9d4a2a7f1af72eba6af53b7aef4
         with:
           token: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
           config-file: release-please-config.json
