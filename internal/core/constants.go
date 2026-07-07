@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-var Version = "0.1.2"
+var Version = "0.1.2" // x-release-please-version
 
 const (
 	ConfigVersion = "1.0"
