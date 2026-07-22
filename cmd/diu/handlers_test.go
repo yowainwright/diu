@@ -675,7 +675,7 @@ func TestUninstallProjectRemovesLegacyWrappers(t *testing.T) {
 	assertFileMissing(t, wrapperPath)
 }
 
-func TestUninstallProjectRejectsWrapperDirectoryOutsideHome(t *testing.T) {
+func TestUninstallProjectRemovesConfiguredWrapperOutsideHome(t *testing.T) {
 	config := setupTestHomeConfig(t)
 	config.Monitoring.Process.WrapperDir = t.TempDir()
 	if err := config.Save(); err != nil {
@@ -683,20 +683,49 @@ func TestUninstallProjectRejectsWrapperDirectoryOutsideHome(t *testing.T) {
 	}
 	wrapperPath := filepath.Join(config.Monitoring.Process.WrapperDir, "jq")
 	writeExecutableForTest(t, wrapperPath, generatedWrapperFixture)
-
-	err := uninstallProject(&command{}, nil)
-	if err == nil || !strings.Contains(err.Error(), "outside home directory") {
-		t.Fatalf("Expected unsafe wrapper directory error, got %v", err)
-	}
-	if _, err := os.Stat(wrapperPath); err != nil {
-		t.Fatalf("Expected wrapper to remain: %v", err)
-	}
+	runUninstallForTest(t)
+	assertFileMissing(t, wrapperPath)
 }
 
 func TestUninstallProjectRemovesSupportedShellEntries(t *testing.T) {
 	files := setupShellUninstallFixture(t)
 	runUninstallForTest(t)
 	assertShellFixtures(t, files)
+}
+
+func TestShellHomeDirs(t *testing.T) {
+	distinct := shellHomeDirs("/active-home", "/legacy-home")
+	if len(distinct) != 2 || distinct[1] != "/legacy-home" {
+		t.Fatalf("Distinct homes = %v", distinct)
+	}
+	duplicate := shellHomeDirs("/active-home", "/active-home")
+	if len(duplicate) != 1 {
+		t.Fatalf("Duplicate homes = %v", duplicate)
+	}
+}
+
+func TestRemoveShellPathEntriesFromHomes(t *testing.T) {
+	wrapperDir := filepath.Join(t.TempDir(), "wrappers")
+	activeHome := t.TempDir()
+	legacyHome := t.TempDir()
+	activeConfig := filepath.Join(activeHome, ".zshrc")
+	legacyConfig := filepath.Join(legacyHome, ".zshrc")
+	writeUninstallShellFixture(t, activeConfig, wrapperDir)
+	writeUninstallShellFixture(t, legacyConfig, wrapperDir)
+	if err := removeShellPathEntriesFromHomes([]string{activeHome, legacyHome}, wrapperDir); err != nil {
+		t.Fatalf("Failed to remove shell entries: %v", err)
+	}
+	assertFileContent(t, activeConfig, "before\nafter\n")
+	assertFileContent(t, legacyConfig, "before\nafter\n")
+}
+
+func TestResolveWrapperDirRejectsBroadOrRelativePaths(t *testing.T) {
+	invalidPaths := []string{string(filepath.Separator), "relative/wrappers"}
+	for _, path := range invalidPaths {
+		if _, err := resolveWrapperDir(path); err == nil {
+			t.Fatalf("Expected %q to be rejected", path)
+		}
+	}
 }
 
 func newUninstallFixture(t *testing.T) uninstallFixture {

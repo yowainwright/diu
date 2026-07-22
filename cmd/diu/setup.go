@@ -4,9 +4,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/user"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/yowainwright/diu/internal/core"
@@ -23,7 +26,7 @@ type executableWrapper struct {
 }
 
 type uninstallPaths struct {
-	homeDir         string
+	homeDirs        []string
 	wrapperDir      string
 	shellWrapperDir string
 }
@@ -69,7 +72,7 @@ func uninstallProject(cmd *command, args []string) error {
 	if err := removeGeneratedWrappers(paths.wrapperDir); err != nil {
 		return err
 	}
-	if err := removeShellPathEntries(paths.homeDir, paths.shellWrapperDir); err != nil {
+	if err := removeShellPathEntriesFromHomes(paths.homeDirs, paths.shellWrapperDir); err != nil {
 		return err
 	}
 	fmt.Println(successStyle.Render("DIU setup removed; configuration and usage data preserved"))
@@ -81,35 +84,119 @@ func loadUninstallPaths() (uninstallPaths, error) {
 	if err != nil {
 		return uninstallPaths{}, fmt.Errorf("failed to load config: %w", err)
 	}
-	homeDir, err := os.UserHomeDir()
+	homeDirs, err := currentShellHomeDirs()
 	if err != nil {
 		return uninstallPaths{}, fmt.Errorf("failed to find home directory: %w", err)
 	}
 	shellWrapperDir := config.Monitoring.Process.WrapperDir
-	wrapperDir, err := validateWrapperDir(shellWrapperDir, homeDir)
+	wrapperDir, err := validateWrapperDir(shellWrapperDir, homeDirs)
 	if err != nil {
 		return uninstallPaths{}, err
 	}
-	return uninstallPaths{homeDir: homeDir, wrapperDir: wrapperDir, shellWrapperDir: shellWrapperDir}, nil
+	return uninstallPaths{homeDirs: homeDirs, wrapperDir: wrapperDir, shellWrapperDir: shellWrapperDir}, nil
 }
 
-func validateWrapperDir(wrapperDir, homeDir string) (string, error) {
-	resolvedHome, err := resolvePath(homeDir)
+func currentShellHomeDirs() ([]string, error) {
+	activeHome, err := os.UserHomeDir()
 	if err != nil {
-		return "", fmt.Errorf("failed to resolve home directory: %w", err)
+		return nil, err
+	}
+	legacyHome := ""
+	if currentUser, userErr := user.Current(); userErr == nil {
+		legacyHome = currentUser.HomeDir
+	}
+	return shellHomeDirs(activeHome, legacyHome), nil
+}
+
+func shellHomeDirs(activeHome, legacyHome string) []string {
+	activeHome = filepath.Clean(activeHome)
+	homeDirs := []string{activeHome}
+	if strings.TrimSpace(legacyHome) == "" {
+		return homeDirs
+	}
+	legacyHome = filepath.Clean(legacyHome)
+	if legacyHome != activeHome {
+		homeDirs = append(homeDirs, legacyHome)
+	}
+	return homeDirs
+}
+
+func validateWrapperDir(wrapperDir string, homeDirs []string) (string, error) {
+	resolvedWrapper, err := resolveWrapperDir(wrapperDir)
+	if err != nil {
+		return "", err
+	}
+	withinHome, err := pathWithinAny(homeDirs, resolvedWrapper)
+	if err != nil {
+		return "", err
+	}
+	if !withinHome {
+		if err := validateOwnedWrapperDir(resolvedWrapper); err != nil {
+			return "", err
+		}
+	}
+	return resolvedWrapper, nil
+}
+
+func resolveWrapperDir(wrapperDir string) (string, error) {
+	if !filepath.IsAbs(wrapperDir) {
+		return "", fmt.Errorf("wrapper directory must be absolute: %s", wrapperDir)
 	}
 	resolvedWrapper, err := resolvePath(wrapperDir)
 	if err != nil {
 		return "", fmt.Errorf("failed to resolve wrapper directory: %w", err)
 	}
-	withinHome, err := pathWithin(resolvedHome, resolvedWrapper)
-	if err != nil {
-		return "", err
-	}
-	if !withinHome {
-		return "", fmt.Errorf("wrapper directory is outside home directory: %s", wrapperDir)
+	if filepath.Dir(resolvedWrapper) == resolvedWrapper {
+		return "", fmt.Errorf("wrapper directory cannot be a filesystem root")
 	}
 	return resolvedWrapper, nil
+}
+
+func pathWithinAny(parents []string, child string) (bool, error) {
+	for _, parent := range parents {
+		resolvedParent, err := resolvePath(parent)
+		if err != nil {
+			return false, fmt.Errorf("failed to resolve home directory: %w", err)
+		}
+		within, err := pathWithin(resolvedParent, child)
+		if err != nil {
+			return false, err
+		}
+		if within {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func validateOwnedWrapperDir(path string) error {
+	info, err := safefs.Stat(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("failed to inspect wrapper directory: %w", err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("wrapper directory is not a directory: %s", path)
+	}
+	return validateWrapperDirOwner(path, info)
+}
+
+func validateWrapperDirOwner(path string, info os.FileInfo) error {
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return fmt.Errorf("failed to inspect wrapper directory owner: %s", path)
+	}
+	currentUser, err := user.Current()
+	if err != nil {
+		return fmt.Errorf("failed to find current user: %w", err)
+	}
+	ownerUID := strconv.FormatUint(uint64(stat.Uid), 10)
+	if ownerUID != currentUser.Uid {
+		return fmt.Errorf("wrapper directory is not owned by the current user: %s", path)
+	}
+	return nil
 }
 
 func pathWithin(parent, child string) (bool, error) {
@@ -207,6 +294,15 @@ func containsAll(content string, fields []string) bool {
 		}
 	}
 	return true
+}
+
+func removeShellPathEntriesFromHomes(homeDirs []string, wrapperDir string) error {
+	for _, homeDir := range homeDirs {
+		if err := removeShellPathEntries(homeDir, wrapperDir); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func removeShellPathEntries(homeDir, wrapperDir string) error {
