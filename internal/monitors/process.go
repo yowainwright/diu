@@ -164,6 +164,7 @@ func (m *ProcessMonitor) generateWrapperScript() string {
 
 func generateProcessWrapperScript(originalPath, diuPath, socketPath, tool string) string {
 	return fmt.Sprintf(`#!/bin/bash
+%s
 ORIGINAL="%s"
 DIU_BINARY="%s"
 DIU_SOCKET="%s"
@@ -232,7 +233,7 @@ EOF
 } &>/dev/null &
 
 exit $EXIT_CODE
-`, core.ShellEscapeString(originalPath), core.ShellEscapeString(diuPath), core.ShellEscapeString(socketPath), core.ShellEscapeString(tool))
+`, core.GeneratedWrapperMarker, core.ShellEscapeString(originalPath), core.ShellEscapeString(diuPath), core.ShellEscapeString(socketPath), core.ShellEscapeString(tool))
 }
 
 func (m *ProcessMonitor) updateShellConfig() error {
@@ -241,24 +242,14 @@ func (m *ProcessMonitor) updateShellConfig() error {
 	zshPath := filepath.Join(m.homeDir, ".zshrc")
 	fishConfigDir := filepath.Join(m.homeDir, ".config", "fish")
 	fishPath := filepath.Join(fishConfigDir, "config.fish")
-	posixLine := posixPathLine(wrapperDir)
-	fishLine := fishPathLine(wrapperDir)
+	posixLine := core.PosixPathLine(wrapperDir)
+	fishLine := core.FishPathLine(wrapperDir)
 
 	appendPathConfigIfPresent(bashPath, posixLine)
 	appendPathConfigIfPresent(zshPath, posixLine)
 	appendPathConfigIfPresent(fishPath, fishLine)
 
 	return nil
-}
-
-func posixPathLine(wrapperDir string) string {
-	quotedWrapperDir := core.ShellEscapeString(wrapperDir)
-	return fmt.Sprintf("export PATH=\"%s:$PATH\"", quotedWrapperDir)
-}
-
-func fishPathLine(wrapperDir string) string {
-	quotedWrapperDir := core.ShellEscapeString(wrapperDir)
-	return fmt.Sprintf("if not contains \"%s\" $PATH\n    set -gx PATH \"%s\" $PATH\nend", quotedWrapperDir, quotedWrapperDir)
 }
 
 func appendPathConfigIfPresent(path, line string) {
@@ -274,7 +265,7 @@ func appendPathConfigIfPresent(path, line string) {
 		return
 	}
 	lineWithNewline := line + "\n"
-	_ = appendShellConfigLines(path, "\n# DIU path configuration\n", lineWithNewline)
+	_ = appendShellConfigLines(path, "\n"+core.ShellPathMarker+"\n", lineWithNewline)
 }
 
 func appendShellConfigLines(path string, lines ...string) (err error) {

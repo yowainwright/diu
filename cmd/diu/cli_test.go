@@ -88,6 +88,16 @@ func TestCommandDispatchesToSubcommand(t *testing.T) {
 	}
 }
 
+func TestRootCommandIncludesUninstall(t *testing.T) {
+	uninstallCmd := newRootCommand().findCommand("uninstall")
+	if uninstallCmd == nil {
+		t.Fatal("Expected root command to include uninstall")
+	}
+	if uninstallCmd.RunE == nil {
+		t.Fatal("Expected uninstall command to be executable")
+	}
+}
+
 func TestFlagSetVisitOnlyChangedFlags(t *testing.T) {
 	flags := newFlagSet()
 	var tool string

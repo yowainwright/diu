@@ -6,9 +6,11 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/yowainwright/diu/internal/core"
+	"github.com/yowainwright/diu/internal/safefs"
 	"github.com/yowainwright/diu/internal/storage"
 )
 
@@ -51,6 +53,161 @@ func setupProject(cmd *command, args []string) error {
 
 	fmt.Println(successStyle.Render("DIU setup completed"))
 	return nil
+}
+
+func uninstallProject(cmd *command, args []string) error {
+	config, err := core.LoadConfig("")
+	if err != nil {
+		return fmt.Errorf("failed to load config: %w", err)
+	}
+	if err := removeGeneratedWrappers(config.Monitoring.Process.WrapperDir); err != nil {
+		return err
+	}
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("failed to find home directory: %w", err)
+	}
+	if err := removeShellPathEntries(homeDir, config.Monitoring.Process.WrapperDir); err != nil {
+		return err
+	}
+
+	fmt.Println(successStyle.Render("DIU setup removed; configuration and usage data preserved"))
+	return nil
+}
+
+func removeGeneratedWrappers(wrapperDir string) error {
+	entries, err := os.ReadDir(wrapperDir)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("failed to read wrapper directory: %w", err)
+	}
+	for _, entry := range entries {
+		if err := removeGeneratedWrapper(wrapperDir, entry); err != nil {
+			return err
+		}
+	}
+	return removeWrapperDirIfEmpty(wrapperDir)
+}
+
+func removeGeneratedWrapper(wrapperDir string, entry os.DirEntry) error {
+	if !entry.Type().IsRegular() {
+		return nil
+	}
+	path := filepath.Join(wrapperDir, entry.Name())
+	content, err := safefs.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("failed to read wrapper %s: %w", entry.Name(), err)
+	}
+	if !isGeneratedWrapper(string(content)) {
+		return nil
+	}
+	if err := os.Remove(path); err != nil {
+		return fmt.Errorf("failed to remove wrapper %s: %w", entry.Name(), err)
+	}
+	return nil
+}
+
+func isGeneratedWrapper(content string) bool {
+	requiredFields := []string{"#!/bin/bash", `DIU_BINARY="diu"`, "DIU_SOCKET=", "DIU_TOOL="}
+	for _, field := range requiredFields {
+		if !strings.Contains(content, field) {
+			return false
+		}
+	}
+	return strings.Contains(content, "ORIGINAL=") || strings.Contains(content, "ORIGINAL_BINARY=")
+}
+
+func removeWrapperDirIfEmpty(wrapperDir string) error {
+	entries, err := os.ReadDir(wrapperDir)
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("failed to inspect wrapper directory: %w", err)
+	}
+	if err != nil || len(entries) > 0 {
+		return nil
+	}
+	if err := os.Remove(wrapperDir); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("failed to remove wrapper directory: %w", err)
+	}
+	return nil
+}
+
+func removeShellPathEntries(homeDir, wrapperDir string) error {
+	entries := []struct {
+		path string
+		line string
+	}{
+		{filepath.Join(homeDir, ".bashrc"), core.PosixPathLine(wrapperDir)},
+		{filepath.Join(homeDir, ".zshrc"), core.PosixPathLine(wrapperDir)},
+		{filepath.Join(homeDir, ".config", "fish", "config.fish"), core.FishPathLine(wrapperDir)},
+	}
+	for _, entry := range entries {
+		if err := removeShellPathEntry(entry.path, entry.line); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func removeShellPathEntry(path, line string) error {
+	content, err := safefs.ReadFile(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("failed to read shell config %s: %w", path, err)
+	}
+	updated := removeShellPathBlock(string(content), line)
+	if updated == string(content) {
+		return nil
+	}
+	if err := writePrivateFile(path, []byte(updated)); err != nil {
+		return fmt.Errorf("failed to update shell config %s: %w", path, err)
+	}
+	return nil
+}
+
+func removeShellPathBlock(content, line string) string {
+	block := core.ShellPathMarker + "\n" + line + "\n"
+	for {
+		index := strings.Index(content, block)
+		if index < 0 {
+			return content
+		}
+		start := shellBlockStart(content, index)
+		end := index + len(block)
+		content = joinShellConfig(content[:start], content[end:])
+	}
+}
+
+func shellBlockStart(content string, index int) int {
+	if index > 0 && content[index-1] == '\n' {
+		return index - 1
+	}
+	return index
+}
+
+func joinShellConfig(prefix, suffix string) string {
+	needsNewline := prefix != "" && suffix != "" && !strings.HasSuffix(prefix, "\n") && !strings.HasPrefix(suffix, "\n")
+	if needsNewline {
+		return prefix + "\n" + suffix
+	}
+	return prefix + suffix
+}
+
+func writePrivateFile(path string, data []byte) (err error) {
+	file, err := safefs.OpenFile(path, os.O_WRONLY|os.O_TRUNC, core.PrivateFileMode)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if closeErr := file.Close(); err == nil && closeErr != nil {
+			err = closeErr
+		}
+	}()
+	_, err = file.Write(data)
+	return err
 }
 
 // scanPackages scans for installed packages
@@ -334,6 +491,7 @@ func writeExecutableWrapper(config *core.Config, target executableWrapper) error
 	}
 
 	script := fmt.Sprintf(`#!/bin/bash
+%s
 DIU_SOCKET="%s"
 DIU_BINARY="%s"
 ORIGINAL_BINARY="%s"
@@ -406,7 +564,7 @@ EOF
 } &>/dev/null &
 
 exit $EXIT_CODE
-`, core.ShellEscapeString(config.Daemon.SocketPath), "diu", core.ShellEscapeString(target.OriginalPath), core.ShellEscapeString(target.Tool), core.ShellEscapeString(target.Package), core.ShellEscapeString(target.Name))
+`, core.GeneratedWrapperMarker, core.ShellEscapeString(config.Daemon.SocketPath), "diu", core.ShellEscapeString(target.OriginalPath), core.ShellEscapeString(target.Tool), core.ShellEscapeString(target.Package), core.ShellEscapeString(target.Name))
 
 	return writeOwnerExecutableFile(wrapperPath, []byte(script))
 }

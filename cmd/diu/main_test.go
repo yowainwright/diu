@@ -802,6 +802,9 @@ func TestInstallExecutableWrappersWritesScripts(t *testing.T) {
 	if !strings.Contains(string(content), `DIU_BINARY="diu"`) {
 		t.Fatalf("Wrapper content should resolve diu by command name:\n%s", content)
 	}
+	if !strings.Contains(string(content), core.GeneratedWrapperMarker) {
+		t.Fatalf("Wrapper content should include the DIU marker:\n%s", content)
+	}
 	if bashPath, err := exec.LookPath("bash"); err == nil {
 		if output, err := exec.Command(bashPath, "-n", wrapperPath).CombinedOutput(); err != nil {
 			t.Fatalf("Generated wrapper has invalid bash syntax: %v\n%s", err, output)

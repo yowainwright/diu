@@ -121,6 +121,9 @@ func TestProcessMonitorGenerateWrapperScript(t *testing.T) {
 	if !strings.Contains(script, shebangText) {
 		t.Error("Script should start with shebang")
 	}
+	if !strings.Contains(script, core.GeneratedWrapperMarker) {
+		t.Error("Script should include the DIU marker")
+	}
 
 	if !strings.Contains(script, "nc") {
 		t.Error("Script should use nc for socket delivery")
@@ -610,7 +613,7 @@ func TestProcessMonitorUpdateShellConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to read shell config: %v", err)
 	}
-	exportLine := posixPathLine(config.Monitoring.Process.WrapperDir)
+	exportLine := core.PosixPathLine(config.Monitoring.Process.WrapperDir)
 	if strings.Count(string(content), exportLine) != 1 {
 		t.Fatalf("shell config content = %q, want one export line", content)
 	}
@@ -619,7 +622,7 @@ func TestProcessMonitorUpdateShellConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to read fish config: %v", err)
 	}
-	fishLine := fishPathLine(config.Monitoring.Process.WrapperDir)
+	fishLine := core.FishPathLine(config.Monitoring.Process.WrapperDir)
 	if strings.Count(string(fishContent), fishLine) != 1 {
 		t.Fatalf("fish config content = %q, want one fish path line", fishContent)
 	}

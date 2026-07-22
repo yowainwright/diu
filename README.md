@@ -114,6 +114,15 @@ diu manage --uninstall tsx --tool pnpm --yes
 diu manage --uninstall ruff --tool pip --yes
 ```
 
+Remove DIU's wrappers and shell PATH entries:
+
+```bash
+diu uninstall
+```
+
+This preserves DIU's configuration and usage history. Remove the binary separately
+with Homebrew or Go after running the command.
+
 ## How It Works
 
 `diu setup` installs lightweight wrappers in `~/.local/bin/diu-wrappers` and adds that directory to existing shell config files when possible. The wrapper runs the original command, preserves its output and exit code, then records the execution in the background.
@@ -155,6 +164,7 @@ flowchart LR
 | Command | Use it for |
 | --- | --- |
 | `diu setup` | Create config, storage, shell path entries, and wrappers. |
+| `diu uninstall` | Remove wrappers and shell path entries while preserving data. |
 | `diu scan` | Refresh the known package inventory. |
 | `diu check [search]` | Search tracked packages and see usage. |
 | `diu packages` | List tracked packages, optionally filtered by tool or unused duration. |
