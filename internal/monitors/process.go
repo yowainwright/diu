@@ -22,10 +22,15 @@ type ProcessMonitor struct {
 	homeDir      string
 }
 
+type shellPathEntry struct {
+	path string
+	line string
+}
+
 func NewProcessMonitor(name, binaryPath string) *ProcessMonitor {
 	homeDir := os.Getenv("HOME")
-	if usr, err := user.Current(); err == nil {
-		homeDir = usr.HomeDir
+	if dir, err := os.UserHomeDir(); err == nil {
+		homeDir = dir
 	}
 	return &ProcessMonitor{
 		BaseMonitor: NewBaseMonitor(name),
@@ -240,32 +245,45 @@ func (m *ProcessMonitor) updateShellConfig() error {
 	wrapperDir := m.config.Monitoring.Process.WrapperDir
 	bashPath := filepath.Join(m.homeDir, ".bashrc")
 	zshPath := filepath.Join(m.homeDir, ".zshrc")
-	fishConfigDir := filepath.Join(m.homeDir, ".config", "fish")
-	fishPath := filepath.Join(fishConfigDir, "config.fish")
+	fishPath := filepath.Join(m.homeDir, ".config", "fish", "config.fish")
 	posixLine := core.PosixPathLine(wrapperDir)
 	fishLine := core.FishPathLine(wrapperDir)
-
-	appendPathConfigIfPresent(bashPath, posixLine)
-	appendPathConfigIfPresent(zshPath, posixLine)
-	appendPathConfigIfPresent(fishPath, fishLine)
-
+	entries := []shellPathEntry{{bashPath, posixLine}, {zshPath, posixLine}, {fishPath, fishLine}}
+	for _, entry := range entries {
+		if err := appendPathConfigIfPresent(entry.path, entry.line); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
-func appendPathConfigIfPresent(path, line string) {
+func appendPathConfigIfPresent(path, line string) error {
+	content, err := readShellConfigIfPresent(path)
+	if err != nil {
+		return err
+	}
+	if content == nil || strings.Contains(string(content), line) {
+		return nil
+	}
+	lineWithNewline := line + "\n"
+	if err := appendShellConfigLines(path, "\n"+core.ShellPathMarker+"\n", lineWithNewline); err != nil {
+		return fmt.Errorf("failed to update shell config %s: %w", path, err)
+	}
+	return nil
+}
+
+func readShellConfigIfPresent(path string) ([]byte, error) {
 	if _, err := safefs.Stat(path); err != nil {
-		return
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to inspect shell config %s: %w", path, err)
 	}
 	content, err := safefs.ReadFile(path)
 	if err != nil {
-		return
+		return nil, fmt.Errorf("failed to read shell config %s: %w", path, err)
 	}
-	contentText := string(content)
-	if strings.Contains(contentText, line) {
-		return
-	}
-	lineWithNewline := line + "\n"
-	_ = appendShellConfigLines(path, "\n"+core.ShellPathMarker+"\n", lineWithNewline)
+	return content, nil
 }
 
 func appendShellConfigLines(path string, lines ...string) (err error) {

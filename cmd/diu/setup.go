@@ -22,6 +22,12 @@ type executableWrapper struct {
 	Package      string
 }
 
+type uninstallPaths struct {
+	homeDir         string
+	wrapperDir      string
+	shellWrapperDir string
+}
+
 // setupProject initializes DIU storage and wrappers
 func setupProject(cmd *command, args []string) error {
 	config, err := core.LoadConfig("")
@@ -56,23 +62,82 @@ func setupProject(cmd *command, args []string) error {
 }
 
 func uninstallProject(cmd *command, args []string) error {
+	paths, err := loadUninstallPaths()
+	if err != nil {
+		return err
+	}
+	if err := removeGeneratedWrappers(paths.wrapperDir); err != nil {
+		return err
+	}
+	if err := removeShellPathEntries(paths.homeDir, paths.shellWrapperDir); err != nil {
+		return err
+	}
+	fmt.Println(successStyle.Render("DIU setup removed; configuration and usage data preserved"))
+	return nil
+}
+
+func loadUninstallPaths() (uninstallPaths, error) {
 	config, err := core.LoadConfig("")
 	if err != nil {
-		return fmt.Errorf("failed to load config: %w", err)
-	}
-	if err := removeGeneratedWrappers(config.Monitoring.Process.WrapperDir); err != nil {
-		return err
+		return uninstallPaths{}, fmt.Errorf("failed to load config: %w", err)
 	}
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
-		return fmt.Errorf("failed to find home directory: %w", err)
+		return uninstallPaths{}, fmt.Errorf("failed to find home directory: %w", err)
 	}
-	if err := removeShellPathEntries(homeDir, config.Monitoring.Process.WrapperDir); err != nil {
-		return err
+	shellWrapperDir := config.Monitoring.Process.WrapperDir
+	wrapperDir, err := validateWrapperDir(shellWrapperDir, homeDir)
+	if err != nil {
+		return uninstallPaths{}, err
 	}
+	return uninstallPaths{homeDir: homeDir, wrapperDir: wrapperDir, shellWrapperDir: shellWrapperDir}, nil
+}
 
-	fmt.Println(successStyle.Render("DIU setup removed; configuration and usage data preserved"))
-	return nil
+func validateWrapperDir(wrapperDir, homeDir string) (string, error) {
+	resolvedHome, err := resolvePath(homeDir)
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve home directory: %w", err)
+	}
+	resolvedWrapper, err := resolvePath(wrapperDir)
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve wrapper directory: %w", err)
+	}
+	withinHome, err := pathWithin(resolvedHome, resolvedWrapper)
+	if err != nil {
+		return "", err
+	}
+	if !withinHome {
+		return "", fmt.Errorf("wrapper directory is outside home directory: %s", wrapperDir)
+	}
+	return resolvedWrapper, nil
+}
+
+func pathWithin(parent, child string) (bool, error) {
+	relative, err := filepath.Rel(parent, child)
+	if err != nil {
+		return false, fmt.Errorf("failed to compare paths: %w", err)
+	}
+	outside := relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator))
+	return !outside, nil
+}
+
+func resolvePath(path string) (string, error) {
+	if strings.TrimSpace(path) == "" {
+		return "", fmt.Errorf("path cannot be empty")
+	}
+	absolute, err := filepath.Abs(filepath.Clean(path))
+	if err != nil {
+		return "", err
+	}
+	resolved, err := filepath.EvalSymlinks(absolute)
+	if os.IsNotExist(err) {
+		parent, parentErr := resolvePath(filepath.Dir(absolute))
+		if parentErr != nil {
+			return "", parentErr
+		}
+		return filepath.Join(parent, filepath.Base(absolute)), nil
+	}
+	return resolved, err
 }
 
 func removeGeneratedWrappers(wrapperDir string) error {
@@ -88,7 +153,7 @@ func removeGeneratedWrappers(wrapperDir string) error {
 			return err
 		}
 	}
-	return removeWrapperDirIfEmpty(wrapperDir)
+	return nil
 }
 
 func removeGeneratedWrapper(wrapperDir string, entry os.DirEntry) error {
@@ -110,27 +175,38 @@ func removeGeneratedWrapper(wrapperDir string, entry os.DirEntry) error {
 }
 
 func isGeneratedWrapper(content string) bool {
-	requiredFields := []string{"#!/bin/bash", `DIU_BINARY="diu"`, "DIU_SOCKET=", "DIU_TOOL="}
-	for _, field := range requiredFields {
+	commonFields := []string{`DIU_BINARY="diu"`, "DIU_SOCKET=", "DIU_TOOL="}
+	if !strings.HasPrefix(content, "#!/bin/bash\n") || !containsAll(content, commonFields) {
+		return false
+	}
+	currentPrefix := "#!/bin/bash\n" + core.GeneratedWrapperMarker + "\n"
+	if strings.HasPrefix(content, currentPrefix) {
+		return hasWrapperOriginal(content)
+	}
+	return isLegacyWrapper(content)
+}
+
+func hasWrapperOriginal(content string) bool {
+	return strings.Contains(content, "ORIGINAL=") || strings.Contains(content, "ORIGINAL_BINARY=")
+}
+
+func isLegacyWrapper(content string) bool {
+	legacyFields := []string{
+		"json_escape() {",
+		`DIU_RECORD_BINARY="$(command -v "$DIU_BINARY" 2>/dev/null || true)"`,
+		`"$DIU_RECORD_BINARY" record`,
+		"exit $EXIT_CODE",
+	}
+	return hasWrapperOriginal(content) && containsAll(content, legacyFields)
+}
+
+func containsAll(content string, fields []string) bool {
+	for _, field := range fields {
 		if !strings.Contains(content, field) {
 			return false
 		}
 	}
-	return strings.Contains(content, "ORIGINAL=") || strings.Contains(content, "ORIGINAL_BINARY=")
-}
-
-func removeWrapperDirIfEmpty(wrapperDir string) error {
-	entries, err := os.ReadDir(wrapperDir)
-	if err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("failed to inspect wrapper directory: %w", err)
-	}
-	if err != nil || len(entries) > 0 {
-		return nil
-	}
-	if err := os.Remove(wrapperDir); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("failed to remove wrapper directory: %w", err)
-	}
-	return nil
+	return true
 }
 
 func removeShellPathEntries(homeDir, wrapperDir string) error {

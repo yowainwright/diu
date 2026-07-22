@@ -25,6 +25,16 @@ func TestProcessMonitor(t *testing.T) {
 	}
 }
 
+func TestNewProcessMonitorUsesUserHomeDir(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+
+	monitor := NewProcessMonitor("test", "test")
+	if monitor.homeDir != homeDir {
+		t.Fatalf("homeDir = %q, want %q", monitor.homeDir, homeDir)
+	}
+}
+
 func TestProcessMonitorInitialize(t *testing.T) {
 	tmpDir := t.TempDir()
 
@@ -628,6 +638,20 @@ func TestProcessMonitorUpdateShellConfig(t *testing.T) {
 	}
 	if strings.Contains(string(fishContent), "export PATH=") {
 		t.Fatalf("fish config content = %q, should not use POSIX export", fishContent)
+	}
+}
+
+func TestProcessMonitorUpdateShellConfigReturnsReadError(t *testing.T) {
+	homeDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(homeDir, ".zshrc"), core.OwnerDirectoryMode); err != nil {
+		t.Fatalf("Failed to create invalid shell config: %v", err)
+	}
+	monitor := NewProcessMonitor("testtool", "testtool")
+	monitor.config = core.DefaultConfig()
+	monitor.homeDir = homeDir
+
+	if err := monitor.updateShellConfig(); err == nil {
+		t.Fatal("Expected shell config read error")
 	}
 }
 

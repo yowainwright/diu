@@ -88,10 +88,10 @@ func TestCommandDispatchesToSubcommand(t *testing.T) {
 	}
 }
 
-func TestRootCommandIncludesUninstall(t *testing.T) {
-	uninstallCmd := newRootCommand().findCommand("uninstall")
-	if uninstallCmd == nil {
-		t.Fatal("Expected root command to include uninstall")
+func TestNewUninstallCommand(t *testing.T) {
+	uninstallCmd := newUninstallCommand()
+	if commandName(uninstallCmd.Use) != "uninstall" {
+		t.Fatalf("Use = %q, want uninstall", uninstallCmd.Use)
 	}
 	if uninstallCmd.RunE == nil {
 		t.Fatal("Expected uninstall command to be executable")

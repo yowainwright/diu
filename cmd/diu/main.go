@@ -11,7 +11,15 @@ var (
 	date    = "unknown"
 )
 
-func newRootCommand() *command {
+func newUninstallCommand() *command {
+	return &command{
+		Use:   "uninstall",
+		Short: "Remove wrappers and shell PATH entries",
+		RunE:  uninstallProject,
+	}
+}
+
+func main() {
 	rootCmd := &command{
 		Use:   "diu",
 		Short: "Do I Use - Package Manager Execution Tracker",
@@ -185,11 +193,7 @@ func newRootCommand() *command {
 		RunE:  setupProject,
 	}
 
-	uninstallCmd := &command{
-		Use:   "uninstall",
-		Short: "Remove wrappers and shell PATH entries",
-		RunE:  uninstallProject,
-	}
+	uninstallCmd := newUninstallCommand()
 
 	scanCmd := &command{
 		Use:   "scan",
@@ -220,11 +224,8 @@ func newRootCommand() *command {
 		scanCmd,
 		recordCmd,
 	)
-	return rootCmd
-}
 
-func main() {
-	if err := newRootCommand().Execute(os.Args[1:]); err != nil {
+	if err := rootCmd.Execute(os.Args[1:]); err != nil {
 		fmt.Fprintln(os.Stderr, errorStyle.RenderTo(err.Error(), os.Stderr))
 		os.Exit(1)
 	}
