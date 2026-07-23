@@ -20,7 +20,5 @@ comment:
   require_changes: false
 
 ignore:
-  - "e2e/**"
-  - "configs/**"
-  - "Dockerfile"
-  - "Dockerfile.e2e"
+  - "tests/e2e/**"
+  - "ops/docker/**"

@@ -20,4 +20,4 @@ RUN go install github.com/onsi/ginkgo/v2/ginkgo@latest && \
     go install github.com/onsi/gomega/...@latest
 
 # Run tests
-CMD ["go", "test", "-tags=e2e", "-v", "./e2e/..."]
+CMD ["go", "test", "-tags=e2e", "-v", "./tests/e2e/..."]

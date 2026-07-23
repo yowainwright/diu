@@ -30,7 +30,7 @@ COPY --from=builder /build/diu /usr/local/bin/diu
 RUN mkdir -p /var/lib/diu/.config/diu /var/log/diu
 
 # Copy default container config
-COPY configs/docker.json /var/lib/diu/.config/diu/config.json
+COPY ops/docker/config.json /var/lib/diu/.config/diu/config.json
 
 # Create non-root user
 RUN addgroup -g 1000 diu && \

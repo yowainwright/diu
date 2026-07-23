@@ -141,7 +141,7 @@ func projectRoot(t *testing.T) string {
 		t.Fatal("could not resolve test file path")
 	}
 
-	return filepath.Dir(filepath.Dir(file))
+	return filepath.Dir(filepath.Dir(filepath.Dir(file)))
 }
 
 func readFile(t *testing.T, path string) string {
