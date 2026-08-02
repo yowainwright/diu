@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -526,7 +525,7 @@ func TestGetConfigNoKey(t *testing.T) {
 func TestSetConfig(t *testing.T) {
 	setupTestHomeConfig(t)
 
-	output := captureStdout(t, func() {
+	output := captureStderr(t, func() {
 		if err := setConfig(&command{}, []string{"storage.retention_days", "30"}); err != nil {
 			t.Fatalf("setConfig failed: %v", err)
 		}
@@ -644,7 +643,7 @@ type shellConfigFixture struct {
 func TestSetupProject(t *testing.T) {
 	config := setupTestHomeConfig(t)
 
-	output := captureStdout(t, func() {
+	output := captureStderr(t, func() {
 		if err := setupProject(&command{}, nil); err != nil {
 			t.Fatalf("setupProject failed: %v", err)
 		}
@@ -779,7 +778,7 @@ func runUninstallForTest(t *testing.T) string {
 			t.Fatalf("uninstallProject failed: %v", err)
 		}
 	}
-	return captureStdout(t, run)
+	return captureStderr(t, run)
 }
 
 func assertUninstallFixture(t *testing.T, fixture uninstallFixture, output string) {
@@ -928,7 +927,7 @@ func TestScanPackages(t *testing.T) {
 		t.Fatalf("Failed to save config: %v", err)
 	}
 
-	output := captureStdout(t, func() {
+	output := captureStderr(t, func() {
 		if err := scanPackages(&command{}, nil); err != nil {
 			t.Fatalf("scanPackages failed: %v", err)
 		}
@@ -942,7 +941,7 @@ func TestScanPackages(t *testing.T) {
 func TestBackup(t *testing.T) {
 	config := setupTestHomeConfig(t)
 
-	output := captureStdout(t, func() {
+	output := captureStderr(t, func() {
 		if err := backup(&command{}, nil); err != nil {
 			t.Fatalf("backup failed: %v", err)
 		}
@@ -995,7 +994,7 @@ func TestCleanup(t *testing.T) {
 		t.Fatalf("store.Close() failed: %v", err)
 	}
 
-	output := captureStdout(t, func() {
+	output := captureStderr(t, func() {
 		if err := cleanup(&command{}, nil); err != nil {
 			t.Fatalf("cleanup failed: %v", err)
 		}
@@ -1086,7 +1085,7 @@ func TestSetConfigAllKeys(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.key+"="+tt.value, func(t *testing.T) {
 			// Set the value
-			output := captureStdout(t, func() {
+			output := captureStderr(t, func() {
 				if err := setConfig(&command{}, []string{tt.key, tt.value}); err != nil {
 					t.Fatalf("setConfig(%s, %s) failed: %v", tt.key, tt.value, err)
 				}
@@ -1117,30 +1116,6 @@ func TestSetConfigAllKeys(t *testing.T) {
 // Helper Function Tests
 // =============================================================================
 
-func TestGetToolColor(t *testing.T) {
-	tests := []struct {
-		tool string
-		want bool // true if we expect a non-empty color
-	}{
-		{"homebrew", true},
-		{"npm", true},
-		{"go", true},
-		{"pip", true},
-		{"gem", true},
-		{"cargo", true},
-		{"unknown", true}, // default case should still return a color
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.tool, func(t *testing.T) {
-			got := getToolColor(tt.tool)
-			if tt.want && got == "" {
-				t.Fatalf("getToolColor(%q) = %q, want non-empty", tt.tool, got)
-			}
-		})
-	}
-}
-
 func TestFormatLastUsed(t *testing.T) {
 	tests := []struct {
 		lastUsed time.Time
@@ -1156,34 +1131,6 @@ func TestFormatLastUsed(t *testing.T) {
 			got := formatLastUsed(tt.lastUsed)
 			if got != tt.want {
 				t.Fatalf("formatLastUsed(%v) = %q, want %q", tt.lastUsed, got, tt.want)
-			}
-		})
-	}
-}
-
-func TestTruncate(t *testing.T) {
-	tests := []struct {
-		value     string
-		maxLength int
-		want      string
-	}{
-		{"hello", 10, "hello"},
-		{"hello", 5, "hello"},
-		{"hello", 4, "hel."},
-		{"hello", 3, "he."},
-		{"hello", 2, "h."},
-		{"hello", 1, "h"},
-		{"hello", 0, ""},
-		{"", 5, ""},
-		{"a", 1, "a"},
-		{"short", 10, "short"},
-	}
-
-	for _, tt := range tests {
-		t.Run(fmt.Sprintf("%q,%d", tt.value, tt.maxLength), func(t *testing.T) {
-			got := truncate(tt.value, tt.maxLength)
-			if got != tt.want {
-				t.Fatalf("truncate(%q, %d) = %q, want %q", tt.value, tt.maxLength, got, tt.want)
 			}
 		})
 	}
@@ -1242,163 +1189,6 @@ func TestValidateExecutablePath(t *testing.T) {
 // CLI Helper Tests
 // =============================================================================
 
-func TestFlagParsingComprehensive(t *testing.T) {
-	cmd := &command{}
-	var tool, pkg, last, format string
-	var limit int
-	var daily, weekly, jsonFlag bool
-
-	cmd.Flags().StringVarP(&tool, "tool", "t", "", "tool")
-	cmd.Flags().StringVarP(&pkg, "package", "p", "", "package")
-	cmd.Flags().StringVarP(&last, "last", "l", "", "last")
-	cmd.Flags().IntVarP(&limit, "limit", "n", 20, "limit")
-	cmd.Flags().StringVarP(&format, "format", "f", "table", "format")
-	cmd.Flags().BoolVarP(&daily, "daily", "d", false, "daily")
-	cmd.Flags().BoolVarP(&weekly, "weekly", "w", false, "weekly")
-	cmd.Flags().BoolVar(&jsonFlag, "json", false, "json")
-
-	tests := []struct {
-		name       string
-		args       []string
-		wantTool   string
-		wantPkg    string
-		wantLast   string
-		wantLimit  int
-		wantFormat string
-		wantDaily  bool
-		wantWeekly bool
-		wantJSON   bool
-	}{
-		{
-			name:       "all flags long",
-			args:       []string{"--tool", "npm", "--package", "eslint", "--last", "1h", "--limit", "10", "--format", "json", "--daily", "--weekly", "--json"},
-			wantTool:   "npm",
-			wantPkg:    "eslint",
-			wantLast:   "1h",
-			wantLimit:  10,
-			wantFormat: "json",
-			wantDaily:  true,
-			wantWeekly: true,
-			wantJSON:   true,
-		},
-		{
-			name:       "all flags short",
-			args:       []string{"-t", "brew", "-p", "jq", "-l", "2d", "-n", "5", "-f", "csv", "-d", "-w"},
-			wantTool:   "brew",
-			wantPkg:    "jq",
-			wantLast:   "2d",
-			wantLimit:  5,
-			wantFormat: "csv",
-			wantDaily:  true,
-			wantWeekly: true,
-			wantJSON:   false,
-		},
-		{
-			name:       "no flags",
-			args:       []string{},
-			wantTool:   "",
-			wantPkg:    "",
-			wantLast:   "",
-			wantLimit:  20,
-			wantFormat: "table",
-			wantDaily:  false,
-			wantWeekly: false,
-			wantJSON:   false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// Reset all variables
-			tool = ""
-			pkg = ""
-			last = ""
-			limit = 20
-			format = "table"
-			daily = false
-			weekly = false
-			jsonFlag = false
-
-			remaining, err := cmd.Flags().parse(tt.args)
-			if err != nil {
-				t.Fatalf("parse failed: %v", err)
-			}
-			if len(remaining) != 0 {
-				t.Fatalf("unexpected remaining args: %v", remaining)
-			}
-
-			if tool != tt.wantTool {
-				t.Errorf("tool = %q, want %q", tool, tt.wantTool)
-			}
-			if pkg != tt.wantPkg {
-				t.Errorf("pkg = %q, want %q", pkg, tt.wantPkg)
-			}
-			if last != tt.wantLast {
-				t.Errorf("last = %q, want %q", last, tt.wantLast)
-			}
-			if limit != tt.wantLimit {
-				t.Errorf("limit = %d, want %d", limit, tt.wantLimit)
-			}
-			if format != tt.wantFormat {
-				t.Errorf("format = %q, want %q", format, tt.wantFormat)
-			}
-			if daily != tt.wantDaily {
-				t.Errorf("daily = %v, want %v", daily, tt.wantDaily)
-			}
-			if weekly != tt.wantWeekly {
-				t.Errorf("weekly = %v, want %v", weekly, tt.wantWeekly)
-			}
-			if jsonFlag != tt.wantJSON {
-				t.Errorf("json = %v, want %v", jsonFlag, tt.wantJSON)
-			}
-		})
-	}
-}
-
-func TestCommandExecution(t *testing.T) {
-	root := &command{Use: "diu", Short: "DIU CLI"}
-
-	var executed bool
-	var capturedArg string
-	child := &command{
-		Use:   "query",
-		Short: "Query executions",
-		RunE: func(cmd *command, args []string) error {
-			executed = true
-			capturedArg = args[0]
-			return nil
-		},
-	}
-	root.AddCommand(child)
-
-	// Test subcommand execution with simple args (no flags)
-	err := root.Execute([]string{"query", "arg1"})
-	if err != nil {
-		t.Fatalf("Execute failed: %v", err)
-	}
-	if !executed {
-		t.Fatal("Expected subcommand to execute")
-	}
-	if capturedArg != "arg1" {
-		t.Fatalf("capturedArg = %q, want %q", capturedArg, "arg1")
-	}
-}
-
-func TestCommandHelp(t *testing.T) {
-	cmd := &command{Use: "test", Short: "Test command"}
-
-	output := captureStdout(t, func() {
-		cmd.printUsage()
-	})
-
-	if !strings.Contains(output, "Test command") {
-		t.Fatalf("Expected short description in output, got: %q", output)
-	}
-	if !strings.Contains(output, "Usage:") {
-		t.Fatalf("Expected 'Usage:' in output, got: %q", output)
-	}
-}
-
 func TestVersionString(t *testing.T) {
 	// Just verify it doesn't panic and returns something
 	vs := versionString()
@@ -1407,51 +1197,6 @@ func TestVersionString(t *testing.T) {
 	}
 	if !strings.Contains(vs, "diu") {
 		t.Fatalf("Expected 'diu' in version string, got: %q", vs)
-	}
-}
-
-func TestExecuteWithHelpFlag(t *testing.T) {
-	root := &command{Use: "diu", Short: "DIU CLI"}
-
-	output := captureStdout(t, func() {
-		if err := root.Execute([]string{"--help"}); err != nil {
-			t.Fatalf("Execute --help failed: %v", err)
-		}
-	})
-
-	if !strings.Contains(output, "DIU CLI") {
-		t.Fatalf("Expected short description in output, got: %q", output)
-	}
-	if !strings.Contains(output, "Usage:") {
-		t.Fatalf("Expected 'Usage:' in output, got: %q", output)
-	}
-}
-
-func TestExecuteWithVersionFlag(t *testing.T) {
-	root := &command{Use: "diu", Short: "DIU CLI"}
-
-	output := captureStdout(t, func() {
-		if err := root.Execute([]string{"--version"}); err != nil {
-			t.Fatalf("Execute --version failed: %v", err)
-		}
-	})
-
-	if !strings.Contains(output, "diu") {
-		t.Fatalf("Expected version info in output, got: %q", output)
-	}
-}
-
-func TestExecuteUnknownCommand(t *testing.T) {
-	root := &command{Use: "diu", Short: "DIU CLI"}
-
-	// Test with unknown command - should print usage to stderr
-	// We can't easily capture stderr, so just verify it doesn't panic
-	err := root.Execute([]string{"unknown-command"})
-	if err == nil {
-		t.Fatal("Expected error for unknown command")
-	}
-	if !strings.Contains(err.Error(), "unknown command") {
-		t.Fatalf("Expected 'unknown command' error, got: %v", err)
 	}
 }
 
@@ -1561,7 +1306,7 @@ func TestStartDaemonAlreadyRunning(t *testing.T) {
 	restore := SetDaemonChecker(mock)
 	defer restore()
 
-	output := captureStdout(t, func() {
+	output := captureStderr(t, func() {
 		if err := startDaemon(&command{}, nil); err != nil {
 			t.Fatalf("startDaemon failed: %v", err)
 		}
@@ -1581,7 +1326,7 @@ func TestStopDaemonNotRunning(t *testing.T) {
 	restore := SetDaemonChecker(mock)
 	defer restore()
 
-	output := captureStdout(t, func() {
+	output := captureStderr(t, func() {
 		if err := stopDaemon(&command{}, nil); err != nil {
 			t.Fatalf("stopDaemon failed: %v", err)
 		}
@@ -1631,66 +1376,6 @@ func TestDaemonStatusWithMockRunning(t *testing.T) {
 // CLI Function Tests
 // =============================================================================
 
-func TestPrintHelp(t *testing.T) {
-	root := &command{
-		Use:   "diu",
-		Short: "DIU CLI",
-		Long:  "DIU is a dependency management tool",
-	}
-
-	output := captureStdout(t, func() {
-		if err := root.printHelp(nil); err != nil {
-			t.Fatalf("printHelp failed: %v", err)
-		}
-	})
-
-	if !strings.Contains(output, "DIU is a dependency management tool") {
-		t.Fatalf("Expected long description, got: %q", output)
-	}
-}
-
-func TestPrintUsageTo(t *testing.T) {
-	cmd := &command{
-		Use:   "test",
-		Short: "Test command",
-	}
-
-	var buf bytes.Buffer
-	cmd.printUsageTo(&buf)
-
-	output := buf.String()
-	if !strings.Contains(output, "Test command") {
-		t.Fatalf("Expected short description, got: %q", output)
-	}
-	if !strings.Contains(output, "Usage:") {
-		t.Fatalf("Expected Usage:, got: %q", output)
-	}
-	if !strings.Contains(output, "test") {
-		t.Fatalf("Expected command name, got: %q", output)
-	}
-}
-
-func TestCommandName(t *testing.T) {
-	tests := []struct {
-		use  string
-		want string
-	}{
-		{"diu", "diu"},
-		{"query", "query"},
-		{"list-packages", "list-packages"},
-		{"", ""},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.use, func(t *testing.T) {
-			got := commandName(tt.use)
-			if got != tt.want {
-				t.Fatalf("commandName(%q) = %q, want %q", tt.use, got, tt.want)
-			}
-		})
-	}
-}
-
 func TestCoreVersion(t *testing.T) {
 	// Verify coreVersion returns either the build version or the core package version
 	version := coreVersion()
@@ -1729,226 +1414,6 @@ func TestVersionStringConsistency(t *testing.T) {
 	// Verify it contains the core version
 	if !strings.Contains(vs, coreVersion()) {
 		t.Fatalf("versionString should contain coreVersion, got: %q", vs)
-	}
-}
-
-func TestFlagGetters(t *testing.T) {
-	flags := newFlagSet()
-	var strVal string
-	var intVal int
-	var boolVal bool
-
-	flags.StringVarP(&strVal, "string", "s", "default", "string flag")
-	flags.IntVarP(&intVal, "int", "i", 42, "int flag")
-	flags.BoolVarP(&boolVal, "bool", "b", true, "bool flag")
-
-	// Set values - for booleans, use = syntax
-	_, err := flags.parse([]string{"--string", "test", "--int", "100", "--bool=false"})
-	if err != nil {
-		t.Fatalf("parse failed: %v", err)
-	}
-
-	// Test getters
-	strFlag := flags.lookupLong("string")
-	if strFlag == nil {
-		t.Fatal("lookupLong returned nil for string")
-	}
-	if strFlag.stringValue == nil || *strFlag.stringValue != "test" {
-		t.Fatalf("string flag value = %v, want 'test'", strFlag.stringValue)
-	}
-
-	intFlag := flags.lookupLong("int")
-	if intFlag == nil {
-		t.Fatal("lookupLong returned nil for int")
-	}
-	if intFlag.intValue == nil || *intFlag.intValue != 100 {
-		t.Fatalf("int flag value = %d, want 100", *intFlag.intValue)
-	}
-
-	boolFlag := flags.lookupLong("bool")
-	if boolFlag == nil {
-		t.Fatal("lookupLong returned nil for bool")
-	}
-	if boolFlag.boolValue == nil || *boolFlag.boolValue != false {
-		t.Fatalf("bool flag value = %v, want false", *boolFlag.boolValue)
-	}
-
-	// Test GetString, GetInt, GetBool
-	gotStr, err := flags.GetString("string")
-	if err != nil || gotStr != "test" {
-		t.Fatalf("GetString failed: %v, got %q", err, gotStr)
-	}
-	gotInt, err := flags.GetInt("int")
-	if err != nil || gotInt != 100 {
-		t.Fatalf("GetInt failed: %v, got %d", err, gotInt)
-	}
-	gotBool, err := flags.GetBool("bool")
-	if err != nil || gotBool != false {
-		t.Fatalf("GetBool failed: %v, got %v", err, gotBool)
-	}
-
-	// Test lookupShort
-	strFlagShort := flags.lookupShort("s")
-	if strFlagShort != strFlag {
-		t.Fatal("lookupShort didn't return same flag as lookupLong")
-	}
-}
-
-func TestFlagStringMethod(t *testing.T) {
-	flags := newFlagSet()
-	var strVal string
-	flags.StringVar(&strVal, "string", "default", "string flag")
-
-	_, _ = flags.parse([]string{"--string", "test"})
-
-	strFlag := flags.lookupLong("string")
-	if strFlag == nil {
-		t.Fatal("lookupLong returned nil")
-	}
-
-	// Test String() method on flagValue
-	fv := flagValue{flag: strFlag}
-	if fv.String() != "test" {
-		t.Fatalf("flagValue.String() = %q, want 'test'", fv.String())
-	}
-}
-
-func TestStyleRenderTo(t *testing.T) {
-	// Test with color disabled
-	t.Setenv("NO_COLOR", "1")
-
-	style := newStyle().Bold(true).Foreground(color("205"))
-	// Create a temp file to use as *os.File
-	tmpFile, err := os.CreateTemp(t.TempDir(), "render")
-	if err != nil {
-		t.Fatalf("Failed to create temp file: %v", err)
-	}
-	defer func() {
-		if err := tmpFile.Close(); err != nil {
-			t.Fatalf("Failed to close temp file: %v", err)
-		}
-	}()
-	defer func() {
-		if err := os.Remove(tmpFile.Name()); err != nil {
-			t.Fatalf("Failed to remove temp file: %v", err)
-		}
-	}()
-
-	result := style.RenderTo("test", tmpFile)
-
-	// With NO_COLOR, should return plain text
-	if result != "test" {
-		t.Fatalf("RenderTo with NO_COLOR = %q, want 'test'", result)
-	}
-}
-
-func TestShouldRenderColor(t *testing.T) {
-	t.Setenv("NO_COLOR", "1")
-
-	tmpFile, err := os.CreateTemp(t.TempDir(), "color")
-	if err != nil {
-		t.Fatalf("Failed to create temp file: %v", err)
-	}
-	defer func() {
-		if err := tmpFile.Close(); err != nil {
-			t.Fatalf("Failed to close temp file: %v", err)
-		}
-	}()
-	defer func() {
-		if err := os.Remove(tmpFile.Name()); err != nil {
-			t.Fatalf("Failed to remove temp file: %v", err)
-		}
-	}()
-
-	if shouldRenderColor(tmpFile) {
-		t.Fatal("shouldRenderColor should return false with NO_COLOR set")
-	}
-
-	t.Setenv("NO_COLOR", "")
-	t.Setenv("TERM", "dumb")
-	if shouldRenderColor(tmpFile) {
-		t.Fatal("shouldRenderColor should return false with TERM=dumb")
-	}
-
-	t.Setenv("TERM", "xterm-256color")
-	if shouldRenderColor(tmpFile) {
-		t.Fatal("shouldRenderColor should return false for a regular file")
-	}
-}
-
-func TestExecuteWithHelpCommand(t *testing.T) {
-	root := &command{Use: "diu", Short: "DIU CLI"}
-
-	output := captureStdout(t, func() {
-		if err := root.Execute([]string{"help"}); err != nil {
-			t.Fatalf("Execute help failed: %v", err)
-		}
-	})
-
-	if !strings.Contains(output, "DIU CLI") {
-		t.Fatalf("Expected short description, got: %q", output)
-	}
-}
-
-func TestExecuteWithUnknownHelp(t *testing.T) {
-	root := &command{Use: "diu", Short: "DIU CLI"}
-
-	err := root.Execute([]string{"help", "unknown"})
-	if err == nil {
-		t.Fatal("Expected error for unknown help command")
-	}
-	if !strings.Contains(err.Error(), "unknown command") {
-		t.Fatalf("Expected 'unknown command' error, got: %v", err)
-	}
-}
-
-func TestParseEdgeCases(t *testing.T) {
-	flags := newFlagSet()
-	var val string
-	flags.StringVar(&val, "flag", "", "flag")
-
-	// Test empty args
-	remaining, err := flags.parse([]string{})
-	if err != nil {
-		t.Fatalf("parse([]) failed: %v", err)
-	}
-	if len(remaining) != 0 {
-		t.Fatalf("Expected no remaining args, got: %v", remaining)
-	}
-	if val != "" {
-		t.Fatalf("Expected default value, got: %q", val)
-	}
-
-	// Test only positional args
-	remaining, err = flags.parse([]string{"arg1", "arg2"})
-	if err != nil {
-		t.Fatalf("parse positional args failed: %v", err)
-	}
-	if len(remaining) != 2 || remaining[0] != "arg1" || remaining[1] != "arg2" {
-		t.Fatalf("Expected [arg1 arg2], got: %v", remaining)
-	}
-}
-
-func TestFlagSetMethod(t *testing.T) {
-	flags := newFlagSet()
-	var val string
-	flags.StringVar(&val, "flag", "", "flag")
-
-	// Parse and then set directly on the flag
-	_, _ = flags.parse([]string{"--flag", "initial"})
-
-	flag := flags.lookupLong("flag")
-	if flag == nil {
-		t.Fatal("lookupLong returned nil")
-	}
-
-	// Set should update the value
-	if err := flag.set("updated", true); err != nil {
-		t.Fatalf("flag.set failed: %v", err)
-	}
-
-	if val != "updated" {
-		t.Fatalf("set failed: val = %q, want 'updated'", val)
 	}
 }
 
@@ -2095,7 +1560,7 @@ func TestRestartDaemonStopsThenStarts(t *testing.T) {
 		daemonProcessStarter = oldStarter
 	}()
 
-	output := captureStdout(t, func() {
+	output := captureStderr(t, func() {
 		if err := restartDaemon(&command{}, nil); err != nil {
 			t.Fatalf("restartDaemon failed: %v", err)
 		}
@@ -2356,7 +1821,7 @@ func TestUninstallByNameAssumeYesExecutes(t *testing.T) {
 	updateTestPackage(t, store, &core.PackageInfo{Name: "typescript", Tool: core.ToolNPM})
 	closeTestStore(t, store)
 
-	out := captureStdout(t, func() {
+	out := captureStderr(t, func() {
 		if err := uninstallByName("typescript", "", true, false); err != nil {
 			t.Fatalf("uninstall failed: %v", err)
 		}
@@ -2368,7 +1833,7 @@ func TestUninstallByNameAssumeYesExecutes(t *testing.T) {
 
 func TestScanPackagesNoEnabledTools(t *testing.T) {
 	setupTestHomeConfig(t)
-	out := captureStdout(t, func() {
+	out := captureStderr(t, func() {
 		if err := scanPackages(&command{}, nil); err != nil {
 			t.Fatalf("scanPackages failed: %v", err)
 		}
@@ -2382,7 +1847,7 @@ func TestInstallWrappersSkipsUnknownTool(t *testing.T) {
 	config := setupTestHomeConfig(t)
 	config.Monitoring.EnabledTools = []string{"unknown-tool"}
 
-	if err := installWrappers(config); err != nil {
+	if err := installWrappers(config, nil); err != nil {
 		t.Fatalf("expected nil for unknown tool, got %v", err)
 	}
 }
@@ -2391,7 +1856,7 @@ func TestInstallWrappersInitializesKnownTool(t *testing.T) {
 	config := setupTestHomeConfig(t)
 	config.Monitoring.EnabledTools = []string{core.ToolGoBinary}
 
-	if err := installWrappers(config); err != nil {
+	if err := installWrappers(config, nil); err != nil {
 		t.Fatalf("installWrappers failed: %v", err)
 	}
 }

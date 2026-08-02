@@ -4,12 +4,12 @@ import (
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
-	"os"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/yowainwright/diu/internal/core"
+	"github.com/yowainwright/diu/internal/dx"
 	"github.com/yowainwright/diu/internal/storage"
 )
 
@@ -49,14 +49,15 @@ func queryExecutions(cmd *command, args []string) error {
 	}
 
 	format, _ := cmd.Flags().GetString("format")
+	out := cliOutput()
 	switch format {
 	case "json":
-		enc := json.NewEncoder(os.Stdout)
+		enc := json.NewEncoder(out.Stdout())
 		enc.SetIndent("", "  ")
 		return enc.Encode(executions)
 
 	case "csv":
-		writer := csv.NewWriter(os.Stdout)
+		writer := csv.NewWriter(out.Stdout())
 		if err := writer.Write([]string{"tool", "command", "timestamp", "duration_ms", "exit_code"}); err != nil {
 			return err
 		}
@@ -76,37 +77,34 @@ func queryExecutions(cmd *command, args []string) error {
 
 	default: // table
 		if len(executions) == 0 {
-			fmt.Println(infoStyle.Render("No executions found"))
+			out.Println(out.DataStyle(dx.Info, "No executions found"))
 			return nil
 		}
 
-		fmt.Println(titleStyle.Render("Execution History"))
-		fmt.Println()
+		out.Println(out.DataStyle(dx.Accent, "Execution History"))
+		out.Println()
 
 		for _, exec := range executions {
-			toolColor := getToolColor(exec.Tool)
-			toolStyle := newStyle().Foreground(toolColor)
-
-			fmt.Printf("%s %s %s\n",
+			out.Printf("%s %s %s\n",
 				exec.Timestamp.Format("2006-01-02 15:04:05"),
-				toolStyle.Render(fmt.Sprintf("[%s]", exec.Tool)),
+				out.DataStyle(dx.Accent, fmt.Sprintf("[%s]", exec.Tool)),
 				exec.Command,
 			)
 
 			if len(exec.PackagesAffected) > 0 {
-				fmt.Printf("  %s %s\n",
-					subtitleStyle.Render("Packages:"),
+				out.Printf("  %s %s\n",
+					out.DataStyle(dx.Muted, "Packages:"),
 					strings.Join(exec.PackagesAffected, ", "),
 				)
 			}
 
 			if exec.ExitCode != 0 {
-				fmt.Printf("  %s %d\n",
-					errorStyle.Render("Exit code:"),
+				out.Printf("  %s %d\n",
+					out.DataStyle(dx.Error, "Exit code:"),
 					exec.ExitCode,
 				)
 			}
-			fmt.Println()
+			out.Println()
 		}
 	}
 
@@ -131,6 +129,7 @@ func showStats(cmd *command, args []string) error {
 	toolFilter, _ := cmd.Flags().GetString("tool")
 
 	opts := storage.QueryOptions{}
+	out := cliOutput()
 	if toolFilter != "" {
 		opts.Tool = core.NormalizeToolName(toolFilter)
 	}
@@ -138,15 +137,15 @@ func showStats(cmd *command, args []string) error {
 	if daily {
 		since := time.Now().Add(-24 * time.Hour)
 		opts.Since = &since
-		fmt.Println(titleStyle.Render("DIU Statistics (Last 24 Hours)"))
+		out.Println(out.DataStyle(dx.Accent, "DIU Statistics (Last 24 Hours)"))
 	} else if weekly {
 		since := time.Now().Add(-7 * 24 * time.Hour)
 		opts.Since = &since
-		fmt.Println(titleStyle.Render("DIU Statistics (Last 7 Days)"))
+		out.Println(out.DataStyle(dx.Accent, "DIU Statistics (Last 7 Days)"))
 	} else {
-		fmt.Println(titleStyle.Render("DIU Statistics"))
+		out.Println(out.DataStyle(dx.Accent, "DIU Statistics"))
 	}
-	fmt.Println()
+	out.Println()
 
 	executions, err := store.GetExecutions(opts)
 	if err != nil {
@@ -158,25 +157,23 @@ func showStats(cmd *command, args []string) error {
 		toolCounts[exec.Tool]++
 	}
 
-	fmt.Printf("%s %d\n",
-		infoStyle.Render("Total executions:"),
+	out.Printf("%s %d\n",
+		out.DataStyle(dx.Info, "Total executions:"),
 		len(executions),
 	)
 
 	stats, _ := store.GetStatistics()
 	if stats.MostActiveDay != "" && !daily && !weekly {
-		fmt.Printf("%s %s\n",
-			infoStyle.Render("Most active day:"),
+		out.Printf("%s %s\n",
+			out.DataStyle(dx.Info, "Most active day:"),
 			stats.MostActiveDay,
 		)
 	}
 
-	fmt.Println()
-	fmt.Println(subtitleStyle.Render("Tool usage:"))
+	out.Println()
+	out.Println(out.DataStyle(dx.Muted, "Tool usage:"))
 	for tool, count := range toolCounts {
-		toolColor := getToolColor(tool)
-		toolStyle := newStyle().Foreground(toolColor)
-		fmt.Printf("  %s %d\n", toolStyle.Render(tool+":"), count)
+		out.Printf("  %s %d\n", out.DataStyle(dx.Accent, tool+":"), count)
 	}
 
 	top, _ := cmd.Flags().GetInt("top")
@@ -188,14 +185,14 @@ func showStats(cmd *command, args []string) error {
 			}
 			return packages[i].UsageCount > packages[j].UsageCount
 		})
-		fmt.Println()
-		fmt.Printf(subtitleStyle.Render("Top %d packages:\n"), top)
+		out.Println()
+		out.Printf(out.DataStyle(dx.Muted, "Top %d packages:\n"), top)
 
 		for i, pkg := range packages {
 			if i >= top {
 				break
 			}
-			fmt.Printf("  %d. %s (%s) - used %d times\n",
+			out.Printf("  %d. %s (%s) - used %d times\n",
 				i+1,
 				pkg.Name,
 				pkg.Tool,

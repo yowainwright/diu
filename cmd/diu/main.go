@@ -1,8 +1,9 @@
 package main
 
 import (
-	"fmt"
 	"os"
+
+	"github.com/yowainwright/diu/internal/dx"
 )
 
 var (
@@ -21,9 +22,10 @@ func newUninstallCommand() *command {
 
 func main() {
 	rootCmd := &command{
-		Use:   "diu",
-		Short: "Do I Use - Package Manager Execution Tracker",
-		Long:  `DIU tracks when package managers and global development tools are executed, storing execution data for analysis and auditing.`,
+		Use:     "diu",
+		Short:   "Do I Use - Package Manager Execution Tracker",
+		Long:    `DIU tracks when package managers and global development tools are executed, storing execution data for analysis and auditing.`,
+		Version: versionString,
 	}
 
 	// Daemon commands
@@ -226,7 +228,15 @@ func main() {
 	)
 
 	if err := rootCmd.Execute(os.Args[1:]); err != nil {
-		fmt.Fprintln(os.Stderr, errorStyle.RenderTo(err.Error(), os.Stderr))
-		os.Exit(1)
+		cliOutput().Status(dx.Error, err.Error())
+		os.Exit(exitStatus(err))
 	}
+}
+
+func exitStatus(err error) int {
+	code, ok := dx.ExitCode(err)
+	if !ok || code < 1 {
+		return 1
+	}
+	return code
 }

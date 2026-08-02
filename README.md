@@ -188,6 +188,15 @@ diu stats --daily
 diu stats --tool uv --top 20
 ```
 
+## Terminal Output
+
+Results and structured data are written to stdout. Prompts, progress, warnings,
+and errors are written to stderr. Color and activity stop automatically for
+redirected output, `TERM=dumb`, and CI. `NO_COLOR` always disables color.
+
+Use `DIU_COLOR=always|never` or `DIU_ACTIVITY=always|never` to override automatic
+color and loader detection.
+
 ## Local API
 
 The local API is unauthenticated and intended for local development use. Keep `api.host` bound to `127.0.0.1` unless you deliberately want other processes on your network to reach it.

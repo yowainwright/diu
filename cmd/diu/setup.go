@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/yowainwright/diu/internal/core"
+	"github.com/yowainwright/diu/internal/dx"
 	"github.com/yowainwright/diu/internal/safefs"
 	"github.com/yowainwright/diu/internal/storage"
 )
@@ -33,6 +34,8 @@ type uninstallPaths struct {
 
 // setupProject initializes DIU storage and wrappers
 func setupProject(cmd *command, args []string) error {
+	activity := cliOutput().StartActivity("Setting up DIU")
+	defer activity.Stop()
 	config, err := core.LoadConfig("")
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)
@@ -53,18 +56,21 @@ func setupProject(cmd *command, args []string) error {
 		return fmt.Errorf("failed to close storage: %w", err)
 	}
 
-	if err := installWrappers(config); err != nil {
+	warn := func(message string) { activity.Notice(dx.Warning, message) }
+	if err := installWrappers(config, warn); err != nil {
 		return err
 	}
 	if err := installExecutableWrappers(config); err != nil {
 		return err
 	}
 
-	fmt.Println(successStyle.Render("DIU setup completed"))
+	activity.Success("DIU setup completed")
 	return nil
 }
 
 func uninstallProject(cmd *command, args []string) error {
+	activity := cliOutput().StartActivity("Removing DIU setup")
+	defer activity.Stop()
 	paths, err := loadUninstallPaths()
 	if err != nil {
 		return err
@@ -75,7 +81,7 @@ func uninstallProject(cmd *command, args []string) error {
 	if err := removeShellPathEntriesFromHomes(paths.homeDirs, paths.shellWrapperDir); err != nil {
 		return err
 	}
-	fmt.Println(successStyle.Render("DIU setup removed; configuration and usage data preserved"))
+	activity.Success("DIU setup removed; configuration and usage data preserved")
 	return nil
 }
 
@@ -384,6 +390,9 @@ func writePrivateFile(path string, data []byte) (err error) {
 
 // scanPackages scans for installed packages
 func scanPackages(cmd *command, args []string) error {
+	out := cliOutput()
+	activity := out.StartActivity("Scanning installed packages")
+	defer activity.Stop()
 	config, err := core.LoadConfig("")
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)
@@ -393,25 +402,26 @@ func scanPackages(cmd *command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to open storage: %w", err)
 	}
-	defer closeStore(store)
+	defer closeStoreDuringActivity(store, activity)
 
 	scanConfig := *config
 	scanConfig.Monitoring.Process.AutoInstallWrappers = false
 
 	total := 0
 	for _, tool := range scanConfig.Monitoring.EnabledTools {
+		activity.Update("Scanning " + tool + " packages")
 		monitor, err := newMonitor(core.NormalizeToolName(tool))
 		if err != nil {
 			continue
 		}
 		if err := monitor.Initialize(&scanConfig); err != nil {
-			fmt.Printf("Warning: failed to initialize %s monitor: %v\n", tool, err)
+			activity.Notice(dx.Warning, fmt.Sprintf("failed to initialize %s monitor: %v", tool, err))
 			continue
 		}
 
 		packages, err := monitor.GetInstalledPackages()
 		if err != nil {
-			fmt.Printf("Warning: failed to scan %s packages: %v\n", tool, err)
+			activity.Notice(dx.Warning, fmt.Sprintf("failed to scan %s packages: %v", tool, err))
 			continue
 		}
 
@@ -455,12 +465,14 @@ func scanPackages(cmd *command, args []string) error {
 		total++
 	}
 
-	fmt.Printf("%s\n", successStyle.Render(fmt.Sprintf("%d packages scanned", total)))
+	activity.Success(fmt.Sprintf("%d packages scanned", total))
 	return nil
 }
 
 // cleanup cleans up old execution records
 func cleanup(cmd *command, args []string) error {
+	activity := cliOutput().StartActivity("Cleaning execution history")
+	defer activity.Stop()
 	config, err := core.LoadConfig("")
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)
@@ -470,18 +482,20 @@ func cleanup(cmd *command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to open storage: %w", err)
 	}
-	defer closeStore(store)
+	defer closeStoreDuringActivity(store, activity)
 
 	if err := store.Cleanup(time.Time{}); err != nil {
 		return fmt.Errorf("cleanup failed: %w", err)
 	}
 
-	fmt.Println(successStyle.Render("Cleanup completed"))
+	activity.Success("Cleanup completed")
 	return nil
 }
 
 // backup creates a manual backup
 func backup(cmd *command, args []string) error {
+	activity := cliOutput().StartActivity("Creating backup")
+	defer activity.Stop()
 	config, err := core.LoadConfig("")
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)
@@ -491,13 +505,13 @@ func backup(cmd *command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to open storage: %w", err)
 	}
-	defer closeStore(store)
+	defer closeStoreDuringActivity(store, activity)
 
 	if err := store.Backup(); err != nil {
 		return fmt.Errorf("backup failed: %w", err)
 	}
 
-	fmt.Println(successStyle.Render("Backup created"))
+	activity.Success("Backup created")
 	return nil
 }
 
@@ -509,7 +523,7 @@ func recordExecution(cmd *command, args []string) error {
 	}
 
 	var record core.ExecutionRecord
-	if err := json.NewDecoder(os.Stdin).Decode(&record); err != nil {
+	if err := json.NewDecoder(cliOutput().Stdin()).Decode(&record); err != nil {
 		return fmt.Errorf("failed to decode execution record: %w", err)
 	}
 
@@ -529,14 +543,17 @@ func recordExecution(cmd *command, args []string) error {
 }
 
 // installWrappers installs monitors for enabled tools
-func installWrappers(config *core.Config) error {
+func installWrappers(config *core.Config, warn func(string)) error {
+	if warn == nil {
+		warn = func(message string) { cliOutput().Status(dx.Warning, message) }
+	}
 	for _, tool := range config.Monitoring.EnabledTools {
 		monitor, err := newMonitor(core.NormalizeToolName(tool))
 		if err != nil {
 			continue
 		}
 		if err := monitor.Initialize(config); err != nil {
-			fmt.Printf("Warning: failed to install %s wrapper: %v\n", tool, err)
+			warn(fmt.Sprintf("failed to install %s wrapper: %v", tool, err))
 		}
 	}
 	return nil

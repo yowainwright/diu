@@ -10,6 +10,7 @@ import (
 
 	"github.com/yowainwright/diu/internal/core"
 	"github.com/yowainwright/diu/internal/daemon"
+	"github.com/yowainwright/diu/internal/dx"
 )
 
 // DaemonChecker is an interface for checking daemon status
@@ -56,7 +57,7 @@ func startDaemon(cmd *command, args []string) error {
 // startDaemonWithConfig starts the DIU daemon with the given config
 func startDaemonWithConfig(config *core.Config) error {
 	if defaultDaemonChecker.IsRunning(config) {
-		fmt.Println(infoStyle.Render("DIU daemon is already running"))
+		cliOutput().Status(dx.Info, "DIU daemon is already running")
 		return nil
 	}
 
@@ -67,7 +68,9 @@ func startDaemonWithConfig(config *core.Config) error {
 }
 
 func forkDaemonBackground(config *core.Config) error {
-	fmt.Println(successStyle.Render("Starting DIU daemon..."))
+	out := cliOutput()
+	activity := out.StartActivity("Starting DIU daemon")
+	defer activity.Stop()
 
 	execPath, err := os.Executable()
 	if err != nil {
@@ -84,7 +87,7 @@ func forkDaemonBackground(config *core.Config) error {
 	}
 	defer func() {
 		if err := devNull.Close(); err != nil {
-			fmt.Fprintf(os.Stderr, "failed to close %s: %v\n", os.DevNull, err)
+			activity.Notice(dx.Warning, fmt.Sprintf("failed to close %s: %v", os.DevNull, err))
 		}
 	}()
 
@@ -102,7 +105,7 @@ func forkDaemonBackground(config *core.Config) error {
 		return err
 	}
 
-	fmt.Println(successStyle.Render("DIU daemon started"))
+	activity.Success("DIU daemon started")
 	return nil
 }
 
@@ -142,7 +145,7 @@ const daemonStopPollInterval = 100 * time.Millisecond
 // stopDaemonWithConfig stops the DIU daemon with the given config
 func stopDaemonWithConfig(config *core.Config) error {
 	if !defaultDaemonChecker.IsRunning(config) {
-		fmt.Println(infoStyle.Render("DIU daemon is not running"))
+		cliOutput().Status(dx.Info, "DIU daemon is not running")
 		return nil
 	}
 
@@ -164,12 +167,15 @@ func stopDaemonWithConfig(config *core.Config) error {
 	if err := process.Signal(syscall.SIGTERM); err != nil {
 		return fmt.Errorf("failed to stop daemon: %w", err)
 	}
+	out := cliOutput()
+	activity := out.StartActivity("Stopping DIU daemon")
+	defer activity.Stop()
 
 	if err := waitForDaemonStopped(config, daemonStopTimeout); err != nil {
 		return err
 	}
 
-	fmt.Println(successStyle.Render("DIU daemon stopped"))
+	activity.Success("DIU daemon stopped")
 	return nil
 }
 
@@ -218,13 +224,15 @@ func daemonStatus(cmd *command, args []string) error {
 	}
 
 	if defaultDaemonChecker.IsRunning(config) {
-		fmt.Println(successStyle.Render("DIU daemon is running"))
+		out := cliOutput()
+		out.Println(out.DataStyle(dx.Success, "DIU daemon is running"))
 
 		pidBytes, _ := os.ReadFile(config.Daemon.PIDFile)
 		pid := strings.TrimSpace(string(pidBytes))
-		fmt.Println(subtitleStyle.Render("  PID:"), pid)
+		out.Println(out.DataStyle(dx.Muted, "  PID:"), pid)
 	} else {
-		fmt.Println(errorStyle.Render("DIU daemon is not running"))
+		out := cliOutput()
+		out.Println(out.DataStyle(dx.Error, "DIU daemon is not running"))
 	}
 
 	return nil
