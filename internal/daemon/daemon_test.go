@@ -232,6 +232,18 @@ func testConfig(t *testing.T) *core.Config {
 	}
 }
 
+func setFakeCommandsInPath(t *testing.T, commands ...string) {
+	t.Helper()
+	binDir := t.TempDir()
+	for _, command := range commands {
+		commandPath := filepath.Join(binDir, command)
+		if err := os.WriteFile(commandPath, []byte("#!/bin/sh\n"), core.OwnerExecutableMode); err != nil {
+			t.Fatalf("write fake %s command: %v", command, err)
+		}
+	}
+	t.Setenv("PATH", binDir)
+}
+
 func stopDaemonForTest(t *testing.T, d *Daemon) {
 	t.Helper()
 	if err := d.Stop(); err != nil {
@@ -953,6 +965,7 @@ func TestDaemonWithMonitors(t *testing.T) {
 }
 
 func TestDaemonRegistersEverySupportedMonitor(t *testing.T) {
+	setFakeCommandsInPath(t, "brew", "npm", "pnpm", "bun", "go", "pip3", "uv", "poetry")
 	cfg := testConfig(t)
 	cfg.Monitoring.EnabledTools = []string{
 		core.ToolHomebrew,
