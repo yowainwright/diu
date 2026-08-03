@@ -43,7 +43,6 @@ release:
     owner: yowainwright
     name: diu
   mode: keep-existing
-  replace_existing_artifacts: true
   draft: false
   prerelease: auto
   name_template: "{{.ProjectName}} v{{.Version}}"

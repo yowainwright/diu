@@ -1317,6 +1317,67 @@ func TestStartDaemonAlreadyRunning(t *testing.T) {
 	}
 }
 
+func TestStartDaemonForegroundReportsInvalidStorage(t *testing.T) {
+	t.Setenv("DIU_DAEMON_FOREGROUND", "1")
+	config := core.DefaultConfig()
+	config.Storage.JSONFile = ""
+	config.Daemon.PIDFile = filepath.Join(t.TempDir(), "diu.pid")
+	config.Daemon.SocketPath = filepath.Join(t.TempDir(), "diu.sock")
+	restore := SetDaemonChecker(MockDaemonChecker{isRunning: false})
+	defer restore()
+
+	err := startDaemonWithConfig(config)
+	if err == nil || !strings.Contains(err.Error(), "failed to create daemon") {
+		t.Fatalf("startDaemonWithConfig error = %v", err)
+	}
+}
+
+func TestCommandsReportInvalidConfig(t *testing.T) {
+	t.Setenv("DIU_ACTIVITY", "never")
+	t.Setenv("DIU_COLOR", "never")
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+	configDir := filepath.Join(homeDir, ".config", "diu")
+	if err := os.MkdirAll(configDir, core.OwnerDirectoryMode); err != nil {
+		t.Fatalf("MkdirAll failed: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, "config.json"), []byte("{"), core.PrivateFileMode); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	tests := []struct {
+		name string
+		run  func() error
+	}{
+		{name: "daemon start", run: func() error { return startDaemon(&command{}, nil) }},
+		{name: "daemon stop", run: func() error { return stopDaemon(&command{}, nil) }},
+		{name: "daemon restart", run: func() error { return restartDaemon(&command{}, nil) }},
+		{name: "daemon status", run: func() error { return daemonStatus(&command{}, nil) }},
+		{name: "query", run: func() error { return queryExecutions(queryCommandForTest(t), nil) }},
+		{name: "stats", run: func() error { return showStats(statsCommandForTest(t), nil) }},
+		{name: "packages", run: func() error { return listPackages(packagesCommandForTest(t), nil) }},
+		{name: "check", run: func() error { return checkPackages(checkCommandForTest(t), nil) }},
+		{name: "manage", run: func() error { return managePackages(manageCommandForTest(t), nil) }},
+		{name: "config get", run: func() error { return getConfig(&command{}, []string{"api.port"}) }},
+		{name: "config set", run: func() error { return setConfig(&command{}, []string{"api.port", "8081"}) }},
+		{name: "config list", run: func() error { return listConfig(&command{}, nil) }},
+		{name: "setup", run: func() error { return setupProject(&command{}, nil) }},
+		{name: "uninstall", run: func() error { return uninstallProject(&command{}, nil) }},
+		{name: "scan", run: func() error { return scanPackages(&command{}, nil) }},
+		{name: "cleanup", run: func() error { return cleanup(&command{}, nil) }},
+		{name: "backup", run: func() error { return backup(&command{}, nil) }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var err error
+			captureStderr(t, func() { err = test.run() })
+			if err == nil || !strings.Contains(err.Error(), "failed to load config") {
+				t.Fatalf("command error = %v", err)
+			}
+		})
+	}
+}
+
 func TestStopDaemonNotRunning(t *testing.T) {
 	setupTestHomeConfig(t)
 
@@ -1738,6 +1799,121 @@ func TestManagePackagesSearch(t *testing.T) {
 	})
 	if !strings.Contains(out, "ripgrep") {
 		t.Fatalf("expected ripgrep in output, got: %q", out)
+	}
+}
+
+func TestPackageBrowserQuitsCleanly(t *testing.T) {
+	t.Setenv("DIU_COLOR", "never")
+	config := setupTestHomeConfig(t)
+	store := openTestStore(t, config)
+	updateTestPackage(t, store, &core.PackageInfo{Name: "ripgrep", Tool: core.ToolHomebrew})
+	closeTestStore(t, store)
+
+	var runErr error
+	var output string
+	withStdin(t, "q\n", func() {
+		output = captureStderr(t, func() {
+			runErr = runPackageBrowser(false)
+		})
+	})
+	if runErr != nil {
+		t.Fatalf("runPackageBrowser failed: %v", runErr)
+	}
+	if !strings.Contains(output, "DIU Packages") || !strings.Contains(output, "q quit") {
+		t.Fatalf("browser output = %q", output)
+	}
+}
+
+func TestPackageBrowserNavigatesSearchesAndShowsDetails(t *testing.T) {
+	t.Setenv("DIU_COLOR", "never")
+	config := setupTestHomeConfig(t)
+	store := openTestStore(t, config)
+	for index := 0; index < defaultPageSize; index++ {
+		name := fmt.Sprintf("package-%02d", index)
+		updateTestPackage(t, store, &core.PackageInfo{Name: name, Tool: core.ToolNPM})
+	}
+	updateTestPackage(t, store, &core.PackageInfo{
+		Name:       "target-package",
+		Tool:       core.ToolNPM,
+		Version:    "1.2.3",
+		Path:       "/opt/target",
+		UsageCount: 4,
+	})
+	closeTestStore(t, store)
+
+	input := "n\np\n/\ntarget\n1\nq\n"
+	var runErr error
+	var output string
+	withStdin(t, input, func() {
+		output = captureStderr(t, func() {
+			runErr = runPackageBrowser(false)
+		})
+	})
+	if runErr != nil {
+		t.Fatalf("runPackageBrowser failed: %v", runErr)
+	}
+	for _, text := range []string{"Search: target", "target-package", "Version: 1.2.3", "Path: /opt/target"} {
+		if !strings.Contains(output, text) {
+			t.Fatalf("browser output = %q, want %q", output, text)
+		}
+	}
+}
+
+func TestPackageBrowserUninstallsConfirmedPackage(t *testing.T) {
+	t.Setenv("DIU_COLOR", "never")
+	prependFakeCommand(t, "npm", "#!/bin/sh\nexit 0\n")
+	config := setupTestHomeConfig(t)
+	store := openTestStore(t, config)
+	updateTestPackage(t, store, &core.PackageInfo{Name: "typescript", Tool: core.ToolNPM})
+	closeTestStore(t, store)
+
+	var runErr error
+	var output string
+	withStdin(t, "u\n1\ntypescript\nq\n", func() {
+		output = captureStderr(t, func() {
+			runErr = runPackageBrowser(true)
+		})
+	})
+	if runErr != nil {
+		t.Fatalf("runPackageBrowser failed: %v", runErr)
+	}
+	if !strings.Contains(output, "[ok] typescript uninstalled") {
+		t.Fatalf("browser output = %q", output)
+	}
+
+	store = openTestStore(t, config)
+	defer closeTestStore(t, store)
+	packages, err := store.GetPackages(core.ToolNPM)
+	if err != nil {
+		t.Fatalf("GetPackages failed: %v", err)
+	}
+	if len(packages) != 0 {
+		t.Fatalf("packages after uninstall = %#v", packages)
+	}
+}
+
+func TestPackageBrowserReportsInvalidSelectionsAndCancellation(t *testing.T) {
+	t.Setenv("DIU_COLOR", "never")
+	config := setupTestHomeConfig(t)
+	store := openTestStore(t, config)
+	updateTestPackage(t, store, &core.PackageInfo{Name: "typescript", Tool: core.ToolNPM})
+	closeTestStore(t, store)
+
+	input := "u\nbad\nu\n1\nwrong\ninvalid\nq\n"
+	var runErr error
+	var output string
+	withStdin(t, input, func() {
+		output = captureStderr(t, func() {
+			runErr = runPackageBrowser(true)
+		})
+	})
+	if runErr != nil {
+		t.Fatalf("runPackageBrowser failed: %v", runErr)
+	}
+	for _, text := range []string{"invalid selection: bad", "uninstall cancelled", "invalid selection: invalid"} {
+		if !strings.Contains(output, text) {
+			t.Fatalf("browser output = %q, want %q", output, text)
+		}
 	}
 }
 

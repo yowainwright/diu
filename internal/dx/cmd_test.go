@@ -92,6 +92,34 @@ func TestCommandPrintsProvidedVersion(t *testing.T) {
 	}
 }
 
+func TestCommandHelpDescribesNestedCommand(t *testing.T) {
+	var stdout bytes.Buffer
+	root := &dx.Command{Use: "diu", Output: &stdout}
+	child := &dx.Command{Use: "query [search]", Long: "Query execution history"}
+	var limit int
+	child.Flags().IntVarP(&limit, "limit", "n", 20, "Limit results")
+	child.AddCommand(&dx.Command{Use: "hidden", Hidden: true})
+	root.AddCommand(child)
+
+	if err := root.Execute([]string{"help", "query"}); err != nil {
+		t.Fatalf("help failed: %v", err)
+	}
+	want := []string{
+		"Query execution history",
+		"Usage: diu query [search]",
+		"-n, --limit",
+		"Limit results",
+	}
+	for _, text := range want {
+		if !strings.Contains(stdout.String(), text) {
+			t.Fatalf("help = %q, want %q", stdout.String(), text)
+		}
+	}
+	if strings.Contains(stdout.String(), "hidden") {
+		t.Fatalf("help exposed hidden command: %q", stdout.String())
+	}
+}
+
 func TestFlagVisitReportsOnlyChangedValues(t *testing.T) {
 	flags := dx.NewFlagSet()
 	var tool string
@@ -106,6 +134,48 @@ func TestFlagVisitReportsOnlyChangedValues(t *testing.T) {
 	flags.Visit(func(flag *dx.Flag) { visited = append(visited, flag.Name) })
 	if len(visited) != 1 || visited[0] != "tool" {
 		t.Fatalf("visited = %#v, want [tool]", visited)
+	}
+}
+
+func TestFlagSetReturnsParsedValues(t *testing.T) {
+	command := &dx.Command{}
+	var tool string
+	var limit int
+	var enabled bool
+	command.Flags().StringVar(&tool, "tool", "", "tool")
+	command.Flags().IntVar(&limit, "limit", 20, "limit")
+	command.Flags().BoolVar(&enabled, "enabled", false, "enabled")
+
+	if _, err := command.Flags().Parse([]string{"--tool=go", "--limit=5", "--enabled"}); err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+	gotTool, toolErr := command.Flags().GetString("tool")
+	gotLimit, limitErr := command.Flags().GetInt("limit")
+	gotEnabled, enabledErr := command.Flags().GetBool("enabled")
+	if toolErr != nil || limitErr != nil || enabledErr != nil {
+		t.Fatalf("getters failed: %v, %v, %v", toolErr, limitErr, enabledErr)
+	}
+	if gotTool != "go" || gotLimit != 5 || !gotEnabled {
+		t.Fatalf("values = %q, %d, %v", gotTool, gotLimit, gotEnabled)
+	}
+	if flag := command.Flag("limit"); flag == nil || flag.Value.String() != "5" {
+		t.Fatalf("limit flag = %#v", flag)
+	}
+}
+
+func TestFlagSetRejectsMismatchedGetters(t *testing.T) {
+	flags := dx.NewFlagSet()
+	var tool string
+	flags.StringVar(&tool, "tool", "go", "tool")
+
+	if _, err := flags.GetString("missing"); err == nil {
+		t.Fatal("missing string flag succeeded")
+	}
+	if _, err := flags.GetInt("tool"); err == nil {
+		t.Fatal("string flag returned as int")
+	}
+	if _, err := flags.GetBool("tool"); err == nil {
+		t.Fatal("string flag returned as bool")
 	}
 }
 

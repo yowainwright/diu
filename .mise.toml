@@ -1,6 +1,7 @@
 [tools]
 go = "1.26.5"
-goreleaser = "latest"
+goreleaser = "2.12.0"
+svu = "3.4.1"
 
 [env]
 CGO_ENABLED = "0"
@@ -114,6 +115,10 @@ description = "Show unused packages"
 run = "./diu packages --unused 6mo"
 
 # Release tasks
+[tasks.version]
+description = "Show the next semantic version from conventional commits"
+run = "svu next"
+
 [tasks.release-snapshot]
 description = "Create a release snapshot"
 run = "goreleaser release --snapshot --clean"
@@ -132,8 +137,8 @@ mise run release-snapshot
 """
 
 [tasks.release]
-description = "Create a new release"
-run = "goreleaser release --clean"
+description = "Validate and push the next release tag"
+run = "scripts/tag.sh"
 
 # Docker tasks
 [tasks.docker-build]

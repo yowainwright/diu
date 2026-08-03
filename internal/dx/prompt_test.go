@@ -3,6 +3,7 @@ package dx_test
 import (
 	"bytes"
 	"errors"
+	"io"
 	"strings"
 	"testing"
 
@@ -26,6 +27,15 @@ func TestPromptReadsTrimmedInput(t *testing.T) {
 	}
 }
 
+func TestTerminalPrompterRejectsAutomation(t *testing.T) {
+	t.Setenv("CI", "1")
+
+	prompt, err := dx.TerminalPrompter()
+	if prompt != nil || !errors.Is(err, dx.ErrNonInteractive) {
+		t.Fatalf("TerminalPrompter = %#v, %v", prompt, err)
+	}
+}
+
 func TestPromptUsesSafeConfirmationDefault(t *testing.T) {
 	t.Setenv("DIU_COLOR", "never")
 	var output bytes.Buffer
@@ -43,6 +53,30 @@ func TestPromptUsesSafeConfirmationDefault(t *testing.T) {
 	}
 }
 
+func TestPromptParsesConfirmationAnswers(t *testing.T) {
+	tests := []struct {
+		input string
+		want  bool
+		err   bool
+	}{
+		{input: "yes\n", want: true},
+		{input: "Y\n", want: true},
+		{input: "no\n", want: false},
+		{input: "N\n", want: false},
+		{input: "maybe\n", err: true},
+	}
+	for _, test := range tests {
+		prompt := dx.NewPrompter(strings.NewReader(test.input), &bytes.Buffer{})
+		confirmed, err := prompt.Confirm("Continue", false)
+		if (err != nil) != test.err {
+			t.Fatalf("Confirm(%q) error = %v", test.input, err)
+		}
+		if err == nil && confirmed != test.want {
+			t.Fatalf("Confirm(%q) = %v, want %v", test.input, confirmed, test.want)
+		}
+	}
+}
+
 func TestPromptUsesInputDefault(t *testing.T) {
 	t.Setenv("DIU_COLOR", "never")
 	var output bytes.Buffer
@@ -54,6 +88,18 @@ func TestPromptUsesInputDefault(t *testing.T) {
 	}
 	if value != "go" || output.String() != "? Tool [go]: " {
 		t.Fatalf("InputDefault = %q, %q", value, output.String())
+	}
+}
+
+func TestPromptKeepsExplicitInputOverDefault(t *testing.T) {
+	prompt := dx.NewPrompter(strings.NewReader("npm\n"), &bytes.Buffer{})
+
+	value, err := prompt.InputDefault("Tool", "go")
+	if err != nil {
+		t.Fatalf("InputDefault failed: %v", err)
+	}
+	if value != "npm" {
+		t.Fatalf("InputDefault = %q, want npm", value)
 	}
 }
 
@@ -71,10 +117,58 @@ func TestPromptReturnsSelectedValue(t *testing.T) {
 	}
 }
 
+func TestPromptRejectsInvalidSelections(t *testing.T) {
+	choices := []dx.Choice{{Label: "Go", Value: "go"}}
+	for _, input := range []string{"0\n", "2\n", "go\n"} {
+		prompt := dx.NewPrompter(strings.NewReader(input), &bytes.Buffer{})
+		if _, err := prompt.Select("Tool", choices); err == nil {
+			t.Fatalf("Select(%q) succeeded", input)
+		}
+	}
+	prompt := dx.NewPrompter(strings.NewReader("1\n"), &bytes.Buffer{})
+	if _, err := prompt.Select("Tool", nil); err == nil {
+		t.Fatal("Select without choices succeeded")
+	}
+}
+
 func TestPromptRequiresExactDestructiveConfirmation(t *testing.T) {
 	prompt := dx.NewPrompter(strings.NewReader("wrong\n"), &bytes.Buffer{})
 	err := prompt.Require("Type package name", "expected")
 	if !errors.Is(err, dx.ErrCancelled) {
 		t.Fatalf("Require error = %v, want ErrCancelled", err)
+	}
+}
+
+func TestPromptAcceptsExactRequiredText(t *testing.T) {
+	prompt := dx.NewPrompter(strings.NewReader("expected\n"), &bytes.Buffer{})
+	if err := prompt.Require("Type package name", "expected"); err != nil {
+		t.Fatalf("Require failed: %v", err)
+	}
+}
+
+func TestPromptOperationsPropagateInputErrors(t *testing.T) {
+	choices := []dx.Choice{{Label: "Go", Value: "go"}}
+	operations := []func(*dx.Prompter) error{
+		func(prompt *dx.Prompter) error {
+			_, err := prompt.InputDefault("Tool", "go")
+			return err
+		},
+		func(prompt *dx.Prompter) error {
+			_, err := prompt.Confirm("Continue", false)
+			return err
+		},
+		func(prompt *dx.Prompter) error {
+			_, err := prompt.Select("Tool", choices)
+			return err
+		},
+		func(prompt *dx.Prompter) error {
+			return prompt.Require("Type go", "go")
+		},
+	}
+	for index, operation := range operations {
+		prompt := dx.NewPrompter(strings.NewReader(""), &bytes.Buffer{})
+		if err := operation(prompt); !errors.Is(err, io.EOF) {
+			t.Fatalf("operation %d error = %v, want EOF", index, err)
+		}
 	}
 }

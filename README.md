@@ -284,21 +284,18 @@ mise run build
 
 Release checks:
 
-<!-- release flow from release automation config -->
-
 ```bash
+mise run version
 mise run release-preview
+mise run release
 ```
 
-Release Please opens release PRs from conventional commits on `main`. Merging
-the release PR updates the changelog and version, creates the `v*` tag, and
-lets the tag workflow publish the GitHub Release, GoReleaser artifacts, and
-Homebrew formula.
+`svu` calculates the next version from conventional commits. The release task
+requires a clean, synchronized `main`, runs the complete preview, and pushes an
+annotated `v*` tag after confirmation. The tag workflow publishes the GitHub
+Release, GoReleaser artifacts, and Homebrew formula.
 
-Required for full automation:
-
-- `RELEASE_PLEASE_TOKEN`
-- `HOMEBREW_TAP_GITHUB_TOKEN`
+`HOMEBREW_TAP_GITHUB_TOKEN` is required by the tag workflow.
 
 ## Requirements
 

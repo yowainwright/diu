@@ -21,6 +21,13 @@ func newUninstallCommand() *command {
 }
 
 func main() {
+	if err := newRootCommand().Execute(os.Args[1:]); err != nil {
+		cliOutput().Status(dx.Error, err.Error())
+		os.Exit(exitStatus(err))
+	}
+}
+
+func newRootCommand() *command {
 	rootCmd := &command{
 		Use:     "diu",
 		Short:   "Do I Use - Package Manager Execution Tracker",
@@ -226,11 +233,7 @@ func main() {
 		scanCmd,
 		recordCmd,
 	)
-
-	if err := rootCmd.Execute(os.Args[1:]); err != nil {
-		cliOutput().Status(dx.Error, err.Error())
-		os.Exit(exitStatus(err))
-	}
+	return rootCmd
 }
 
 func exitStatus(err error) int {
