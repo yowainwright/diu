@@ -14,7 +14,7 @@ func coreVersion() string {
 	if version != "" && version != "dev" {
 		return version
 	}
-	return core.Version
+	return core.CurrentVersion()
 }
 
 func versionString() string {

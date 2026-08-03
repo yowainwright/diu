@@ -99,7 +99,7 @@ func NewDaemon(config *core.Config) (*Daemon, error) {
 }
 
 func (d *Daemon) Start() error {
-	log.Printf("Starting DIU daemon v%s", core.Version)
+	log.Printf("Starting DIU daemon v%s", core.CurrentVersion())
 
 	if err := d.writePIDFile(); err != nil {
 		return fmt.Errorf("failed to write PID file: %w", err)
@@ -502,7 +502,7 @@ func (d *Daemon) handleHealth(w http.ResponseWriter, r *http.Request) {
 
 	health := map[string]interface{}{
 		"status":          "healthy",
-		"version":         core.Version,
+		"version":         core.CurrentVersion(),
 		"uptime":          time.Since(d.startTime).String(),
 		"monitors_active": len(d.registry.GetAll()),
 	}

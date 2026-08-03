@@ -3,11 +3,30 @@ package core
 import (
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"time"
 )
 
-var Version = "0.1.2"
+var Version = "dev"
+
+func CurrentVersion() string {
+	moduleVersion := ""
+	if info, ok := debug.ReadBuildInfo(); ok {
+		moduleVersion = info.Main.Version
+	}
+	return resolveVersion(Version, moduleVersion)
+}
+
+func resolveVersion(linkedVersion, moduleVersion string) string {
+	if linkedVersion != "" && linkedVersion != "dev" {
+		return linkedVersion
+	}
+	if moduleVersion != "" && moduleVersion != "(devel)" {
+		return strings.TrimPrefix(moduleVersion, "v")
+	}
+	return "dev"
+}
 
 const (
 	ConfigVersion = "1.0"

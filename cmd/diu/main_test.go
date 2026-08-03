@@ -540,6 +540,15 @@ func TestPackageAndFormattingHelpers(t *testing.T) {
 	}
 }
 
+func TestPackageRowsPreserveFourDigitSelections(t *testing.T) {
+	packages := []*core.PackageInfo{{Name: "package-1000", Tool: core.ToolNPM}}
+	rows := packageRows(packages, 999)
+
+	if len(rows) != 1 || !strings.HasPrefix(rows[0], "1000") {
+		t.Fatalf("packageRows() = %#v, want full selection number", rows)
+	}
+}
+
 func TestDurationAndWrapperHelpers(t *testing.T) {
 	days, err := parseDuration("2d")
 	if err != nil || days != 48*time.Hour {

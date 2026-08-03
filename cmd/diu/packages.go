@@ -386,7 +386,9 @@ func printPackageRows(packages []*core.PackageInfo, offset int) {
 
 func packageRows(packages []*core.PackageInfo, offset int) []string {
 	rows := make([]string, 0, len(packages))
-	widths := []int{packageIndexColumnWidth, packageToolColumnWidth, packageNameColumnWidth, 9, 10}
+	lastSelection := strconv.Itoa(offset + len(packages))
+	indexWidth := max(packageIndexColumnWidth, len(lastSelection))
+	widths := []int{indexWidth, packageToolColumnWidth, packageNameColumnWidth, 9, 10}
 	for index, pkg := range packages {
 		row := dx.Row(widths,
 			strconv.Itoa(offset+index+1),
