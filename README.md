@@ -114,6 +114,15 @@ diu manage --uninstall tsx --tool pnpm --yes
 diu manage --uninstall ruff --tool pip --yes
 ```
 
+Remove DIU's wrappers and shell PATH entries:
+
+```bash
+diu uninstall
+```
+
+This preserves DIU's configuration and usage history. Remove the binary separately
+with Homebrew or Go after running the command.
+
 ## How It Works
 
 `diu setup` installs lightweight wrappers in `~/.local/bin/diu-wrappers` and adds that directory to existing shell config files when possible. The wrapper runs the original command, preserves its output and exit code, then records the execution in the background.
@@ -155,6 +164,7 @@ flowchart LR
 | Command | Use it for |
 | --- | --- |
 | `diu setup` | Create config, storage, shell path entries, and wrappers. |
+| `diu uninstall` | Remove wrappers and shell path entries while preserving data. |
 | `diu scan` | Refresh the known package inventory. |
 | `diu check [search]` | Search tracked packages and see usage. |
 | `diu packages` | List tracked packages, optionally filtered by tool or unused duration. |
@@ -177,6 +187,15 @@ diu query --tool poetry --last 24h --format csv
 diu stats --daily
 diu stats --tool uv --top 20
 ```
+
+## Terminal Output
+
+Results and structured data are written to stdout. Prompts, progress, warnings,
+and errors are written to stderr. Color and activity stop automatically for
+redirected output, `TERM=dumb`, and CI. `NO_COLOR` always disables color.
+
+Use `DIU_COLOR=always|never` or `DIU_ACTIVITY=always|never` to override automatic
+color and loader detection.
 
 ## Local API
 
@@ -265,21 +284,18 @@ mise run build
 
 Release checks:
 
-<!-- release flow from release automation config -->
-
 ```bash
+mise run version
 mise run release-preview
+mise run release
 ```
 
-Release Please opens release PRs from conventional commits on `main`. Merging
-the release PR updates the changelog and version, creates the `v*` tag, and
-lets the tag workflow publish the GitHub Release, GoReleaser artifacts, and
-Homebrew formula.
+`svu` calculates the next version from conventional commits. The release task
+requires a clean, synchronized `main`, runs the complete preview, and pushes an
+annotated `v*` tag after confirmation. The tag workflow publishes the GitHub
+Release, GoReleaser artifacts, and Homebrew formula.
 
-Required for full automation:
-
-- `RELEASE_PLEASE_TOKEN`
-- `HOMEBREW_TAP_GITHUB_TOKEN`
+`HOMEBREW_TAP_GITHUB_TOKEN` is required by the tag workflow.
 
 ## Requirements
 

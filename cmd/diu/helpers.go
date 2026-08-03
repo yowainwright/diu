@@ -1,7 +1,8 @@
 package main
 
 import (
-	"bufio"
+	"bytes"
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -12,29 +13,10 @@ import (
 	"time"
 
 	"github.com/yowainwright/diu/internal/core"
+	"github.com/yowainwright/diu/internal/dx"
 	"github.com/yowainwright/diu/internal/monitors"
 	"github.com/yowainwright/diu/internal/safefs"
 	"github.com/yowainwright/diu/internal/storage"
-)
-
-// Style and color constants
-var (
-	// Styles
-	titleStyle = newStyle().
-			Bold(true).
-			Foreground(color("205"))
-
-	subtitleStyle = newStyle().
-			Foreground(color("241"))
-
-	successStyle = newStyle().
-			Foreground(color("42"))
-
-	errorStyle = newStyle().
-			Foreground(color("196"))
-
-	infoStyle = newStyle().
-			Foreground(color("86"))
 )
 
 const (
@@ -75,7 +57,7 @@ const (
 	packageIndexColumnWidth      = 3
 	packageToolColumnWidth       = 14
 	packageNameColumnWidth       = 34
-	packageUsageColumnWidth      = 4
+	commandTimeout               = 2 * time.Minute
 )
 
 type executablePathDeps struct {
@@ -86,29 +68,32 @@ type executablePathDeps struct {
 }
 
 var defaultExecutablePathDeps = executablePathDeps{
-	getenv:      os.Getenv,
-	userHomeDir: os.UserHomeDir,
-	lookPath:    exec.LookPath,
-	commandOutput: func(name string, args ...string) ([]byte, error) {
-		// #nosec G204 -- callers pass fixed command names and argument lists from allowlisted helpers.
-		return exec.Command(name, args...).Output()
-	},
+	getenv:        os.Getenv,
+	userHomeDir:   os.UserHomeDir,
+	lookPath:      exec.LookPath,
+	commandOutput: runCommandOutput,
+}
+
+func cliOutput() *dx.Out {
+	return dx.TerminalOut()
 }
 
 // closeStore closes the storage and logs any errors
 func closeStore(store storage.Storage) {
 	if err := store.Close(); err != nil {
-		fmt.Fprintf(os.Stderr, "failed to close storage: %v\n", err)
+		cliOutput().Status(dx.Error, fmt.Sprintf("failed to close storage: %v", err))
+	}
+}
+
+func closeStoreDuringActivity(store storage.Storage, activity *dx.Activity) {
+	if err := store.Close(); err != nil {
+		activity.Notice(dx.Error, fmt.Sprintf("failed to close storage: %v", err))
 	}
 }
 
 // isTerminal returns true if stdin is a terminal
 func isTerminal() bool {
-	info, err := os.Stdin.Stat()
-	if err != nil {
-		return false
-	}
-	return info.Mode()&os.ModeCharDevice != 0
+	return cliOutput().CanPrompt()
 }
 
 // flagString is a helper to get string flag value
@@ -158,47 +143,12 @@ func parseDuration(s string) (time.Duration, error) {
 	return time.ParseDuration(s)
 }
 
-// getToolColor returns the ANSI color code for a tool
-func getToolColor(tool string) color {
-	switch core.NormalizeToolName(tool) {
-	case "homebrew":
-		return color("214") // Orange
-	case "npm":
-		return color("196") // Red
-	case "pnpm":
-		return color("208") // Orange
-	case "bun":
-		return color("230") // Cream
-	case "go":
-		return color("86") // Cyan
-	case "pip", "python", "uv", "poetry":
-		return color("226") // Yellow
-	case "gem", "ruby":
-		return color("160") // Red
-	case "cargo", "rust":
-		return color("208") // Orange
-	default:
-		return color("250") // Gray
-	}
-}
-
 // formatLastUsed formats a timestamp for display
 func formatLastUsed(lastUsed time.Time) string {
 	if lastUsed.IsZero() {
 		return "never"
 	}
 	return lastUsed.Format("2006-01-02")
-}
-
-// truncate truncates a string to maxLength, adding ellipsis if truncated
-func truncate(value string, maxLength int) string {
-	if len(value) <= maxLength {
-		return value
-	}
-	if maxLength <= 1 {
-		return value[:maxLength]
-	}
-	return value[:maxLength-1] + "."
 }
 
 // shouldSkipExecutableWrapper returns true if the executable should not be wrapped
@@ -267,8 +217,7 @@ func npmGlobalBinDir() string {
 	if _, err := exec.LookPath(npmCommandName); err != nil {
 		return ""
 	}
-	// #nosec G204 -- npm command and arguments are fixed constants used only to locate the global bin directory.
-	output, err := exec.Command(npmCommandName, configSubcommand, getSubcommand, npmPrefixConfigName).Output()
+	output, err := runCommandOutput(npmCommandName, configSubcommand, getSubcommand, npmPrefixConfigName)
 	if err != nil {
 		return ""
 	}
@@ -550,16 +499,6 @@ func writeOwnerExecutableFile(path string, data []byte) (err error) {
 	return nil
 }
 
-// readPrompt reads a line from the reader with the given prompt
-func readPrompt(reader *bufio.Reader, prompt string) (string, error) {
-	fmt.Print(prompt)
-	input, err := reader.ReadString('\n')
-	if err != nil {
-		return "", err
-	}
-	return strings.TrimSpace(input), nil
-}
-
 // newMonitor creates a monitor for the given tool
 func newMonitor(tool string) (monitors.Monitor, error) {
 	switch core.NormalizeToolName(tool) {
@@ -615,15 +554,35 @@ func supportsUninstall(pkg *core.PackageInfo) bool {
 	}
 }
 
-// runPreparedCommand runs a prepared exec.Cmd
-func runPreparedCommand(command *exec.Cmd) error {
-	command.Stdout = os.Stdout
-	command.Stderr = os.Stderr
-	command.Stdin = os.Stdin
-	if err := command.Run(); err != nil {
+func runCommand(name string, args ...string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
+	defer cancel()
+	out := cliOutput()
+	runner := dx.NewRunner(out.Stdin(), out.Stderr(), out.Stderr())
+	if err := runner.Run(ctx, name, args...); err != nil {
 		return fmt.Errorf("uninstall failed: %w", err)
 	}
 	return nil
+}
+
+func runCommandOutput(name string, args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
+	defer cancel()
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	runner := dx.NewRunner(nil, &stdout, &stderr)
+	if err := runner.Run(ctx, name, args...); err != nil {
+		return nil, commandOutputError(stderr.String(), err)
+	}
+	return stdout.Bytes(), nil
+}
+
+func commandOutputError(stderr string, err error) error {
+	message := strings.TrimSpace(stderr)
+	if message == "" {
+		return err
+	}
+	return fmt.Errorf("%s: %w", message, err)
 }
 
 // runHomebrewUninstall runs brew uninstall for a package
@@ -632,15 +591,10 @@ func runHomebrewUninstall(name string, cask bool) error {
 		return err
 	}
 
-	var command *exec.Cmd
 	if cask {
-		// #nosec G204 -- command is allowlisted and package name is validated before execution.
-		command = exec.Command(homebrewCommandName, uninstallSubcommand, homebrewCaskFlag, name)
-	} else {
-		// #nosec G204 -- command is allowlisted and package name is validated before execution.
-		command = exec.Command(homebrewCommandName, uninstallSubcommand, name)
+		return runCommand(homebrewCommandName, uninstallSubcommand, homebrewCaskFlag, name)
 	}
-	return runPreparedCommand(command)
+	return runCommand(homebrewCommandName, uninstallSubcommand, name)
 }
 
 // runNPMUninstall runs npm uninstall for a package
@@ -649,9 +603,7 @@ func runNPMUninstall(name string) error {
 		return err
 	}
 
-	// #nosec G204 -- command is allowlisted and package name is validated before execution.
-	command := exec.Command(npmCommandName, uninstallSubcommand, npmGlobalFlag, name)
-	return runPreparedCommand(command)
+	return runCommand(npmCommandName, uninstallSubcommand, npmGlobalFlag, name)
 }
 
 // runPNPMUninstall runs pnpm remove -g for a package.
@@ -660,9 +612,7 @@ func runPNPMUninstall(name string) error {
 		return err
 	}
 
-	// #nosec G204 -- command is allowlisted and package name is validated before execution.
-	command := exec.Command(pnpmCommandName, removeSubcommand, npmGlobalFlag, name)
-	return runPreparedCommand(command)
+	return runCommand(pnpmCommandName, removeSubcommand, npmGlobalFlag, name)
 }
 
 // runBunUninstall runs bun remove -g for a package.
@@ -671,9 +621,7 @@ func runBunUninstall(name string) error {
 		return err
 	}
 
-	// #nosec G204 -- command is allowlisted and package name is validated before execution.
-	command := exec.Command(bunCommandName, removeSubcommand, npmGlobalFlag, name)
-	return runPreparedCommand(command)
+	return runCommand(bunCommandName, removeSubcommand, npmGlobalFlag, name)
 }
 
 // runPipUninstall runs pip uninstall -y for a package.
@@ -687,25 +635,23 @@ func runPipUninstall(name string) error {
 		return fmt.Errorf("pip not found: %w", err)
 	}
 
-	command, err := pipUninstallCommand(commandName, name)
+	args, err := pipUninstallArgs(commandName, name)
 	if err != nil {
 		return err
 	}
-	return runPreparedCommand(command)
+	return runCommand(commandName, args...)
 }
 
 func pipCommandForUninstall() (string, error) {
 	return firstExistingCommand(pip3CommandName, pipCommandName)
 }
 
-func pipUninstallCommand(commandName, name string) (*exec.Cmd, error) {
+func pipUninstallArgs(commandName, name string) ([]string, error) {
 	switch commandName {
 	case pip3CommandName:
-		// #nosec G204 -- command is allowlisted and package name is validated before execution.
-		return exec.Command(pip3CommandName, uninstallSubcommand, pipYesFlag, name), nil
+		return []string{uninstallSubcommand, pipYesFlag, name}, nil
 	case pipCommandName:
-		// #nosec G204 -- command is allowlisted and package name is validated before execution.
-		return exec.Command(pipCommandName, uninstallSubcommand, pipYesFlag, name), nil
+		return []string{uninstallSubcommand, pipYesFlag, name}, nil
 	default:
 		return nil, fmt.Errorf("unsupported pip command: %s", commandName)
 	}
@@ -717,9 +663,7 @@ func runUVUninstall(name string) error {
 		return err
 	}
 
-	// #nosec G204 -- command is allowlisted and package name is validated before execution.
-	command := exec.Command(uvCommandName, "tool", uninstallSubcommand, name)
-	return runPreparedCommand(command)
+	return runCommand(uvCommandName, "tool", uninstallSubcommand, name)
 }
 
 // removeGoBinary removes a Go binary

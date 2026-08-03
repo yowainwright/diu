@@ -1,12 +1,16 @@
+name: diu
+
 services:
   diu:
-    build: .
+    build:
+      context: ../..
+      dockerfile: ops/docker/Dockerfile
     container_name: diu-daemon
     expose:
       - "8081"
     volumes:
       - diu-data:/var/lib/diu
-      - ./configs/docker.json:/var/lib/diu/.config/diu/config.json:ro
+      - ./config.json:/var/lib/diu/.config/diu/config.json:ro
     environment:
       - DIU_LOG_LEVEL=debug
     restart: unless-stopped
@@ -16,8 +20,8 @@ services:
   # E2E test runner
   e2e-tests:
     build:
-      context: .
-      dockerfile: Dockerfile.e2e
+      context: ../..
+      dockerfile: ops/docker/Dockerfile.e2e
     container_name: diu-e2e
     depends_on:
       - diu
@@ -25,8 +29,8 @@ services:
       - DIU_API_URL=http://diu:8081
       - TEST_TIMEOUT=60s
     volumes:
-      - ./e2e:/app/e2e
-      - ./test-results:/app/test-results
+      - ../../tests/e2e:/app/tests/e2e:ro
+      - ../../tmp/test-results:/app/test-results
     networks:
       - diu-network
     profiles:
@@ -38,7 +42,7 @@ services:
     container_name: diu-test-env
     command: tail -f /dev/null
     volumes:
-      - ./test-scripts:/scripts
+      - ../../tests/fixtures/scripts:/scripts:ro
     environment:
       - DIU_API_URL=http://diu:8081
     networks:

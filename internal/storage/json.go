@@ -60,7 +60,7 @@ func (j *JSONStorage) Initialize(config *core.Config) error {
 				LastUpdated: time.Now(),
 				Hostname:    hostname,
 				User:        filepath.Base(user),
-				DIUVersion:  core.Version,
+				DIUVersion:  core.CurrentVersion(),
 			},
 			Executions: []core.ExecutionRecord{},
 			Packages:   make(map[string]map[string]core.PackageInfo),

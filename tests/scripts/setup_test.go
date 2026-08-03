@@ -30,7 +30,7 @@ func TestSetupScriptInstallsMiseAndGitHooks(t *testing.T) {
 	scriptPath := filepath.Join(projectRoot(t), "scripts", "setup.sh")
 	cmd := exec.Command("/bin/sh", scriptPath)
 	cmd.Dir = repo
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(isolatedGitEnv(),
 		"PATH="+fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"),
 		"MISE_LOG="+miseLog,
 	)
@@ -141,7 +141,7 @@ func projectRoot(t *testing.T) string {
 		t.Fatal("could not resolve test file path")
 	}
 
-	return filepath.Dir(filepath.Dir(file))
+	return filepath.Dir(filepath.Dir(filepath.Dir(file)))
 }
 
 func readFile(t *testing.T, path string) string {
@@ -159,6 +159,7 @@ func run(t *testing.T, dir string, name string, args ...string) {
 
 	cmd := exec.Command(name, args...)
 	cmd.Dir = dir
+	cmd.Env = isolatedGitEnv()
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("%s %s failed: %v\n%s", name, strings.Join(args, " "), err, output)
@@ -170,13 +171,39 @@ func runHook(t *testing.T, repo, fakeBin, miseLog, hookPath string) {
 
 	cmd := exec.Command(hookPath)
 	cmd.Dir = repo
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(isolatedGitEnv(),
 		"PATH="+fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"),
 		"MISE_LOG="+miseLog,
 	)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("%s failed: %v\n%s", hookPath, err, output)
+	}
+}
+
+func isolatedGitEnv() []string {
+	env := os.Environ()
+	isolated := make([]string, 0, len(env))
+	for _, entry := range env {
+		key, _, _ := strings.Cut(entry, "=")
+		if isRepositoryGitEnv(key) {
+			continue
+		}
+		isolated = append(isolated, entry)
+	}
+	return isolated
+}
+
+func isRepositoryGitEnv(key string) bool {
+	switch key {
+	case "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_COMMON_DIR", "GIT_CONFIG", "GIT_CONFIG_COUNT",
+		"GIT_CONFIG_PARAMETERS", "GIT_DIR", "GIT_DISCOVERY_ACROSS_FILESYSTEM", "GIT_GRAFT_FILE",
+		"GIT_IMPLICIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_INTERNAL_SUPER_PREFIX", "GIT_NAMESPACE",
+		"GIT_NO_REPLACE_OBJECTS", "GIT_OBJECT_DIRECTORY", "GIT_PREFIX", "GIT_QUARANTINE_PATH",
+		"GIT_REPLACE_REF_BASE", "GIT_SHALLOW_FILE", "GIT_WORK_TREE":
+		return true
+	default:
+		return false
 	}
 }
 

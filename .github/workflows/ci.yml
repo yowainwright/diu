@@ -7,8 +7,11 @@ on:
     branches: [ main ]
 
 env:
-  GO_VERSION: '1.26.4'
+  GO_VERSION: '1.26.5'
   GOLANGCI_LINT_VERSION: 'v2.4.0'
+  GORELEASER_VERSION: 'v2.12.0'
+  GOSEC_VERSION: 'v2.28.0'
+  GOVULNCHECK_VERSION: 'v1.6.0'
 
 jobs:
   lint:
@@ -41,7 +44,7 @@ jobs:
     runs-on: macos-latest
     strategy:
       matrix:
-        go: ['1.25.11', '1.26.4']
+        go: ['1.25.12', '1.26.5']
     steps:
       - uses: actions/checkout@v4
 
@@ -64,7 +67,7 @@ jobs:
           go tool cover -func=coverage.out
 
       - name: Upload coverage to Codecov
-        if: matrix.go == '1.26.4'
+        if: matrix.go == '1.26.5'
         uses: codecov/codecov-action@v6
         with:
           files: ./coverage.out
@@ -156,13 +159,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install GoReleaser
-        run: |
-          brew install goreleaser
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
 
       - name: Check GoReleaser config
         run: |
-          goreleaser check
+          RELEASE_PACKAGE="github.com/goreleaser/goreleaser/v2@${GORELEASER_VERSION}"
+          go run "$RELEASE_PACKAGE" check
 
       - name: Check Homebrew formula
         run: |
@@ -222,13 +227,13 @@ jobs:
 
       - name: Run gosec security scanner
         run: |
-          go install github.com/securego/gosec/v2/cmd/gosec@latest
-          gosec -fmt sarif -out gosec-results.sarif ./...
+          GOSEC_PACKAGE="github.com/securego/gosec/v2/cmd/gosec@${GOSEC_VERSION}"
+          go run "$GOSEC_PACKAGE" -fmt sarif -out gosec-results.sarif ./...
 
       - name: Run govulncheck
         run: |
-          go install golang.org/x/vuln/cmd/govulncheck@latest
-          govulncheck ./...
+          VULN_PACKAGE="golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}"
+          go run "$VULN_PACKAGE" ./...
 
       - name: Upload security results
         uses: github/codeql-action/upload-sarif@v4

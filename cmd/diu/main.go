@@ -1,8 +1,9 @@
 package main
 
 import (
-	"fmt"
 	"os"
+
+	"github.com/yowainwright/diu/internal/dx"
 )
 
 var (
@@ -11,11 +12,27 @@ var (
 	date    = "unknown"
 )
 
+func newUninstallCommand() *command {
+	return &command{
+		Use:   "uninstall",
+		Short: "Remove wrappers and shell PATH entries",
+		RunE:  uninstallProject,
+	}
+}
+
 func main() {
+	if err := newRootCommand().Execute(os.Args[1:]); err != nil {
+		cliOutput().Status(dx.Error, err.Error())
+		os.Exit(exitStatus(err))
+	}
+}
+
+func newRootCommand() *command {
 	rootCmd := &command{
-		Use:   "diu",
-		Short: "Do I Use - Package Manager Execution Tracker",
-		Long:  `DIU tracks when package managers and global development tools are executed, storing execution data for analysis and auditing.`,
+		Use:     "diu",
+		Short:   "Do I Use - Package Manager Execution Tracker",
+		Long:    `DIU tracks when package managers and global development tools are executed, storing execution data for analysis and auditing.`,
+		Version: versionString,
 	}
 
 	// Daemon commands
@@ -185,6 +202,8 @@ func main() {
 		RunE:  setupProject,
 	}
 
+	uninstallCmd := newUninstallCommand()
+
 	scanCmd := &command{
 		Use:   "scan",
 		Short: "Scan installed packages into inventory",
@@ -210,12 +229,17 @@ func main() {
 		cleanupCmd,
 		backupCmd,
 		setupCmd,
+		uninstallCmd,
 		scanCmd,
 		recordCmd,
 	)
+	return rootCmd
+}
 
-	if err := rootCmd.Execute(os.Args[1:]); err != nil {
-		fmt.Fprintln(os.Stderr, errorStyle.RenderTo(err.Error(), os.Stderr))
-		os.Exit(1)
+func exitStatus(err error) int {
+	code, ok := dx.ExitCode(err)
+	if !ok || code < 1 {
+		return 1
 	}
+	return code
 }

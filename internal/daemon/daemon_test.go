@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -26,6 +27,8 @@ type mockStorage struct {
 	closed      bool
 	addErr      error
 	getErr      error
+	packagesErr error
+	statsErr    error
 	initialized bool
 }
 
@@ -116,6 +119,9 @@ func (m *mockStorage) GetPackage(tool, name string) (*core.PackageInfo, error) {
 func (m *mockStorage) GetPackages(tool string) ([]*core.PackageInfo, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
+	if m.packagesErr != nil {
+		return nil, m.packagesErr
+	}
 	if tool == "" {
 		var all []*core.PackageInfo
 		for _, pkgs := range m.packages {
@@ -155,6 +161,9 @@ func (m *mockStorage) DeletePackage(tool, name string) error {
 func (m *mockStorage) GetStatistics() (*core.StorageStatistics, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
+	if m.statsErr != nil {
+		return nil, m.statsErr
+	}
 	return &core.StorageStatistics{
 		TotalExecutions: len(m.executions),
 		ExecutionFrequency: map[string]int{
@@ -221,6 +230,18 @@ func testConfig(t *testing.T) *core.Config {
 			Port:    0,
 		},
 	}
+}
+
+func setFakeCommandsInPath(t *testing.T, commands ...string) {
+	t.Helper()
+	binDir := t.TempDir()
+	for _, command := range commands {
+		commandPath := filepath.Join(binDir, command)
+		if err := os.WriteFile(commandPath, []byte("#!/bin/sh\n"), core.OwnerExecutableMode); err != nil {
+			t.Fatalf("write fake %s command: %v", command, err)
+		}
+	}
+	t.Setenv("PATH", binDir)
 }
 
 func stopDaemonForTest(t *testing.T, d *Daemon) {
@@ -307,6 +328,19 @@ func TestNewDaemon(t *testing.T) {
 	}
 }
 
+func TestNewDaemonRejectsInvalidStoragePath(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Storage.JSONFile = ""
+
+	d, err := NewDaemon(cfg)
+	if d != nil || err == nil {
+		t.Fatalf("NewDaemon = %#v, %v", d, err)
+	}
+	if !strings.Contains(err.Error(), "failed to initialize storage") {
+		t.Fatalf("NewDaemon error = %v", err)
+	}
+}
+
 func TestDaemonStartStop(t *testing.T) {
 	cfg := testConfig(t)
 
@@ -341,6 +375,26 @@ func TestDaemonStartStop(t *testing.T) {
 
 	if _, err := os.Stat(cfg.Daemon.PIDFile); !os.IsNotExist(err) {
 		t.Error("PID file should be removed after Stop")
+	}
+}
+
+func TestDaemonStartReportsPIDFileFailure(t *testing.T) {
+	cfg := testConfig(t)
+	blocked := filepath.Join(t.TempDir(), "blocked")
+	if err := os.WriteFile(blocked, []byte("file"), core.PrivateFileMode); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+	cfg.Daemon.PIDFile = filepath.Join(blocked, "diu.pid")
+
+	d, err := NewDaemon(cfg)
+	if err != nil {
+		t.Fatalf("NewDaemon failed: %v", err)
+	}
+	defer closeStorageForTest(t, d.storage)
+
+	err = d.Start()
+	if err == nil || !strings.Contains(err.Error(), "failed to write PID file") {
+		t.Fatalf("Start error = %v", err)
 	}
 }
 
@@ -586,6 +640,67 @@ func TestDaemonHTTPAPI(t *testing.T) {
 	})
 }
 
+func TestDaemonRejectsInvalidExecutionRecords(t *testing.T) {
+	cfg := testConfig(t)
+	d, err := NewDaemon(cfg)
+	if err != nil {
+		t.Fatalf("NewDaemon failed: %v", err)
+	}
+	defer closeStorageForTest(t, d.storage)
+
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{name: "missing tool", body: `{"command":"install"}`, want: "tool is required"},
+		{name: "long command", body: `{"tool":"npm","command":"` + strings.Repeat("x", maxRecordedCommandLength+1) + `"}`, want: "command exceeds"},
+		{name: "negative duration", body: `{"tool":"npm","command":"install","duration_ms":-1}`, want: "duration_ms must be non-negative"},
+		{name: "empty package", body: `{"tool":"npm","command":"install","packages_affected":[""]}`, want: "packages_affected cannot contain empty values"},
+		{name: "multiple objects", body: `{"tool":"npm","command":"install"} {}`, want: "single JSON object"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/executions", strings.NewReader(test.body))
+			recorder := httptest.NewRecorder()
+
+			d.handleExecutions(recorder, req)
+
+			if recorder.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400", recorder.Code)
+			}
+			if !strings.Contains(recorder.Body.String(), test.want) {
+				t.Fatalf("body = %q, want %q", recorder.Body.String(), test.want)
+			}
+		})
+	}
+}
+
+func TestDaemonRejectsExecutionWhenQueueIsUnavailable(t *testing.T) {
+	cfg := testConfig(t)
+	d, err := NewDaemon(cfg)
+	if err != nil {
+		t.Fatalf("NewDaemon failed: %v", err)
+	}
+	defer closeStorageForTest(t, d.storage)
+	d.eventChan = make(chan *core.ExecutionRecord, 1)
+	d.eventChan <- &core.ExecutionRecord{Tool: core.ToolNPM, Command: "install"}
+	body := `{"tool":"npm","command":"install"}`
+
+	recorder := httptest.NewRecorder()
+	d.handleExecutions(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/executions", strings.NewReader(body)))
+	if recorder.Code != http.StatusServiceUnavailable || !strings.Contains(recorder.Body.String(), "queue full") {
+		t.Fatalf("full queue response = %d, %q", recorder.Code, recorder.Body.String())
+	}
+
+	d.cancel()
+	recorder = httptest.NewRecorder()
+	d.handleExecutions(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/executions", strings.NewReader(body)))
+	if recorder.Code != http.StatusServiceUnavailable || !strings.Contains(recorder.Body.String(), "stopping") {
+		t.Fatalf("stopped daemon response = %d, %q", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestDaemonPackagesAPI(t *testing.T) {
 	cfg := testConfig(t)
 
@@ -682,6 +797,30 @@ func TestDaemonHealthAPI(t *testing.T) {
 	})
 }
 
+func TestDaemonReadOnlyAPIsRejectWrites(t *testing.T) {
+	cfg := testConfig(t)
+	d, err := NewDaemon(cfg)
+	if err != nil {
+		t.Fatalf("NewDaemon failed: %v", err)
+	}
+	defer closeStorageForTest(t, d.storage)
+
+	tests := []struct {
+		path    string
+		handler http.HandlerFunc
+	}{
+		{path: "/api/v1/stats", handler: d.handleStats},
+		{path: "/api/v1/health", handler: d.handleHealth},
+	}
+	for _, test := range tests {
+		recorder := httptest.NewRecorder()
+		test.handler(recorder, httptest.NewRequest(http.MethodPost, test.path, nil))
+		if recorder.Code != http.StatusMethodNotAllowed {
+			t.Fatalf("%s status = %d, want 405", test.path, recorder.Code)
+		}
+	}
+}
+
 func TestDaemonSocketListener(t *testing.T) {
 	cfg := testConfig(t)
 
@@ -724,6 +863,50 @@ func TestDaemonSocketListener(t *testing.T) {
 	}
 }
 
+func TestDaemonSocketListenerReportsInvalidPaths(t *testing.T) {
+	t.Run("stale socket cannot be removed", func(t *testing.T) {
+		cfg := testConfig(t)
+		socketDir := filepath.Join(t.TempDir(), "socket")
+		if err := os.Mkdir(socketDir, core.OwnerDirectoryMode); err != nil {
+			t.Fatalf("Mkdir failed: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(socketDir, "child"), nil, core.PrivateFileMode); err != nil {
+			t.Fatalf("WriteFile failed: %v", err)
+		}
+		cfg.Daemon.SocketPath = socketDir
+		d, err := NewDaemon(cfg)
+		if err != nil {
+			t.Fatalf("NewDaemon failed: %v", err)
+		}
+		defer closeStorageForTest(t, d.storage)
+		if err := d.startSocketListener(); err == nil || !strings.Contains(err.Error(), "remove stale socket") {
+			t.Fatalf("startSocketListener error = %v", err)
+		}
+	})
+
+	t.Run("socket directory cannot be created", func(t *testing.T) {
+		cfg := testConfig(t)
+		blocked := filepath.Join(t.TempDir(), "blocked")
+		if err := os.Mkdir(blocked, 0o500); err != nil {
+			t.Fatalf("Mkdir failed: %v", err)
+		}
+		defer func() {
+			if err := os.Chmod(blocked, core.OwnerDirectoryMode); err != nil {
+				t.Fatalf("Chmod failed: %v", err)
+			}
+		}()
+		cfg.Daemon.SocketPath = filepath.Join(blocked, "nested", "diu.sock")
+		d, err := NewDaemon(cfg)
+		if err != nil {
+			t.Fatalf("NewDaemon failed: %v", err)
+		}
+		defer closeStorageForTest(t, d.storage)
+		if err := d.startSocketListener(); err == nil || !strings.Contains(err.Error(), "create socket directory") {
+			t.Fatalf("startSocketListener error = %v", err)
+		}
+	})
+}
+
 func TestIsRunning(t *testing.T) {
 	cfg := testConfig(t)
 
@@ -758,6 +941,14 @@ func TestIsRunning(t *testing.T) {
 	removeFileForTest(t, cfg.Daemon.PIDFile)
 }
 
+func TestIsRunningRejectsDirectoryAsPIDFile(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Daemon.PIDFile = t.TempDir()
+	if IsRunning(cfg) {
+		t.Fatal("directory reported as a running daemon PID file")
+	}
+}
+
 func TestDaemonWithMonitors(t *testing.T) {
 	cfg := testConfig(t)
 	cfg.Monitoring.EnabledTools = []string{"homebrew", "npm", "go"}
@@ -770,6 +961,31 @@ func TestDaemonWithMonitors(t *testing.T) {
 	monitors := d.registry.GetAll()
 	if len(monitors) != 3 {
 		t.Errorf("Expected 3 monitors, got %d", len(monitors))
+	}
+}
+
+func TestDaemonRegistersEverySupportedMonitor(t *testing.T) {
+	setFakeCommandsInPath(t, "brew", "npm", "pnpm", "bun", "go", "pip3", "uv", "poetry")
+	cfg := testConfig(t)
+	cfg.Monitoring.EnabledTools = []string{
+		core.ToolHomebrew,
+		core.ToolNPM,
+		core.ToolPNPM,
+		core.ToolBun,
+		core.ToolGo,
+		core.ToolPip,
+		core.ToolUV,
+		core.ToolPoetry,
+	}
+
+	d, err := NewDaemon(cfg)
+	if err != nil {
+		t.Fatalf("NewDaemon failed: %v", err)
+	}
+	defer closeStorageForTest(t, d.storage)
+
+	if got := len(d.registry.GetAll()); got != len(cfg.Monitoring.EnabledTools) {
+		t.Fatalf("registered monitors = %d, want %d", got, len(cfg.Monitoring.EnabledTools))
 	}
 }
 
@@ -890,6 +1106,21 @@ func TestDaemonHTTPServerWithAPI(t *testing.T) {
 	}
 }
 
+func TestDaemonHTTPServerRejectsInvalidAddress(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.API.Host = "invalid host"
+	d, err := NewDaemon(cfg)
+	if err != nil {
+		t.Fatalf("NewDaemon failed: %v", err)
+	}
+	defer closeStorageForTest(t, d.storage)
+
+	err = d.startHTTPServer()
+	if err == nil || !strings.Contains(err.Error(), "failed to listen") {
+		t.Fatalf("startHTTPServer error = %v", err)
+	}
+}
+
 func TestHandleExecutionsWithLimit(t *testing.T) {
 	cfg := testConfig(t)
 
@@ -919,6 +1150,57 @@ func TestHandleExecutionsWithLimit(t *testing.T) {
 
 	if len(executions) != 5 {
 		t.Errorf("Expected 5 executions with limit, got %d", len(executions))
+	}
+}
+
+func TestDaemonExecutionsAPIReportsStorageFailure(t *testing.T) {
+	cfg := testConfig(t)
+	d, err := NewDaemon(cfg)
+	if err != nil {
+		t.Fatalf("NewDaemon failed: %v", err)
+	}
+	defer closeStorageForTest(t, d.storage)
+	mockStore := newMockStorage()
+	mockStore.getErr = errors.New("storage unavailable")
+	d.storage = mockStore
+
+	recorder := httptest.NewRecorder()
+	d.handleExecutions(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/executions", nil))
+
+	if recorder.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", recorder.Code)
+	}
+	if !strings.Contains(recorder.Body.String(), "storage unavailable") {
+		t.Fatalf("body = %q", recorder.Body.String())
+	}
+}
+
+func TestDaemonPackageAndStatsAPIsReportStorageFailures(t *testing.T) {
+	cfg := testConfig(t)
+	d, err := NewDaemon(cfg)
+	if err != nil {
+		t.Fatalf("NewDaemon failed: %v", err)
+	}
+	defer closeStorageForTest(t, d.storage)
+	mockStore := newMockStorage()
+	mockStore.packagesErr = errors.New("packages unavailable")
+	mockStore.statsErr = errors.New("stats unavailable")
+	d.storage = mockStore
+
+	tests := []struct {
+		path    string
+		handler http.HandlerFunc
+		want    string
+	}{
+		{path: "/api/v1/packages", handler: d.handlePackages, want: "packages unavailable"},
+		{path: "/api/v1/stats", handler: d.handleStats, want: "stats unavailable"},
+	}
+	for _, test := range tests {
+		recorder := httptest.NewRecorder()
+		test.handler(recorder, httptest.NewRequest(http.MethodGet, test.path, nil))
+		if recorder.Code != http.StatusInternalServerError || !strings.Contains(recorder.Body.String(), test.want) {
+			t.Fatalf("%s response = %d, %q", test.path, recorder.Code, recorder.Body.String())
+		}
 	}
 }
 

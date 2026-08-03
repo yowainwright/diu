@@ -1,6 +1,7 @@
 [tools]
-go = "1.26.4"
-goreleaser = "latest"
+go = "1.26.5"
+goreleaser = "2.12.0"
+svu = "3.4.1"
 
 [env]
 CGO_ENABLED = "0"
@@ -21,7 +22,7 @@ run = "go test -v -short ./..."
 
 [tasks.test-e2e]
 description = "Run E2E tests"
-run = "go test -tags=e2e -v ./e2e/..."
+run = "go test -tags=e2e -v ./tests/e2e/..."
 
 [tasks.test-coverage]
 description = "Run tests with coverage report"
@@ -114,6 +115,10 @@ description = "Show unused packages"
 run = "./diu packages --unused 6mo"
 
 # Release tasks
+[tasks.version]
+description = "Show the next semantic version from conventional commits"
+run = "svu next"
+
 [tasks.release-snapshot]
 description = "Create a release snapshot"
 run = "goreleaser release --snapshot --clean"
@@ -132,29 +137,29 @@ mise run release-snapshot
 """
 
 [tasks.release]
-description = "Create a new release"
-run = "goreleaser release --clean"
+description = "Validate and push the next release tag"
+run = "scripts/tag.sh"
 
 # Docker tasks
 [tasks.docker-build]
 description = "Build Docker image"
-run = "docker build -t diu:latest ."
+run = "docker build -f ops/docker/Dockerfile -t diu:latest ."
 
 [tasks.docker-up]
 description = "Start Docker services"
-run = "docker-compose up -d"
+run = "docker compose -f ops/docker/compose.yaml up -d"
 
 [tasks.docker-down]
 description = "Stop Docker services"
-run = "docker-compose down"
+run = "docker compose -f ops/docker/compose.yaml down"
 
 [tasks.docker-logs]
 description = "Show Docker logs"
-run = "docker-compose logs -f"
+run = "docker compose -f ops/docker/compose.yaml logs -f"
 
 [tasks.docker-e2e]
 description = "Run E2E tests in Docker"
-run = "docker-compose --profile e2e up --build --exit-code-from e2e-tests e2e-tests"
+run = "docker compose -f ops/docker/compose.yaml --profile e2e up --build --exit-code-from e2e-tests e2e-tests"
 
 # Setup tasks
 [tasks.setup]

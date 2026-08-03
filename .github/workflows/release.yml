@@ -10,16 +10,19 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  contents: write
-  packages: write
+  contents: read
 
 env:
   GOLANGCI_LINT_VERSION: 'v2.4.0'
+  GORELEASER_VERSION: 'v2.12.0'
+  GOVULNCHECK_VERSION: 'v1.6.0'
 
 jobs:
   release:
     name: Release
     runs-on: macos-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -28,12 +31,13 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.26.4'
+          go-version: '1.26.5'
 
-      - name: Install dependencies
+      - name: Install GoReleaser
         run: |
-          brew install goreleaser
-          brew install mise
+          RELEASE_PACKAGE="github.com/goreleaser/goreleaser/v2@${GORELEASER_VERSION}"
+          go install "$RELEASE_PACKAGE"
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
       - name: Run vet
         run: go vet ./...
@@ -48,8 +52,8 @@ jobs:
 
       - name: Run govulncheck
         run: |
-          go install golang.org/x/vuln/cmd/govulncheck@latest
-          govulncheck ./...
+          VULN_PACKAGE="golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}"
+          go run "$VULN_PACKAGE" ./...
 
       - name: Build release targets
         run: |
@@ -96,6 +100,14 @@ jobs:
           brew install --build-from-source "$TEST_FORMULA"
           brew test "$TEST_FORMULA"
 
+      - name: Save Homebrew formula
+        uses: actions/upload-artifact@v4
+        with:
+          name: homebrew-formula
+          path: ${{ env.FORMULA_PATH }}
+          if-no-files-found: error
+          retention-days: 7
+
       - name: Check out Homebrew tap
         uses: actions/checkout@v4
         with:
@@ -114,8 +126,32 @@ jobs:
         run: |
           goreleaser release --clean
 
+  homebrew:
+    name: Publish Homebrew formula
+    needs: release
+    runs-on: macos-latest
+    steps:
+      - name: Download Homebrew formula
+        uses: actions/download-artifact@v4
+        with:
+          name: homebrew-formula
+          path: ${{ runner.temp }}/homebrew-formula
+
+      - name: Check out Homebrew tap
+        uses: actions/checkout@v4
+        with:
+          repository: yowainwright/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
+          path: homebrew-tap
+
+      - name: Verify tap push access
+        run: |
+          cd homebrew-tap
+          git push --dry-run origin HEAD
+
       - name: Publish Homebrew formula
         env:
+          FORMULA_PATH: ${{ runner.temp }}/homebrew-formula/diu.rb
           TAG_NAME: ${{ github.ref_name }}
         run: |
           mkdir -p homebrew-tap/Formula

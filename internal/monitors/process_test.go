@@ -25,6 +25,16 @@ func TestProcessMonitor(t *testing.T) {
 	}
 }
 
+func TestNewProcessMonitorUsesUserHomeDir(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+
+	monitor := NewProcessMonitor("test", "test")
+	if monitor.homeDir != homeDir {
+		t.Fatalf("homeDir = %q, want %q", monitor.homeDir, homeDir)
+	}
+}
+
 func TestProcessMonitorInitialize(t *testing.T) {
 	tmpDir := t.TempDir()
 
@@ -120,6 +130,9 @@ func TestProcessMonitorGenerateWrapperScript(t *testing.T) {
 
 	if !strings.Contains(script, shebangText) {
 		t.Error("Script should start with shebang")
+	}
+	if !strings.Contains(script, core.GeneratedWrapperMarker) {
+		t.Error("Script should include the DIU marker")
 	}
 
 	if !strings.Contains(script, "nc") {
@@ -610,7 +623,7 @@ func TestProcessMonitorUpdateShellConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to read shell config: %v", err)
 	}
-	exportLine := posixPathLine(config.Monitoring.Process.WrapperDir)
+	exportLine := core.PosixPathLine(config.Monitoring.Process.WrapperDir)
 	if strings.Count(string(content), exportLine) != 1 {
 		t.Fatalf("shell config content = %q, want one export line", content)
 	}
@@ -619,12 +632,26 @@ func TestProcessMonitorUpdateShellConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to read fish config: %v", err)
 	}
-	fishLine := fishPathLine(config.Monitoring.Process.WrapperDir)
+	fishLine := core.FishPathLine(config.Monitoring.Process.WrapperDir)
 	if strings.Count(string(fishContent), fishLine) != 1 {
 		t.Fatalf("fish config content = %q, want one fish path line", fishContent)
 	}
 	if strings.Contains(string(fishContent), "export PATH=") {
 		t.Fatalf("fish config content = %q, should not use POSIX export", fishContent)
+	}
+}
+
+func TestProcessMonitorUpdateShellConfigReturnsReadError(t *testing.T) {
+	homeDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(homeDir, ".zshrc"), core.OwnerDirectoryMode); err != nil {
+		t.Fatalf("Failed to create invalid shell config: %v", err)
+	}
+	monitor := NewProcessMonitor("testtool", "testtool")
+	monitor.config = core.DefaultConfig()
+	monitor.homeDir = homeDir
+
+	if err := monitor.updateShellConfig(); err == nil {
+		t.Fatal("Expected shell config read error")
 	}
 }
 

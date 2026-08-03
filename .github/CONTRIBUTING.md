@@ -16,7 +16,7 @@ Requirements:
 
 - macOS 10.15 or later for the primary supported environment.
 - Go 1.25 or later.
-- mise, Docker, GoReleaser, golangci-lint, and gosec are optional development or release tools.
+- mise, Docker, GoReleaser, svu, golangci-lint, and gosec are optional development or release tools.
 
 Common commands:
 

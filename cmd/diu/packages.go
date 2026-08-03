@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/csv"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"sort"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/yowainwright/diu/internal/core"
+	"github.com/yowainwright/diu/internal/dx"
 	"github.com/yowainwright/diu/internal/storage"
 )
 
@@ -45,7 +47,8 @@ func listPackages(cmd *command, args []string) error {
 	}
 
 	if len(packages) == 0 {
-		fmt.Println(infoStyle.Render("No packages tracked"))
+		out := cliOutput()
+		out.Println(out.DataStyle(dx.Info, "No packages tracked"))
 		return nil
 	}
 	sort.Slice(packages, func(i, j int) bool {
@@ -72,33 +75,33 @@ func listPackages(cmd *command, args []string) error {
 		packages = filtered
 
 		if len(packages) == 0 {
-			fmt.Println(successStyle.Render("No unused packages found"))
+			out := cliOutput()
+			out.Println(out.DataStyle(dx.Success, "No unused packages found"))
 			return nil
 		}
 	}
 
-	fmt.Println(titleStyle.Render("Tracked Packages"))
-	fmt.Println()
+	out := cliOutput()
+	out.Println(out.DataStyle(dx.Accent, "Tracked Packages"))
+	out.Println()
 
 	currentTool := ""
 	for _, pkg := range packages {
 		if pkg.Tool != currentTool {
 			currentTool = pkg.Tool
-			toolColor := getToolColor(pkg.Tool)
-			toolStyle := newStyle().Bold(true).Foreground(toolColor)
-			fmt.Println()
-			fmt.Println(toolStyle.Render(pkg.Tool))
+			out.Println()
+			out.Println(out.DataStyle(dx.Accent, pkg.Tool))
 		}
 
-		fmt.Printf("  %s", pkg.Name)
+		out.Printf("  %s", pkg.Name)
 		if pkg.Version != "" {
-			fmt.Printf(" (%s)", pkg.Version)
+			out.Printf(" (%s)", pkg.Version)
 		}
 		lastUsed := "never"
 		if !pkg.LastUsed.IsZero() {
 			lastUsed = pkg.LastUsed.Format("2006-01-02")
 		}
-		fmt.Printf(" - used %d times, last: %s\n",
+		out.Printf(" - used %d times, last: %s\n",
 			pkg.UsageCount,
 			lastUsed,
 		)
@@ -234,13 +237,14 @@ func filterPackages(packages []*core.PackageInfo, opts packageListOptions) ([]*c
 
 // printPackageList prints a list of packages in the specified format
 func printPackageList(packages []*core.PackageInfo, format string) error {
+	out := cliOutput()
 	switch format {
 	case formatJSON:
-		enc := json.NewEncoder(os.Stdout)
+		enc := json.NewEncoder(out.Stdout())
 		enc.SetIndent("", "  ")
 		return enc.Encode(packages)
 	case formatCSV:
-		writer := csv.NewWriter(os.Stdout)
+		writer := csv.NewWriter(out.Stdout())
 		if err := writer.Write([]string{"tool", "name", "version", "usage_count", "last_used", "path"}); err != nil {
 			return err
 		}
@@ -260,7 +264,7 @@ func printPackageList(packages []*core.PackageInfo, format string) error {
 		return writer.Error()
 	default:
 		if len(packages) == 0 {
-			fmt.Println(infoStyle.Render("No packages found"))
+			out.Println(out.DataStyle(dx.Info, "No packages found"))
 			return nil
 		}
 		printPackageRows(packages, 0)
@@ -274,7 +278,9 @@ func runPackageBrowser(allowUninstall bool) error {
 	if err != nil {
 		return err
 	}
-	reader := bufio.NewReader(os.Stdin)
+	out := cliOutput()
+	reader := bufio.NewReader(out.Stdin())
+	prompt := dx.NewPrompter(reader, out.Stderr())
 	search := ""
 	offset := 0
 
@@ -289,7 +295,7 @@ func runPackageBrowser(allowUninstall bool) error {
 		}
 
 		printBrowserScreen(filtered, offset, search, allowUninstall)
-		input, err := readPrompt(reader, "diu> ")
+		input, err := prompt.Input("Action")
 		if err != nil {
 			return err
 		}
@@ -307,7 +313,7 @@ func runPackageBrowser(allowUninstall bool) error {
 				offset = 0
 			}
 		case actionSearch:
-			search, err = readPrompt(reader, "search> ")
+			search, err = prompt.Input("Search")
 			if err != nil {
 				return err
 			}
@@ -316,17 +322,17 @@ func runPackageBrowser(allowUninstall bool) error {
 			if !allowUninstall {
 				continue
 			}
-			selection, err := readPrompt(reader, "number> ")
+			selection, err := prompt.Input("Package number")
 			if err != nil {
 				return err
 			}
 			pkg, err := packageBySelection(filtered, offset, selection)
 			if err != nil {
-				fmt.Println(errorStyle.Render(err.Error()))
+				cliOutput().Status(dx.Error, err.Error())
 				continue
 			}
 			if err := confirmAndUninstall(reader, pkg); err != nil {
-				fmt.Println(errorStyle.Render(err.Error()))
+				cliOutput().Status(dx.Error, err.Error())
 				continue
 			}
 			packages, err = loadFilteredPackages(packageListOptions{})
@@ -336,7 +342,7 @@ func runPackageBrowser(allowUninstall bool) error {
 		default:
 			pkg, err := packageBySelection(filtered, offset, input)
 			if err != nil {
-				fmt.Println(errorStyle.Render(err.Error()))
+				cliOutput().Status(dx.Error, err.Error())
 				continue
 			}
 			printPackageDetail(pkg)
@@ -346,56 +352,69 @@ func runPackageBrowser(allowUninstall bool) error {
 
 // printBrowserScreen prints the browser screen
 func printBrowserScreen(packages []*core.PackageInfo, offset int, search string, allowUninstall bool) {
-	fmt.Println()
-	fmt.Println(titleStyle.Render("DIU Packages"))
+	out := cliOutput()
+	out.UILine()
+	out.UILine(out.UIStyle(dx.Accent, "DIU Packages"))
 	if search != "" {
-		fmt.Printf("%s %s\n", subtitleStyle.Render("Search:"), search)
+		out.UIPrintf("%s %s\n", out.UIStyle(dx.Muted, "Search:"), search)
 	}
 	if len(packages) == 0 {
-		fmt.Println(infoStyle.Render("No packages found"))
+		out.UILine(out.UIStyle(dx.Info, "No packages found"))
 	} else {
 		end := offset + defaultPageSize
 		if end > len(packages) {
 			end = len(packages)
 		}
-		printPackageRows(packages[offset:end], offset)
+		for _, row := range packageRows(packages[offset:end], offset) {
+			out.UILine(row)
+		}
 	}
 	actions := "[number] details  / search  n next  p previous  q quit"
 	if allowUninstall {
 		actions = "[number] details  u uninstall  / search  n next  p previous  q quit"
 	}
-	fmt.Println(subtitleStyle.Render(actions))
+	out.UILine(out.UIStyle(dx.Muted, actions))
 }
 
 // printPackageRows prints package rows with numbering
 func printPackageRows(packages []*core.PackageInfo, offset int) {
+	out := cliOutput()
+	for _, row := range packageRows(packages, offset) {
+		out.Println(row)
+	}
+}
+
+func packageRows(packages []*core.PackageInfo, offset int) []string {
+	rows := make([]string, 0, len(packages))
+	lastSelection := strconv.Itoa(offset + len(packages))
+	indexWidth := max(packageIndexColumnWidth, len(lastSelection))
+	widths := []int{indexWidth, packageToolColumnWidth, packageNameColumnWidth, 9, 10}
 	for index, pkg := range packages {
-		fmt.Printf("%*d  %-*s %-*s used %-*d last %s\n",
-			packageIndexColumnWidth,
-			offset+index+1,
-			packageToolColumnWidth,
+		row := dx.Row(widths,
+			strconv.Itoa(offset+index+1),
 			pkg.Tool,
-			packageNameColumnWidth,
-			truncate(pkg.Name, packageNameColumnWidth),
-			packageUsageColumnWidth,
-			pkg.UsageCount,
+			pkg.Name,
+			fmt.Sprintf("%d uses", pkg.UsageCount),
 			formatLastUsed(pkg.LastUsed),
 		)
+		rows = append(rows, row)
 	}
+	return rows
 }
 
 // printPackageDetail prints detailed information about a package
 func printPackageDetail(pkg *core.PackageInfo) {
-	fmt.Println()
-	fmt.Println(titleStyle.Render(pkg.Name))
-	fmt.Printf("%s %s\n", subtitleStyle.Render("Tool:"), pkg.Tool)
-	fmt.Printf("%s %d\n", subtitleStyle.Render("Used:"), pkg.UsageCount)
-	fmt.Printf("%s %s\n", subtitleStyle.Render("Last:"), formatLastUsed(pkg.LastUsed))
+	out := cliOutput()
+	out.UILine()
+	out.UILine(out.UIStyle(dx.Accent, pkg.Name))
+	out.UIPrintf("%s %s\n", out.UIStyle(dx.Muted, "Tool:"), pkg.Tool)
+	out.UIPrintf("%s %d\n", out.UIStyle(dx.Muted, "Used:"), pkg.UsageCount)
+	out.UIPrintf("%s %s\n", out.UIStyle(dx.Muted, "Last:"), formatLastUsed(pkg.LastUsed))
 	if pkg.Version != "" {
-		fmt.Printf("%s %s\n", subtitleStyle.Render("Version:"), pkg.Version)
+		out.UIPrintf("%s %s\n", out.UIStyle(dx.Muted, "Version:"), pkg.Version)
 	}
 	if pkg.Path != "" {
-		fmt.Printf("%s %s\n", subtitleStyle.Render("Path:"), pkg.Path)
+		out.UIPrintf("%s %s\n", out.UIStyle(dx.Muted, "Path:"), pkg.Path)
 	}
 }
 
@@ -417,13 +436,13 @@ func confirmAndUninstall(reader *bufio.Reader, pkg *core.PackageInfo) error {
 	if !supportsUninstall(pkg) {
 		return fmt.Errorf("uninstall is not supported for %s packages", pkg.Tool)
 	}
-	fmt.Printf("Type %s to uninstall %s: ", pkg.Name, pkg.Name)
-	confirmation, err := reader.ReadString('\n')
-	if err != nil {
-		return err
-	}
-	if strings.TrimSpace(confirmation) != pkg.Name {
-		return fmt.Errorf("uninstall cancelled")
+	prompt := dx.NewPrompter(reader, cliOutput().Stderr())
+	message := fmt.Sprintf("Type %s to uninstall %s", pkg.Name, pkg.Name)
+	if err := prompt.Require(message, pkg.Name); err != nil {
+		if errors.Is(err, dx.ErrCancelled) {
+			return errors.New("uninstall cancelled")
+		}
+		return fmt.Errorf("failed to read uninstall confirmation: %w", err)
 	}
 	return uninstallPackage(pkg, false)
 }
@@ -456,7 +475,7 @@ func uninstallByName(name, tool string, assumeYes bool, dryRun bool) error {
 		if err != nil {
 			return err
 		}
-		fmt.Println(strings.Join(printableUninstallPlan(matches[0], plan), " "))
+		cliOutput().Println(strings.Join(printableUninstallPlan(matches[0], plan), " "))
 		return nil
 	}
 
@@ -489,7 +508,7 @@ func uninstallPackage(pkg *core.PackageInfo, assumeYes bool) error {
 		return err
 	}
 
-	fmt.Printf("%s\n", successStyle.Render(pkg.Name+" uninstalled"))
+	cliOutput().Status(dx.Success, pkg.Name+" uninstalled")
 	return nil
 }
 

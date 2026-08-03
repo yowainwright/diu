@@ -3,11 +3,11 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"os"
 	"strconv"
 	"strings"
 
 	"github.com/yowainwright/diu/internal/core"
+	"github.com/yowainwright/diu/internal/dx"
 )
 
 // getConfig gets a configuration value
@@ -22,27 +22,28 @@ func getConfig(cmd *command, args []string) error {
 	}
 
 	key := args[0]
+	out := cliOutput()
 	switch key {
 	case "storage.json_file":
-		fmt.Println(config.Storage.JSONFile)
+		out.Println(config.Storage.JSONFile)
 	case "storage.retention_days":
-		fmt.Println(config.Storage.RetentionDays)
+		out.Println(config.Storage.RetentionDays)
 	case "storage.max_executions":
-		fmt.Println(config.Storage.MaxExecutions)
+		out.Println(config.Storage.MaxExecutions)
 	case "storage.max_storage_bytes":
-		fmt.Println(config.Storage.MaxStorageBytes)
+		out.Println(config.Storage.MaxStorageBytes)
 	case "storage.max_backups":
-		fmt.Println(config.Storage.MaxBackups)
+		out.Println(config.Storage.MaxBackups)
 	case "daemon.pid_file":
-		fmt.Println(config.Daemon.PIDFile)
+		out.Println(config.Daemon.PIDFile)
 	case "daemon.socket_path":
-		fmt.Println(config.Daemon.SocketPath)
+		out.Println(config.Daemon.SocketPath)
 	case "api.enabled":
-		fmt.Println(config.API.Enabled)
+		out.Println(config.API.Enabled)
 	case "api.port":
-		fmt.Println(config.API.Port)
+		out.Println(config.API.Port)
 	case "monitoring.enabled_tools":
-		fmt.Println(strings.Join(config.Monitoring.EnabledTools, ", "))
+		out.Println(strings.Join(config.Monitoring.EnabledTools, ", "))
 	default:
 		return fmt.Errorf("unknown config key: %s", key)
 	}
@@ -129,7 +130,7 @@ func setConfig(cmd *command, args []string) error {
 		return fmt.Errorf("failed to save config: %w", err)
 	}
 
-	fmt.Println(successStyle.Render("Configuration updated"))
+	cliOutput().Status(dx.Success, "Configuration updated")
 	return nil
 }
 
@@ -140,7 +141,7 @@ func listConfig(cmd *command, args []string) error {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
 
-	enc := json.NewEncoder(os.Stdout)
+	enc := json.NewEncoder(cliOutput().Stdout())
 	enc.SetIndent("", "  ")
 	return enc.Encode(config)
 }

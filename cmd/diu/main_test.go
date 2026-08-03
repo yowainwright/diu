@@ -150,7 +150,7 @@ func TestPrintPackageListNumbersFromOne(t *testing.T) {
 	}
 
 	lines := strings.Split(strings.TrimRight(output, "\n"), "\n")
-	if len(lines) == 0 || !strings.HasPrefix(lines[0], "  1  ") {
+	if len(lines) == 0 || !strings.HasPrefix(lines[0], "1 ") {
 		t.Fatalf("first package row = %q, want numbering from 1", output)
 	}
 }
@@ -431,7 +431,7 @@ func TestPackageCommandsUseStorage(t *testing.T) {
 func TestConfigCommandsAndMaintenance(t *testing.T) {
 	config := setupTestHomeConfig(t)
 
-	setOutput := captureStdout(t, func() {
+	setOutput := captureStderr(t, func() {
 		if err := setConfig(&command{}, []string{"storage.retention_days", "30"}); err != nil {
 			t.Fatalf("setConfig failed: %v", err)
 		}
@@ -475,7 +475,7 @@ func TestConfigCommandsAndMaintenance(t *testing.T) {
 	})
 	closeTestStore(t, store)
 
-	backupOutput := captureStdout(t, func() {
+	backupOutput := captureStderr(t, func() {
 		if err := backup(&command{}, nil); err != nil {
 			t.Fatalf("backup failed: %v", err)
 		}
@@ -491,7 +491,7 @@ func TestConfigCommandsAndMaintenance(t *testing.T) {
 		t.Fatal("Expected backup file to be created")
 	}
 
-	cleanupOutput := captureStdout(t, func() {
+	cleanupOutput := captureStderr(t, func() {
 		if err := cleanup(&command{}, nil); err != nil {
 			t.Fatalf("cleanup failed: %v", err)
 		}
@@ -528,21 +528,24 @@ func TestPackageAndFormattingHelpers(t *testing.T) {
 		t.Fatal("Expected invalid selection to fail")
 	}
 
-	if got := truncate("abcdef", 4); got != "abc." {
-		t.Fatalf("truncate = %q, want abc.", got)
-	}
 	if got := formatLastUsed(time.Time{}); got != "never" {
 		t.Fatalf("formatLastUsed zero = %q, want never", got)
 	}
-	if getToolColor("brew") == "" {
-		t.Fatal("Expected brew tool color")
-	}
 
-	detailOutput := captureStdout(t, func() {
+	detailOutput := captureStderr(t, func() {
 		printPackageDetail(&core.PackageInfo{Name: "jq", Tool: core.ToolHomebrew, Version: "1.7", Path: "/tmp/jq"})
 	})
 	if !strings.Contains(detailOutput, "jq") || !strings.Contains(detailOutput, "Version:") {
 		t.Fatalf("Unexpected package detail output:\n%s", detailOutput)
+	}
+}
+
+func TestPackageRowsPreserveFourDigitSelections(t *testing.T) {
+	packages := []*core.PackageInfo{{Name: "package-1000", Tool: core.ToolNPM}}
+	rows := packageRows(packages, 999)
+
+	if len(rows) != 1 || !strings.HasPrefix(rows[0], "1000") {
+		t.Fatalf("packageRows() = %#v, want full selection number", rows)
 	}
 }
 
@@ -633,7 +636,7 @@ func TestShowStatsUsesStorage(t *testing.T) {
 func TestSetupProjectInitializesStorageWithoutWrappers(t *testing.T) {
 	config := setupTestHomeConfig(t)
 
-	output := captureStdout(t, func() {
+	output := captureStderr(t, func() {
 		if err := setupProject(&command{}, nil); err != nil {
 			t.Fatalf("setupProject failed: %v", err)
 		}
@@ -666,7 +669,7 @@ func TestScanPackagesDiscoversExecutableWrappers(t *testing.T) {
 		t.Fatalf("Failed to save config: %v", err)
 	}
 
-	output := captureStdout(t, func() {
+	output := captureStderr(t, func() {
 		if err := scanPackages(&command{}, nil); err != nil {
 			t.Fatalf("scanPackages failed: %v", err)
 		}
@@ -732,7 +735,7 @@ exit 2
 		t.Fatalf("Failed to save config: %v", err)
 	}
 
-	output := captureStdout(t, func() {
+	output := captureStderr(t, func() {
 		if err := scanPackages(&command{}, nil); err != nil {
 			t.Fatalf("scanPackages failed: %v", err)
 		}
@@ -801,6 +804,9 @@ func TestInstallExecutableWrappersWritesScripts(t *testing.T) {
 	}
 	if !strings.Contains(string(content), `DIU_BINARY="diu"`) {
 		t.Fatalf("Wrapper content should resolve diu by command name:\n%s", content)
+	}
+	if !strings.Contains(string(content), core.GeneratedWrapperMarker) {
+		t.Fatalf("Wrapper content should include the DIU marker:\n%s", content)
 	}
 	if bashPath, err := exec.LookPath("bash"); err == nil {
 		if output, err := exec.Command(bashPath, "-n", wrapperPath).CombinedOutput(); err != nil {
@@ -888,7 +894,7 @@ func TestUninstallGoBinaryRemovesExecutableWrapperAndState(t *testing.T) {
 	})
 	closeTestStore(t, store)
 
-	output := captureStdout(t, func() {
+	output := captureStderr(t, func() {
 		if err := uninstallPackage(&core.PackageInfo{Name: "mytool", Tool: core.ToolGo, Path: binaryPath}, true); err != nil {
 			t.Fatalf("uninstallPackage failed: %v", err)
 		}
@@ -922,21 +928,24 @@ func TestInteractiveAndUninstallHelpers(t *testing.T) {
 		t.Fatal("Expected wrapper name to prefer executable basename")
 	}
 
-	reader := bufio.NewReader(strings.NewReader("value\n"))
-	value, err := readPrompt(reader, "prompt> ")
-	if err != nil {
-		t.Fatalf("readPrompt failed: %v", err)
-	}
-	if value != "value" {
-		t.Fatalf("readPrompt = %q, want value", value)
-	}
-
 	cancelReader := bufio.NewReader(strings.NewReader("no\n"))
-	if err := confirmAndUninstall(cancelReader, pkg); err == nil || !strings.Contains(err.Error(), "cancelled") {
-		t.Fatalf("Expected cancellation error, got %v", err)
+	var cancelErr error
+	captureStderr(t, func() {
+		cancelErr = confirmAndUninstall(cancelReader, pkg)
+	})
+	if cancelErr == nil || !strings.Contains(cancelErr.Error(), "cancelled") {
+		t.Fatalf("Expected cancellation error, got %v", cancelErr)
 	}
 
-	browserOutput := captureStdout(t, func() {
+	var readErr error
+	captureStderr(t, func() {
+		readErr = confirmAndUninstall(bufio.NewReader(strings.NewReader("")), pkg)
+	})
+	if !errors.Is(readErr, io.EOF) {
+		t.Fatalf("Expected wrapped EOF, got %v", readErr)
+	}
+
+	browserOutput := captureStderr(t, func() {
 		printBrowserScreen([]*core.PackageInfo{pkg}, 0, "j", true)
 	})
 	if !strings.Contains(browserOutput, "DIU Packages") || !strings.Contains(browserOutput, "u uninstall") {
@@ -966,6 +975,35 @@ func captureStdout(t *testing.T, fn func()) string {
 	data, err := io.ReadAll(reader)
 	if err != nil {
 		t.Fatalf("Failed to read stdout: %v", err)
+	}
+	if err := reader.Close(); err != nil {
+		t.Fatalf("Failed to close reader: %v", err)
+	}
+	return string(data)
+}
+
+func captureStderr(t *testing.T, fn func()) string {
+	t.Helper()
+
+	oldStderr := os.Stderr
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("Failed to create pipe: %v", err)
+	}
+
+	os.Stderr = writer
+	defer func() {
+		os.Stderr = oldStderr
+	}()
+
+	fn()
+
+	if err := writer.Close(); err != nil {
+		t.Fatalf("Failed to close writer: %v", err)
+	}
+	data, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatalf("Failed to read stderr: %v", err)
 	}
 	if err := reader.Close(); err != nil {
 		t.Fatalf("Failed to close reader: %v", err)
@@ -1149,7 +1187,7 @@ func writeExecutableForTest(t *testing.T, path string, content string) {
 
 func parseTestFlags(t *testing.T, cmd *command, args ...string) {
 	t.Helper()
-	remaining, err := cmd.Flags().parse(args)
+	remaining, err := cmd.Flags().Parse(args)
 	if err != nil {
 		t.Fatalf("Failed to parse test flags %v: %v", args, err)
 	}
@@ -1374,26 +1412,33 @@ func TestNewMonitorSupportsConfiguredTools(t *testing.T) {
 	}
 }
 
-func TestRunPreparedCommandSuccess(t *testing.T) {
-	if err := runPreparedCommand(exec.Command("true")); err != nil {
-		t.Fatalf("expected nil, got %v", err)
-	}
-}
-
-func TestRunPreparedCommandFailure(t *testing.T) {
-	err := runPreparedCommand(exec.Command("false"))
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-	if !strings.Contains(err.Error(), "uninstall failed") {
-		t.Fatalf("expected wrapped error, got %q", err.Error())
-	}
-}
-
 func TestRunHomebrewUninstallInvalidName(t *testing.T) {
 	err := runHomebrewUninstall("../evil", false)
 	if err == nil {
 		t.Fatal("expected validation error, got nil")
+	}
+}
+
+func TestCommandOutputErrorOmitsEmptyPrefix(t *testing.T) {
+	err := commandOutputError("", errors.New("failed"))
+	if err.Error() != "failed" {
+		t.Fatalf("commandOutputError = %q, want failed", err)
+	}
+}
+
+func TestRunCommandKeepsActionOutputOffStdout(t *testing.T) {
+	var runErr error
+	var stderr string
+	stdout := captureStdout(t, func() {
+		stderr = captureStderr(t, func() {
+			runErr = runCommand("printf", "%s", "manager output")
+		})
+	})
+	if runErr != nil {
+		t.Fatalf("runCommand failed: %v", runErr)
+	}
+	if stdout != "" || stderr != "manager output" {
+		t.Fatalf("streams = stdout %q, stderr %q", stdout, stderr)
 	}
 }
 

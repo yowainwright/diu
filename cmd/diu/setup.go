@@ -4,11 +4,17 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/user"
 	"path/filepath"
 	"sort"
+	"strconv"
+	"strings"
+	"syscall"
 	"time"
 
 	"github.com/yowainwright/diu/internal/core"
+	"github.com/yowainwright/diu/internal/dx"
+	"github.com/yowainwright/diu/internal/safefs"
 	"github.com/yowainwright/diu/internal/storage"
 )
 
@@ -20,8 +26,16 @@ type executableWrapper struct {
 	Package      string
 }
 
+type uninstallPaths struct {
+	homeDirs        []string
+	wrapperDir      string
+	shellWrapperDir string
+}
+
 // setupProject initializes DIU storage and wrappers
 func setupProject(cmd *command, args []string) error {
+	activity := cliOutput().StartActivity("Setting up DIU")
+	defer activity.Stop()
 	config, err := core.LoadConfig("")
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)
@@ -42,19 +56,343 @@ func setupProject(cmd *command, args []string) error {
 		return fmt.Errorf("failed to close storage: %w", err)
 	}
 
-	if err := installWrappers(config); err != nil {
+	warn := func(message string) { activity.Notice(dx.Warning, message) }
+	if err := installWrappers(config, warn); err != nil {
 		return err
 	}
 	if err := installExecutableWrappers(config); err != nil {
 		return err
 	}
 
-	fmt.Println(successStyle.Render("DIU setup completed"))
+	activity.Success("DIU setup completed")
 	return nil
+}
+
+func uninstallProject(cmd *command, args []string) error {
+	activity := cliOutput().StartActivity("Removing DIU setup")
+	defer activity.Stop()
+	paths, err := loadUninstallPaths()
+	if err != nil {
+		return err
+	}
+	if err := removeGeneratedWrappers(paths.wrapperDir); err != nil {
+		return err
+	}
+	if err := removeShellPathEntriesFromHomes(paths.homeDirs, paths.shellWrapperDir); err != nil {
+		return err
+	}
+	activity.Success("DIU setup removed; configuration and usage data preserved")
+	return nil
+}
+
+func loadUninstallPaths() (uninstallPaths, error) {
+	config, err := core.LoadConfig("")
+	if err != nil {
+		return uninstallPaths{}, fmt.Errorf("failed to load config: %w", err)
+	}
+	homeDirs, err := currentShellHomeDirs()
+	if err != nil {
+		return uninstallPaths{}, fmt.Errorf("failed to find home directory: %w", err)
+	}
+	shellWrapperDir := config.Monitoring.Process.WrapperDir
+	wrapperDir, err := validateWrapperDir(shellWrapperDir, homeDirs)
+	if err != nil {
+		return uninstallPaths{}, err
+	}
+	return uninstallPaths{homeDirs: homeDirs, wrapperDir: wrapperDir, shellWrapperDir: shellWrapperDir}, nil
+}
+
+func currentShellHomeDirs() ([]string, error) {
+	activeHome, err := os.UserHomeDir()
+	if err != nil {
+		return nil, err
+	}
+	legacyHome := ""
+	if currentUser, userErr := user.Current(); userErr == nil {
+		legacyHome = currentUser.HomeDir
+	}
+	return shellHomeDirs(activeHome, legacyHome), nil
+}
+
+func shellHomeDirs(activeHome, legacyHome string) []string {
+	activeHome = filepath.Clean(activeHome)
+	homeDirs := []string{activeHome}
+	if strings.TrimSpace(legacyHome) == "" {
+		return homeDirs
+	}
+	legacyHome = filepath.Clean(legacyHome)
+	if legacyHome != activeHome {
+		homeDirs = append(homeDirs, legacyHome)
+	}
+	return homeDirs
+}
+
+func validateWrapperDir(wrapperDir string, homeDirs []string) (string, error) {
+	resolvedWrapper, err := resolveWrapperDir(wrapperDir)
+	if err != nil {
+		return "", err
+	}
+	withinHome, err := pathWithinAny(homeDirs, resolvedWrapper)
+	if err != nil {
+		return "", err
+	}
+	if !withinHome {
+		if err := validateOwnedWrapperDir(resolvedWrapper); err != nil {
+			return "", err
+		}
+	}
+	return resolvedWrapper, nil
+}
+
+func resolveWrapperDir(wrapperDir string) (string, error) {
+	if !filepath.IsAbs(wrapperDir) {
+		return "", fmt.Errorf("wrapper directory must be absolute: %s", wrapperDir)
+	}
+	resolvedWrapper, err := resolvePath(wrapperDir)
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve wrapper directory: %w", err)
+	}
+	if filepath.Dir(resolvedWrapper) == resolvedWrapper {
+		return "", fmt.Errorf("wrapper directory cannot be a filesystem root")
+	}
+	return resolvedWrapper, nil
+}
+
+func pathWithinAny(parents []string, child string) (bool, error) {
+	for _, parent := range parents {
+		resolvedParent, err := resolvePath(parent)
+		if err != nil {
+			return false, fmt.Errorf("failed to resolve home directory: %w", err)
+		}
+		within, err := pathWithin(resolvedParent, child)
+		if err != nil {
+			return false, err
+		}
+		if within {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func validateOwnedWrapperDir(path string) error {
+	info, err := safefs.Stat(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("failed to inspect wrapper directory: %w", err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("wrapper directory is not a directory: %s", path)
+	}
+	return validateWrapperDirOwner(path, info)
+}
+
+func validateWrapperDirOwner(path string, info os.FileInfo) error {
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return fmt.Errorf("failed to inspect wrapper directory owner: %s", path)
+	}
+	currentUser, err := user.Current()
+	if err != nil {
+		return fmt.Errorf("failed to find current user: %w", err)
+	}
+	ownerUID := strconv.FormatUint(uint64(stat.Uid), 10)
+	if ownerUID != currentUser.Uid {
+		return fmt.Errorf("wrapper directory is not owned by the current user: %s", path)
+	}
+	return nil
+}
+
+func pathWithin(parent, child string) (bool, error) {
+	relative, err := filepath.Rel(parent, child)
+	if err != nil {
+		return false, fmt.Errorf("failed to compare paths: %w", err)
+	}
+	outside := relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator))
+	return !outside, nil
+}
+
+func resolvePath(path string) (string, error) {
+	if strings.TrimSpace(path) == "" {
+		return "", fmt.Errorf("path cannot be empty")
+	}
+	absolute, err := filepath.Abs(filepath.Clean(path))
+	if err != nil {
+		return "", err
+	}
+	resolved, err := filepath.EvalSymlinks(absolute)
+	if os.IsNotExist(err) {
+		parent, parentErr := resolvePath(filepath.Dir(absolute))
+		if parentErr != nil {
+			return "", parentErr
+		}
+		return filepath.Join(parent, filepath.Base(absolute)), nil
+	}
+	return resolved, err
+}
+
+func removeGeneratedWrappers(wrapperDir string) error {
+	entries, err := os.ReadDir(wrapperDir)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("failed to read wrapper directory: %w", err)
+	}
+	for _, entry := range entries {
+		if err := removeGeneratedWrapper(wrapperDir, entry); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func removeGeneratedWrapper(wrapperDir string, entry os.DirEntry) error {
+	if !entry.Type().IsRegular() {
+		return nil
+	}
+	path := filepath.Join(wrapperDir, entry.Name())
+	content, err := safefs.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("failed to read wrapper %s: %w", entry.Name(), err)
+	}
+	if !isGeneratedWrapper(string(content)) {
+		return nil
+	}
+	if err := os.Remove(path); err != nil {
+		return fmt.Errorf("failed to remove wrapper %s: %w", entry.Name(), err)
+	}
+	return nil
+}
+
+func isGeneratedWrapper(content string) bool {
+	commonFields := []string{`DIU_BINARY="diu"`, "DIU_SOCKET=", "DIU_TOOL="}
+	if !strings.HasPrefix(content, "#!/bin/bash\n") || !containsAll(content, commonFields) {
+		return false
+	}
+	currentPrefix := "#!/bin/bash\n" + core.GeneratedWrapperMarker + "\n"
+	if strings.HasPrefix(content, currentPrefix) {
+		return hasWrapperOriginal(content)
+	}
+	return isLegacyWrapper(content)
+}
+
+func hasWrapperOriginal(content string) bool {
+	return strings.Contains(content, "ORIGINAL=") || strings.Contains(content, "ORIGINAL_BINARY=")
+}
+
+func isLegacyWrapper(content string) bool {
+	legacyFields := []string{
+		"json_escape() {",
+		`DIU_RECORD_BINARY="$(command -v "$DIU_BINARY" 2>/dev/null || true)"`,
+		`"$DIU_RECORD_BINARY" record`,
+		"exit $EXIT_CODE",
+	}
+	return hasWrapperOriginal(content) && containsAll(content, legacyFields)
+}
+
+func containsAll(content string, fields []string) bool {
+	for _, field := range fields {
+		if !strings.Contains(content, field) {
+			return false
+		}
+	}
+	return true
+}
+
+func removeShellPathEntriesFromHomes(homeDirs []string, wrapperDir string) error {
+	for _, homeDir := range homeDirs {
+		if err := removeShellPathEntries(homeDir, wrapperDir); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func removeShellPathEntries(homeDir, wrapperDir string) error {
+	entries := []struct {
+		path string
+		line string
+	}{
+		{filepath.Join(homeDir, ".bashrc"), core.PosixPathLine(wrapperDir)},
+		{filepath.Join(homeDir, ".zshrc"), core.PosixPathLine(wrapperDir)},
+		{filepath.Join(homeDir, ".config", "fish", "config.fish"), core.FishPathLine(wrapperDir)},
+	}
+	for _, entry := range entries {
+		if err := removeShellPathEntry(entry.path, entry.line); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func removeShellPathEntry(path, line string) error {
+	content, err := safefs.ReadFile(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("failed to read shell config %s: %w", path, err)
+	}
+	updated := removeShellPathBlock(string(content), line)
+	if updated == string(content) {
+		return nil
+	}
+	if err := writePrivateFile(path, []byte(updated)); err != nil {
+		return fmt.Errorf("failed to update shell config %s: %w", path, err)
+	}
+	return nil
+}
+
+func removeShellPathBlock(content, line string) string {
+	block := core.ShellPathMarker + "\n" + line + "\n"
+	for {
+		index := strings.Index(content, block)
+		if index < 0 {
+			return content
+		}
+		start := shellBlockStart(content, index)
+		end := index + len(block)
+		content = joinShellConfig(content[:start], content[end:])
+	}
+}
+
+func shellBlockStart(content string, index int) int {
+	if index > 0 && content[index-1] == '\n' {
+		return index - 1
+	}
+	return index
+}
+
+func joinShellConfig(prefix, suffix string) string {
+	needsNewline := prefix != "" && suffix != "" && !strings.HasSuffix(prefix, "\n") && !strings.HasPrefix(suffix, "\n")
+	if needsNewline {
+		return prefix + "\n" + suffix
+	}
+	return prefix + suffix
+}
+
+func writePrivateFile(path string, data []byte) (err error) {
+	file, err := safefs.OpenFile(path, os.O_WRONLY|os.O_TRUNC, core.PrivateFileMode)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if closeErr := file.Close(); err == nil && closeErr != nil {
+			err = closeErr
+		}
+	}()
+	_, err = file.Write(data)
+	return err
 }
 
 // scanPackages scans for installed packages
 func scanPackages(cmd *command, args []string) error {
+	out := cliOutput()
+	activity := out.StartActivity("Scanning installed packages")
+	defer activity.Stop()
 	config, err := core.LoadConfig("")
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)
@@ -64,25 +402,26 @@ func scanPackages(cmd *command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to open storage: %w", err)
 	}
-	defer closeStore(store)
+	defer closeStoreDuringActivity(store, activity)
 
 	scanConfig := *config
 	scanConfig.Monitoring.Process.AutoInstallWrappers = false
 
 	total := 0
 	for _, tool := range scanConfig.Monitoring.EnabledTools {
+		activity.Update("Scanning " + tool + " packages")
 		monitor, err := newMonitor(core.NormalizeToolName(tool))
 		if err != nil {
 			continue
 		}
 		if err := monitor.Initialize(&scanConfig); err != nil {
-			fmt.Printf("Warning: failed to initialize %s monitor: %v\n", tool, err)
+			activity.Notice(dx.Warning, fmt.Sprintf("failed to initialize %s monitor: %v", tool, err))
 			continue
 		}
 
 		packages, err := monitor.GetInstalledPackages()
 		if err != nil {
-			fmt.Printf("Warning: failed to scan %s packages: %v\n", tool, err)
+			activity.Notice(dx.Warning, fmt.Sprintf("failed to scan %s packages: %v", tool, err))
 			continue
 		}
 
@@ -126,12 +465,14 @@ func scanPackages(cmd *command, args []string) error {
 		total++
 	}
 
-	fmt.Printf("%s\n", successStyle.Render(fmt.Sprintf("%d packages scanned", total)))
+	activity.Success(fmt.Sprintf("%d packages scanned", total))
 	return nil
 }
 
 // cleanup cleans up old execution records
 func cleanup(cmd *command, args []string) error {
+	activity := cliOutput().StartActivity("Cleaning execution history")
+	defer activity.Stop()
 	config, err := core.LoadConfig("")
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)
@@ -141,18 +482,20 @@ func cleanup(cmd *command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to open storage: %w", err)
 	}
-	defer closeStore(store)
+	defer closeStoreDuringActivity(store, activity)
 
 	if err := store.Cleanup(time.Time{}); err != nil {
 		return fmt.Errorf("cleanup failed: %w", err)
 	}
 
-	fmt.Println(successStyle.Render("Cleanup completed"))
+	activity.Success("Cleanup completed")
 	return nil
 }
 
 // backup creates a manual backup
 func backup(cmd *command, args []string) error {
+	activity := cliOutput().StartActivity("Creating backup")
+	defer activity.Stop()
 	config, err := core.LoadConfig("")
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)
@@ -162,13 +505,13 @@ func backup(cmd *command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to open storage: %w", err)
 	}
-	defer closeStore(store)
+	defer closeStoreDuringActivity(store, activity)
 
 	if err := store.Backup(); err != nil {
 		return fmt.Errorf("backup failed: %w", err)
 	}
 
-	fmt.Println(successStyle.Render("Backup created"))
+	activity.Success("Backup created")
 	return nil
 }
 
@@ -180,7 +523,7 @@ func recordExecution(cmd *command, args []string) error {
 	}
 
 	var record core.ExecutionRecord
-	if err := json.NewDecoder(os.Stdin).Decode(&record); err != nil {
+	if err := json.NewDecoder(cliOutput().Stdin()).Decode(&record); err != nil {
 		return fmt.Errorf("failed to decode execution record: %w", err)
 	}
 
@@ -200,14 +543,17 @@ func recordExecution(cmd *command, args []string) error {
 }
 
 // installWrappers installs monitors for enabled tools
-func installWrappers(config *core.Config) error {
+func installWrappers(config *core.Config, warn func(string)) error {
+	if warn == nil {
+		warn = func(message string) { cliOutput().Status(dx.Warning, message) }
+	}
 	for _, tool := range config.Monitoring.EnabledTools {
 		monitor, err := newMonitor(core.NormalizeToolName(tool))
 		if err != nil {
 			continue
 		}
 		if err := monitor.Initialize(config); err != nil {
-			fmt.Printf("Warning: failed to install %s wrapper: %v\n", tool, err)
+			warn(fmt.Sprintf("failed to install %s wrapper: %v", tool, err))
 		}
 	}
 	return nil
@@ -334,6 +680,7 @@ func writeExecutableWrapper(config *core.Config, target executableWrapper) error
 	}
 
 	script := fmt.Sprintf(`#!/bin/bash
+%s
 DIU_SOCKET="%s"
 DIU_BINARY="%s"
 ORIGINAL_BINARY="%s"
@@ -406,7 +753,7 @@ EOF
 } &>/dev/null &
 
 exit $EXIT_CODE
-`, core.ShellEscapeString(config.Daemon.SocketPath), "diu", core.ShellEscapeString(target.OriginalPath), core.ShellEscapeString(target.Tool), core.ShellEscapeString(target.Package), core.ShellEscapeString(target.Name))
+`, core.GeneratedWrapperMarker, core.ShellEscapeString(config.Daemon.SocketPath), "diu", core.ShellEscapeString(target.OriginalPath), core.ShellEscapeString(target.Tool), core.ShellEscapeString(target.Package), core.ShellEscapeString(target.Name))
 
 	return writeOwnerExecutableFile(wrapperPath, []byte(script))
 }

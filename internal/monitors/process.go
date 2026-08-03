@@ -22,10 +22,15 @@ type ProcessMonitor struct {
 	homeDir      string
 }
 
+type shellPathEntry struct {
+	path string
+	line string
+}
+
 func NewProcessMonitor(name, binaryPath string) *ProcessMonitor {
 	homeDir := os.Getenv("HOME")
-	if usr, err := user.Current(); err == nil {
-		homeDir = usr.HomeDir
+	if dir, err := os.UserHomeDir(); err == nil {
+		homeDir = dir
 	}
 	return &ProcessMonitor{
 		BaseMonitor: NewBaseMonitor(name),
@@ -164,6 +169,7 @@ func (m *ProcessMonitor) generateWrapperScript() string {
 
 func generateProcessWrapperScript(originalPath, diuPath, socketPath, tool string) string {
 	return fmt.Sprintf(`#!/bin/bash
+%s
 ORIGINAL="%s"
 DIU_BINARY="%s"
 DIU_SOCKET="%s"
@@ -232,49 +238,52 @@ EOF
 } &>/dev/null &
 
 exit $EXIT_CODE
-`, core.ShellEscapeString(originalPath), core.ShellEscapeString(diuPath), core.ShellEscapeString(socketPath), core.ShellEscapeString(tool))
+`, core.GeneratedWrapperMarker, core.ShellEscapeString(originalPath), core.ShellEscapeString(diuPath), core.ShellEscapeString(socketPath), core.ShellEscapeString(tool))
 }
 
 func (m *ProcessMonitor) updateShellConfig() error {
 	wrapperDir := m.config.Monitoring.Process.WrapperDir
 	bashPath := filepath.Join(m.homeDir, ".bashrc")
 	zshPath := filepath.Join(m.homeDir, ".zshrc")
-	fishConfigDir := filepath.Join(m.homeDir, ".config", "fish")
-	fishPath := filepath.Join(fishConfigDir, "config.fish")
-	posixLine := posixPathLine(wrapperDir)
-	fishLine := fishPathLine(wrapperDir)
-
-	appendPathConfigIfPresent(bashPath, posixLine)
-	appendPathConfigIfPresent(zshPath, posixLine)
-	appendPathConfigIfPresent(fishPath, fishLine)
-
+	fishPath := filepath.Join(m.homeDir, ".config", "fish", "config.fish")
+	posixLine := core.PosixPathLine(wrapperDir)
+	fishLine := core.FishPathLine(wrapperDir)
+	entries := []shellPathEntry{{bashPath, posixLine}, {zshPath, posixLine}, {fishPath, fishLine}}
+	for _, entry := range entries {
+		if err := appendPathConfigIfPresent(entry.path, entry.line); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
-func posixPathLine(wrapperDir string) string {
-	quotedWrapperDir := core.ShellEscapeString(wrapperDir)
-	return fmt.Sprintf("export PATH=\"%s:$PATH\"", quotedWrapperDir)
+func appendPathConfigIfPresent(path, line string) error {
+	content, err := readShellConfigIfPresent(path)
+	if err != nil {
+		return err
+	}
+	if content == nil || strings.Contains(string(content), line) {
+		return nil
+	}
+	lineWithNewline := line + "\n"
+	if err := appendShellConfigLines(path, "\n"+core.ShellPathMarker+"\n", lineWithNewline); err != nil {
+		return fmt.Errorf("failed to update shell config %s: %w", path, err)
+	}
+	return nil
 }
 
-func fishPathLine(wrapperDir string) string {
-	quotedWrapperDir := core.ShellEscapeString(wrapperDir)
-	return fmt.Sprintf("if not contains \"%s\" $PATH\n    set -gx PATH \"%s\" $PATH\nend", quotedWrapperDir, quotedWrapperDir)
-}
-
-func appendPathConfigIfPresent(path, line string) {
+func readShellConfigIfPresent(path string) ([]byte, error) {
 	if _, err := safefs.Stat(path); err != nil {
-		return
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to inspect shell config %s: %w", path, err)
 	}
 	content, err := safefs.ReadFile(path)
 	if err != nil {
-		return
+		return nil, fmt.Errorf("failed to read shell config %s: %w", path, err)
 	}
-	contentText := string(content)
-	if strings.Contains(contentText, line) {
-		return
-	}
-	lineWithNewline := line + "\n"
-	_ = appendShellConfigLines(path, "\n# DIU path configuration\n", lineWithNewline)
+	return content, nil
 }
 
 func appendShellConfigLines(path string, lines ...string) (err error) {
