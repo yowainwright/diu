@@ -2,8 +2,10 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"os/user"
 	"path/filepath"
 	"sort"
@@ -553,6 +555,10 @@ func installWrappers(config *core.Config, warn func(string)) error {
 			continue
 		}
 		if err := monitor.Initialize(config); err != nil {
+			executableUnavailable := errors.Is(err, exec.ErrNotFound)
+			if executableUnavailable {
+				continue
+			}
 			warn(fmt.Sprintf("failed to install %s wrapper: %v", tool, err))
 		}
 	}

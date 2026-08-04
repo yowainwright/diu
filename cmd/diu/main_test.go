@@ -649,6 +649,25 @@ func TestSetupProjectInitializesStorageWithoutWrappers(t *testing.T) {
 	}
 }
 
+func TestSetupProjectSkipsUnavailableManagers(t *testing.T) {
+	config := setupTestHomeConfig(t)
+	t.Setenv("PATH", t.TempDir())
+	config.Monitoring.EnabledTools = []string{core.ToolPoetry}
+	config.Monitoring.Process.AutoInstallWrappers = true
+	if err := config.Save(); err != nil {
+		t.Fatalf("Failed to save config: %v", err)
+	}
+
+	output := captureStderr(t, func() {
+		if err := setupProject(&command{}, nil); err != nil {
+			t.Fatalf("setupProject failed: %v", err)
+		}
+	})
+	if strings.Contains(output, "failed to install poetry wrapper") {
+		t.Fatalf("Unavailable manager should be skipped without a warning: %q", output)
+	}
+}
+
 func TestScanPackagesDiscoversExecutableWrappers(t *testing.T) {
 	config := setupTestHomeConfig(t)
 	t.Setenv("PATH", t.TempDir())
