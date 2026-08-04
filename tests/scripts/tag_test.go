@@ -120,7 +120,7 @@ func runTagScript(
 
 	fakeBin := t.TempDir()
 	writeReleaseTools(t, fakeBin)
-	cmd := exec.Command("/bin/sh", filepath.Join(projectRoot(t), "scripts", "tag.sh"))
+	cmd := exec.Command("/bin/sh", filepath.Join(projectRoot(t), "ops", "scripts", "tag.sh"))
 	cmd.Dir = repo
 	cmd.Stdin = strings.NewReader(input)
 	cmd.Env = append(isolatedGitEnv(), releaseEnv(fakeBin, origin, logPath, extraEnv...)...)

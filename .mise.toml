@@ -138,7 +138,7 @@ mise run release-snapshot
 
 [tasks.release]
 description = "Validate and push the next release tag"
-run = "scripts/tag.sh"
+run = "ops/scripts/tag.sh"
 
 # Docker tasks
 [tasks.docker-build]
