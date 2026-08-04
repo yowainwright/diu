@@ -74,7 +74,7 @@ jobs:
           shasum -a 256 "$SOURCE_ARCHIVE" > "$SHA_FILE"
           read -r SOURCE_SHA256 _ < "$SHA_FILE"
 
-          scripts/render-homebrew-formula.sh "$VERSION" "$SOURCE_URL" "$SOURCE_SHA256" > "$FORMULA_PATH"
+          ops/scripts/render-homebrew-formula.sh "$VERSION" "$SOURCE_URL" "$SOURCE_SHA256" > "$FORMULA_PATH"
           ruby -c "$FORMULA_PATH"
 
           echo "FORMULA_PATH=$FORMULA_PATH" >> "$GITHUB_ENV"

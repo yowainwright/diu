@@ -198,7 +198,7 @@ jobs:
           shasum -a 256 "$SOURCE_ARCHIVE" > "$SHA_FILE"
           read -r SOURCE_SHA256 _ < "$SHA_FILE"
 
-          scripts/render-homebrew-formula.sh \
+          ops/scripts/render-homebrew-formula.sh \
             "0.0.0" \
             "file://$SOURCE_ARCHIVE" \
             "$SOURCE_SHA256" > "$FORMULA_PATH"

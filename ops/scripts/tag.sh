@@ -103,7 +103,7 @@ publish_tag() {
 }
 
 main() {
-  [ "$#" -eq 0 ] || die "usage: scripts/tag.sh"
+  [ "$#" -eq 0 ] || die "usage: ops/scripts/tag.sh"
   check_prerequisites
   check_release_context
   tag="$(next_tag)"

@@ -95,7 +95,7 @@ func (m *ProcessMonitor) findOriginalBinary() (string, error) {
 			}
 		}
 	}
-	return "", fmt.Errorf("original binary %q not found in PATH outside wrapper directory %s", filepath.Base(m.binaryPath), wrapperDir)
+	return "", fmt.Errorf("original binary %q not found in PATH outside wrapper directory %s: %w", filepath.Base(m.binaryPath), wrapperDir, exec.ErrNotFound)
 }
 
 func pathWithinDirectory(path, dir string) bool {
