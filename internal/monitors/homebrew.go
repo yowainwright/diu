@@ -232,7 +232,8 @@ func (m *HomebrewMonitor) GetInstalledPackages() ([]*core.PackageInfo, error) {
 }
 
 func (m *HomebrewMonitor) getFormulae() ([]*core.PackageInfo, error) {
-	packages, err := m.listPackages(homebrewFormulaArg, core.ToolHomebrew)
+	cmd := exec.Command(homebrewCommandName, homebrewListCmd, homebrewFormulaArg, homebrewVersions)
+	packages, err := m.listPackages(cmd, core.ToolHomebrew)
 	if err == nil {
 		return packages, nil
 	}
@@ -244,7 +245,8 @@ func (m *HomebrewMonitor) getFormulae() ([]*core.PackageInfo, error) {
 }
 
 func (m *HomebrewMonitor) getCasks() ([]*core.PackageInfo, error) {
-	packages, err := m.listPackages(homebrewCaskArg, homebrewCaskTool)
+	cmd := exec.Command(homebrewCommandName, homebrewListCmd, homebrewCaskArg, homebrewVersions)
+	packages, err := m.listPackages(cmd, homebrewCaskTool)
 	if err == nil {
 		return packages, nil
 	}
@@ -255,30 +257,15 @@ func (m *HomebrewMonitor) getCasks() ([]*core.PackageInfo, error) {
 	return installed.caskPackages(), nil
 }
 
-func (m *HomebrewMonitor) listPackages(kind, tool string) ([]*core.PackageInfo, error) {
+func (m *HomebrewMonitor) listPackages(cmd *exec.Cmd, tool string) ([]*core.PackageInfo, error) {
 	if _, err := exec.LookPath(homebrewCommandName); err != nil {
 		return nil, fmt.Errorf("brew not found: %w", err)
-	}
-	cmd, err := homebrewListCommand(kind)
-	if err != nil {
-		return nil, err
 	}
 	output, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("failed to list Homebrew packages: %w", err)
 	}
 	return parseHomebrewPackageList(output, tool)
-}
-
-func homebrewListCommand(kind string) (*exec.Cmd, error) {
-	switch kind {
-	case homebrewFormulaArg:
-		return exec.Command(homebrewCommandName, homebrewListCmd, homebrewFormulaArg, homebrewVersions), nil
-	case homebrewCaskArg:
-		return exec.Command(homebrewCommandName, homebrewListCmd, homebrewCaskArg, homebrewVersions), nil
-	default:
-		return nil, fmt.Errorf("unsupported Homebrew package kind: %s", kind)
-	}
 }
 
 func parseHomebrewPackageList(output []byte, tool string) ([]*core.PackageInfo, error) {
@@ -305,9 +292,8 @@ type homebrewInstalledInfo struct {
 }
 
 type homebrewFormula struct {
-	Name         string                 `json:"name"`
-	Dependencies []string               `json:"dependencies"`
-	Installed    []homebrewInstallation `json:"installed"`
+	Name      string                 `json:"name"`
+	Installed []homebrewInstallation `json:"installed"`
 }
 
 type homebrewInstallation struct {
@@ -350,11 +336,10 @@ func (i *homebrewInstalledInfo) formulaPackages() []*core.PackageInfo {
 			installDate = time.Unix(installed.Time, 0)
 		}
 		pkg := &core.PackageInfo{
-			Name:         formula.Name,
-			Version:      version,
-			Tool:         core.ToolHomebrew,
-			InstallDate:  installDate,
-			Dependencies: formula.Dependencies,
+			Name:        formula.Name,
+			Version:     version,
+			Tool:        core.ToolHomebrew,
+			InstallDate: installDate,
 		}
 		packages = append(packages, pkg)
 	}

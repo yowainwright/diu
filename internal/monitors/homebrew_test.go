@@ -261,12 +261,6 @@ func TestFormulaPackagesUseNewestInstalledVersion(t *testing.T) {
 	}
 }
 
-func TestHomebrewListCommandRejectsUnknownKind(t *testing.T) {
-	if _, err := homebrewListCommand("unknown"); err == nil {
-		t.Fatal("unknown Homebrew package kind was accepted")
-	}
-}
-
 func TestHomebrewInitialize(t *testing.T) {
 	config := core.DefaultConfig()
 	config.Monitoring.Process.AutoInstallWrappers = false
@@ -336,6 +330,9 @@ exit 2
 	}
 	if byName["jq"].Version != "1.7" || byName["jq"].Tool != core.ToolHomebrew {
 		t.Fatalf("Unexpected jq package: %#v", byName["jq"])
+	}
+	if len(byName["jq"].Dependencies) != 0 {
+		t.Fatalf("Unexpected jq dependencies: %#v", byName["jq"].Dependencies)
 	}
 	if byName["firefox"].Tool != homebrewCaskTool {
 		t.Fatalf("Unexpected firefox package: %#v", byName["firefox"])

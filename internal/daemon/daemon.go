@@ -58,6 +58,8 @@ var daemonProcessSignaler = func(pid int, signal os.Signal) error {
 
 var daemonSocketControlSender = sendSocketControl
 
+var ErrNotRunning = errors.New("daemon is not running")
+
 type Daemon struct {
 	config          *core.Config
 	storage         storage.Storage
@@ -940,7 +942,7 @@ func (d *Daemon) removeStalePIDFile() error {
 	}
 	pid, pidErr := readPID(d.config.Daemon.PIDFile)
 	if pidErr != nil {
-		return os.Remove(d.config.Daemon.PIDFile)
+		return removePIDFile(d.config.Daemon.PIDFile)
 	}
 	locked, lockErr := pidFileLocked(d.config.Daemon.PIDFile, pid)
 	if lockErr != nil {
@@ -949,7 +951,7 @@ func (d *Daemon) removeStalePIDFile() error {
 	if locked {
 		return fmt.Errorf("daemon PID file is still owned by a running process")
 	}
-	return os.Remove(d.config.Daemon.PIDFile)
+	return removeUnlockedPIDFile(d.config.Daemon.PIDFile, pid)
 }
 
 func (d *Daemon) handleSignals() {
@@ -1015,9 +1017,76 @@ func signalLockedDaemonProcess(config *core.Config, pid int) error {
 		return fmt.Errorf("failed to verify daemon PID file: %w", err)
 	}
 	if !locked {
-		return fmt.Errorf("refusing to signal unverified process %d", pid)
+		if err := removeUnlockedPIDFile(config.Daemon.PIDFile, pid); err != nil {
+			return fmt.Errorf("failed to remove stale PID file: %w", err)
+		}
+		return ErrNotRunning
 	}
 	return signalDaemonProcess(pid)
+}
+
+func removePIDFile(path string) error {
+	err := os.Remove(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	return err
+}
+
+func removeUnlockedPIDFile(path string, expectedPID int) (err error) {
+	file, err := safefs.OpenFile(path, os.O_RDONLY, 0)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	defer func() { err = errors.Join(err, file.Close()) }()
+	if err := verifyPIDFile(file, expectedPID); err != nil {
+		return err
+	}
+	if err := lockPIDFileForRemoval(file); err != nil {
+		return err
+	}
+	defer func() { err = errors.Join(err, syscall.Flock(int(file.Fd()), syscall.LOCK_UN)) }()
+	return removeMatchingPIDFile(path, file)
+}
+
+func verifyPIDFile(file *os.File, expectedPID int) error {
+	matches, err := pidFileContainsPID(file, expectedPID)
+	if err != nil {
+		return err
+	}
+	if !matches {
+		return fmt.Errorf("daemon PID file changed while verifying process %d", expectedPID)
+	}
+	return nil
+}
+
+func lockPIDFileForRemoval(file *os.File) error {
+	err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+	if errors.Is(err, syscall.EWOULDBLOCK) || errors.Is(err, syscall.EAGAIN) {
+		return fmt.Errorf("daemon PID file became locked")
+	}
+	return err
+}
+
+func removeMatchingPIDFile(path string, file *os.File) error {
+	openedInfo, err := file.Stat()
+	if err != nil {
+		return err
+	}
+	pathInfo, err := safefs.Lstat(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !os.SameFile(openedInfo, pathInfo) {
+		return fmt.Errorf("daemon PID file changed before removal")
+	}
+	return removePIDFile(path)
 }
 
 func pidFileLocked(path string, expectedPID int) (locked bool, err error) {
@@ -1048,7 +1117,7 @@ func pidFileContainsPID(file *os.File, expectedPID int) (bool, error) {
 }
 
 func tryPIDFileLock(file *os.File) (bool, error) {
-	lockErr := syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+	lockErr := syscall.Flock(int(file.Fd()), syscall.LOCK_SH|syscall.LOCK_NB)
 	if errors.Is(lockErr, syscall.EWOULDBLOCK) || errors.Is(lockErr, syscall.EAGAIN) {
 		return true, nil
 	}

@@ -1133,7 +1133,7 @@ func TestRequestStopSignalsProcessWhenSocketIsUnavailable(t *testing.T) {
 	}
 }
 
-func TestRequestStopRejectsUnlockedPIDFile(t *testing.T) {
+func TestRequestStopRemovesUnlockedPIDFile(t *testing.T) {
 	cfg := testConfig(t)
 	pid := 4242
 	if err := os.WriteFile(cfg.Daemon.PIDFile, []byte(strconv.Itoa(pid)), core.PrivateFileMode); err != nil {
@@ -1147,11 +1147,30 @@ func TestRequestStopRejectsUnlockedPIDFile(t *testing.T) {
 	}
 
 	err := RequestStop(cfg)
-	if err == nil || !strings.Contains(err.Error(), "unverified process") {
+	if !errors.Is(err, ErrNotRunning) {
 		t.Fatalf("RequestStop error = %v", err)
 	}
 	if signaled {
 		t.Fatal("unverified PID was signaled")
+	}
+	if _, err := os.Stat(cfg.Daemon.PIDFile); !os.IsNotExist(err) {
+		t.Fatalf("stale PID file still exists: %v", err)
+	}
+}
+
+func TestRemovePIDFileIgnoresMissingFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "missing.pid")
+	if err := removePIDFile(path); err != nil {
+		t.Fatalf("removePIDFile failed: %v", err)
+	}
+}
+
+func TestPIDFileLockAllowsSharedProbe(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "diu.pid")
+	openSharedLockedPIDFile(t, path, 4242)
+	locked, err := pidFileLocked(path, 4242)
+	if err != nil || locked {
+		t.Fatalf("shared PID lock = %v, %v", locked, err)
 	}
 }
 
@@ -1201,6 +1220,26 @@ func lockTestPIDFile(t *testing.T, path string, pid int) {
 	t.Cleanup(func() {
 		_ = syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
 		_ = file.Close()
+	})
+}
+
+func openSharedLockedPIDFile(t *testing.T, path string, pid int) {
+	t.Helper()
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|os.O_TRUNC, core.PrivateFileMode)
+	if err != nil {
+		t.Fatalf("OpenFile failed: %v", err)
+	}
+	if _, err := file.WriteString(strconv.Itoa(pid)); err != nil {
+		t.Fatalf("WriteString failed: %v", err)
+	}
+	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_SH|syscall.LOCK_NB); err != nil {
+		t.Fatalf("Flock failed: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
+		if err := file.Close(); err != nil {
+			t.Errorf("Close failed: %v", err)
+		}
 	})
 }
 

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -151,7 +152,10 @@ func stopDaemonWithConfig(config *core.Config) error {
 		return nil
 	}
 
-	if err := daemonStopRequester(config); err != nil {
+	if err := daemonStopRequester(config); errors.Is(err, daemon.ErrNotRunning) {
+		cliOutput().Status(dx.Info, "DIU daemon is not running")
+		return nil
+	} else if err != nil {
 		return fmt.Errorf("failed to stop daemon: %w", err)
 	}
 	out := cliOutput()

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/yowainwright/diu/internal/core"
+	"github.com/yowainwright/diu/internal/daemon"
 	"github.com/yowainwright/diu/internal/storage"
 )
 
@@ -1720,6 +1721,30 @@ func TestStopDaemonWithConfigSignalError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "failed to stop daemon") {
 		t.Fatalf("expected signal error, got %v", err)
+	}
+}
+
+func TestStopDaemonWithConfigRemovesStalePID(t *testing.T) {
+	config := setupTestHomeConfig(t)
+	restore := SetDaemonChecker(MockDaemonChecker{isRunning: false})
+	defer restore()
+	restoreStop := stubDaemonStopRequest(daemon.ErrNotRunning)
+	defer restoreStop()
+
+	if err := config.EnsureDirectories(); err != nil {
+		t.Fatalf("failed to ensure directories: %v", err)
+	}
+	if err := os.WriteFile(config.Daemon.PIDFile, []byte("4242"), core.PrivateFileMode); err != nil {
+		t.Fatalf("failed to write PID file: %v", err)
+	}
+
+	output := captureStderr(t, func() {
+		if err := stopDaemonWithConfig(config); err != nil {
+			t.Fatalf("stopDaemonWithConfig failed: %v", err)
+		}
+	})
+	if !strings.Contains(output, "DIU daemon is not running") {
+		t.Fatalf("unexpected output: %q", output)
 	}
 }
 
