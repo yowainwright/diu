@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -120,6 +121,36 @@ func TestDiagnosticsReportsMalformedConfig(t *testing.T) {
 	}
 	if len(report.Warnings) == 0 || !strings.HasPrefix(report.Warnings[0], "config: ") {
 		t.Fatalf("diagnostic warnings = %#v", report.Warnings)
+	}
+}
+
+func TestRemoveIncompleteDiagnosticOutput(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "diagnostics.json")
+	if err := os.WriteFile(path, nil, core.PrivateFileMode); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+	wantErr := errors.New("write failed")
+	err := removeIncompleteDiagnosticOutput(path, wantErr)
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("remove error = %v", err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("incomplete output still exists: %v", err)
+	}
+}
+
+func TestRemoveIncompleteDiagnosticOutputReportsCleanupFailure(t *testing.T) {
+	dir := t.TempDir()
+	child := filepath.Join(dir, "child")
+	if err := os.WriteFile(child, nil, core.PrivateFileMode); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+	wantErr := errors.New("write failed")
+	err := removeIncompleteDiagnosticOutput(dir, wantErr)
+	writeErrorPreserved := errors.Is(err, wantErr)
+	cleanupErrorReported := strings.Contains(err.Error(), "failed to remove incomplete diagnostic report")
+	if !writeErrorPreserved || !cleanupErrorReported {
+		t.Fatalf("remove error = %v", err)
 	}
 }
 

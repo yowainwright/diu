@@ -1133,6 +1133,25 @@ func TestRequestStopSignalsProcessWhenSocketIsUnavailable(t *testing.T) {
 	}
 }
 
+func TestDaemonIdentityError(t *testing.T) {
+	err := daemonIdentityError(41, 42)
+	want := "PID file has 41, socket reports 42"
+	if !strings.Contains(err.Error(), want) {
+		t.Fatalf("daemonIdentityError = %v", err)
+	}
+}
+
+func TestReadPID(t *testing.T) {
+	cfg := testConfig(t)
+	if err := os.WriteFile(cfg.Daemon.PIDFile, []byte("4242"), core.PrivateFileMode); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+	pid, err := ReadPID(cfg)
+	if err != nil || pid != 4242 {
+		t.Fatalf("ReadPID = %d, %v", pid, err)
+	}
+}
+
 func TestRequestStopRemovesUnlockedPIDFile(t *testing.T) {
 	cfg := testConfig(t)
 	pid := 4242
