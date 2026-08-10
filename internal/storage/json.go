@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
@@ -17,13 +18,17 @@ import (
 )
 
 type JSONStorage struct {
-	config   *core.Config
-	filepath string
-	data     *core.StorageData
-	mu       sync.RWMutex
+	config         *core.Config
+	filepath       string
+	data           *core.StorageData
+	marshalStorage func(*core.StorageData) ([]byte, error)
+	mu             sync.RWMutex
 }
 
-const maxBackupPathAttempts = 1000
+const (
+	maxBackupPathAttempts     = 1000
+	storagePruneHeadroomBytes = 256
+)
 
 func NewJSONStorage(config *core.Config) (Storage, error) {
 	storagePath, err := cleanManagedPath(config.Storage.JSONFile)
@@ -32,8 +37,9 @@ func NewJSONStorage(config *core.Config) (Storage, error) {
 	}
 
 	js := &JSONStorage{
-		config:   config,
-		filepath: storagePath,
+		config:         config,
+		filepath:       storagePath,
+		marshalStorage: marshalStorageData,
 	}
 	return js, js.Initialize(config)
 }
@@ -53,28 +59,34 @@ func (j *JSONStorage) Initialize(config *core.Config) error {
 		}
 		hostname, _ := os.Hostname()
 		user, _ := os.UserHomeDir()
+		now := time.Now()
+		userName := filepath.Base(user)
+		diuVersion := core.CurrentVersion()
+		packages := make(map[string]map[string]core.PackageInfo)
+		executionFrequency := make(map[string]int)
 		j.data = &core.StorageData{
 			Version: "1.0.0",
 			Metadata: core.StorageMetadata{
-				Created:     time.Now(),
-				LastUpdated: time.Now(),
+				Created:     now,
+				LastUpdated: now,
 				Hostname:    hostname,
-				User:        filepath.Base(user),
-				DIUVersion:  core.CurrentVersion(),
+				User:        userName,
+				DIUVersion:  diuVersion,
 			},
 			Executions: []core.ExecutionRecord{},
-			Packages:   make(map[string]map[string]core.PackageInfo),
+			Packages:   packages,
 			Statistics: core.StorageStatistics{
 				TotalExecutions:    0,
 				ToolsUsed:          []string{},
 				MostActiveDay:      "",
-				ExecutionFrequency: make(map[string]int),
+				ExecutionFrequency: executionFrequency,
 			},
 		}
 		return j.save()
 	}
 
-	return j.load()
+	_, err := inspectJSONFile(j.filepath)
+	return err
 }
 
 func (j *JSONStorage) Close() error {
@@ -98,10 +110,9 @@ func (j *JSONStorage) load() error {
 
 func (j *JSONStorage) save() error {
 	j.data.Metadata.LastUpdated = time.Now()
-
-	data, err := json.MarshalIndent(j.data, "", "  ")
+	data, err := j.dataForSave()
 	if err != nil {
-		return fmt.Errorf("failed to marshal storage data: %w", err)
+		return err
 	}
 
 	tempFile := j.filepath + ".tmp"
@@ -116,7 +127,52 @@ func (j *JSONStorage) save() error {
 	return nil
 }
 
+func (j *JSONStorage) dataForSave() ([]byte, error) {
+	data, err := j.marshalStorage(j.data)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal storage data: %w", err)
+	}
+	maxBytes := j.config.Storage.MaxStorageBytes
+	exceedsLimit := maxBytes > 0 && int64(len(data)) > maxBytes
+	if !exceedsLimit || len(j.data.Executions) == 0 {
+		return data, nil
+	}
+	return j.prunedDataForSave(int64(len(data)), maxBytes)
+}
+
+func (j *JSONStorage) prunedDataForSave(size, maxBytes int64) ([]byte, error) {
+	if err := j.pruneExecutionsToSize(size, maxBytes); err != nil {
+		return nil, err
+	}
+	j.rebuildStatistics()
+	data, err := j.marshalStorage(j.data)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal pruned storage data: %w", err)
+	}
+	if int64(len(data)) > maxBytes {
+		return nil, fmt.Errorf("storage metadata and package inventory exceed %d-byte limit", maxBytes)
+	}
+	return data, nil
+}
+
+func marshalStorageData(data *core.StorageData) ([]byte, error) {
+	return json.MarshalIndent(data, "", "  ")
+}
+
 func (j *JSONStorage) AddExecution(record *core.ExecutionRecord) error {
+	records := []*core.ExecutionRecord{record}
+	return j.AddExecutions(records)
+}
+
+func (j *JSONStorage) AddExecutions(records []*core.ExecutionRecord) error {
+	if len(records) == 0 {
+		return nil
+	}
+	for _, record := range records {
+		if record == nil {
+			return fmt.Errorf("execution record cannot be nil")
+		}
+	}
 	j.mu.Lock()
 	defer j.mu.Unlock()
 
@@ -125,101 +181,105 @@ func (j *JSONStorage) AddExecution(record *core.ExecutionRecord) error {
 			return err
 		}
 
-		if record.ID == "" {
-			record.ID = fmt.Sprintf("exec_%s_%s", time.Now().Format("20060102_150405"), generateID())
+		for _, record := range records {
+			j.addExecution(record)
 		}
 
-		storedRecord := copyExecutionValue(*record)
-		j.data.Executions = append(j.data.Executions, storedRecord)
-		j.data.Statistics.TotalExecutions++
-
-		if j.data.Statistics.ExecutionFrequency == nil {
-			j.data.Statistics.ExecutionFrequency = make(map[string]int)
-		}
-		if _, exists := j.data.Statistics.ExecutionFrequency[storedRecord.Tool]; !exists {
-			j.data.Statistics.ExecutionFrequency[storedRecord.Tool] = 0
-			j.data.Statistics.ToolsUsed = append(j.data.Statistics.ToolsUsed, storedRecord.Tool)
-		}
-		j.data.Statistics.ExecutionFrequency[storedRecord.Tool]++
-
-		for _, pkg := range storedRecord.PackagesAffected {
-			if err := j.updatePackageInternal(storedRecord.Tool, pkg, storedRecord.Timestamp); err != nil {
-				return err
-			}
-		}
-
-		if err := j.enforceRetentionPolicies(time.Time{}); err != nil {
+		emptyCutoff := time.Time{}
+		if err := j.enforceRetentionPolicies(emptyCutoff); err != nil {
 			return err
 		}
-
 		return j.save()
 	})
 }
 
-func (j *JSONStorage) GetExecutions(opts QueryOptions) ([]*core.ExecutionRecord, error) {
-	j.mu.RLock()
-	defer j.mu.RUnlock()
-
-	var results []*core.ExecutionRecord
-
-	for i := range j.data.Executions {
-		exec := &j.data.Executions[i]
-
-		if opts.Tool != "" && exec.Tool != opts.Tool {
-			continue
-		}
-
-		if opts.Package != "" {
-			found := false
-			for _, pkg := range exec.PackagesAffected {
-				if pkg == opts.Package {
-					found = true
-					break
-				}
-			}
-			if !found {
-				continue
-			}
-		}
-
-		if opts.Since != nil && exec.Timestamp.Before(*opts.Since) {
-			continue
-		}
-
-		if opts.Until != nil && exec.Timestamp.After(*opts.Until) {
-			continue
-		}
-
-		copy := copyExecutionValue(*exec)
-		results = append(results, &copy)
+func (j *JSONStorage) addExecution(record *core.ExecutionRecord) {
+	if record.ID == "" {
+		record.ID = fmt.Sprintf("exec_%s_%s", time.Now().Format("20060102_150405"), generateID())
 	}
 
-	sort.Slice(results, func(i, j int) bool {
-		return results[i].Timestamp.After(results[j].Timestamp)
-	})
-
-	if opts.Limit > 0 && len(results) > opts.Limit {
-		results = results[:opts.Limit]
+	storedRecord := copyExecutionValue(*record)
+	j.data.Executions = append(j.data.Executions, storedRecord)
+	j.updateExecutionStatistics(storedRecord.Tool)
+	if !j.shouldUpdateInventory(storedRecord) {
+		return
 	}
-
-	return results, nil
+	j.applyPackageEffects(storedRecord)
 }
 
-func (j *JSONStorage) GetExecutionByID(id string) (*core.ExecutionRecord, error) {
-	j.mu.RLock()
-	defer j.mu.RUnlock()
-
-	for i := range j.data.Executions {
-		if j.data.Executions[i].ID == id {
-			copy := copyExecutionValue(j.data.Executions[i])
-			return &copy, nil
+func (j *JSONStorage) applyPackageEffects(record core.ExecutionRecord) {
+	tool := packageToolForRecord(record)
+	if removesPackages(record) {
+		for _, pkg := range record.PackagesAffected {
+			j.deletePackageInternal(tool, pkg)
 		}
+		return
 	}
+	for _, pkg := range record.PackagesAffected {
+		j.updatePackageInternal(tool, pkg, record.Timestamp)
+	}
+}
 
-	return nil, fmt.Errorf("execution not found: %s", id)
+func packageToolForRecord(record core.ExecutionRecord) string {
+	if record.Tool != core.ToolHomebrew {
+		return record.Tool
+	}
+	packageType, _ := record.Metadata["type"].(string)
+	if packageType == "cask" || containsString(record.Args, "--cask") {
+		return core.ToolHomebrewCask
+	}
+	return record.Tool
+}
+
+func (j *JSONStorage) updateExecutionStatistics(tool string) {
+	j.data.Statistics.TotalExecutions++
+	if j.data.Statistics.ExecutionFrequency == nil {
+		j.data.Statistics.ExecutionFrequency = make(map[string]int)
+	}
+	if _, exists := j.data.Statistics.ExecutionFrequency[tool]; !exists {
+		j.data.Statistics.ToolsUsed = append(j.data.Statistics.ToolsUsed, tool)
+	}
+	j.data.Statistics.ExecutionFrequency[tool]++
+}
+
+func (j *JSONStorage) shouldUpdateInventory(record core.ExecutionRecord) bool {
+	if record.Tool == core.ToolGo || record.Tool == core.ToolPoetry {
+		return false
+	}
+	if record.Tool != core.ToolNPM && record.Tool != core.ToolPNPM && record.Tool != core.ToolBun {
+		return true
+	}
+	if record.Tool == core.ToolNPM && !j.config.Tools.NPM.TrackGlobalOnly {
+		return true
+	}
+	isGlobal, exists := record.Metadata["global"].(bool)
+	return exists && isGlobal
+}
+
+func removesPackages(record core.ExecutionRecord) bool {
+	action, _ := record.Metadata["action"].(string)
+	switch action {
+	case "uninstall", "remove", "pip_uninstall", "tool_uninstall":
+		return true
+	default:
+		return false
+	}
 }
 
 func (j *JSONStorage) UpdatePackage(pkg *core.PackageInfo) error {
+	packages := []*core.PackageInfo{pkg}
+	return j.UpdatePackages(packages)
+}
+
+func (j *JSONStorage) UpdatePackages(packages []*core.PackageInfo) error {
+	if len(packages) == 0 {
+		return nil
+	}
+	for _, pkg := range packages {
+		if pkg == nil {
+			return fmt.Errorf("package cannot be nil")
+		}
+	}
 	j.mu.Lock()
 	defer j.mu.Unlock()
 
@@ -228,20 +288,27 @@ func (j *JSONStorage) UpdatePackage(pkg *core.PackageInfo) error {
 			return err
 		}
 
-		if j.data.Packages == nil {
-			j.data.Packages = make(map[string]map[string]core.PackageInfo)
+		for _, pkg := range packages {
+			j.setPackage(pkg)
 		}
-
-		if j.data.Packages[pkg.Tool] == nil {
-			j.data.Packages[pkg.Tool] = make(map[string]core.PackageInfo)
-		}
-
-		j.data.Packages[pkg.Tool][pkg.Name] = copyPackageValue(*pkg)
 		return j.save()
 	})
 }
 
-func (j *JSONStorage) updatePackageInternal(tool, name string, timestamp time.Time) error {
+func (j *JSONStorage) setPackage(pkg *core.PackageInfo) {
+	if j.data.Packages == nil {
+		j.data.Packages = make(map[string]map[string]core.PackageInfo)
+	}
+	if j.data.Packages[pkg.Tool] == nil {
+		j.data.Packages[pkg.Tool] = make(map[string]core.PackageInfo)
+	}
+	stored := copyPackageValue(*pkg)
+	stored.UpdatedAt = time.Now().UnixNano()
+	j.data.Packages[pkg.Tool][pkg.Name] = stored
+	j.clearPackageTombstone(pkg.Tool, pkg.Name)
+}
+
+func (j *JSONStorage) updatePackageInternal(tool, name string, timestamp time.Time) {
 	if j.data.Packages == nil {
 		j.data.Packages = make(map[string]map[string]core.PackageInfo)
 	}
@@ -263,67 +330,10 @@ func (j *JSONStorage) updatePackageInternal(tool, name string, timestamp time.Ti
 		pkg.LastUsed = timestamp
 		pkg.UsageCount++
 	}
+	pkg.UpdatedAt = time.Now().UnixNano()
 
 	j.data.Packages[tool][name] = pkg
-	return nil
-}
-
-func (j *JSONStorage) GetPackage(tool, name string) (*core.PackageInfo, error) {
-	j.mu.RLock()
-	defer j.mu.RUnlock()
-
-	if j.data.Packages == nil || j.data.Packages[tool] == nil {
-		return nil, fmt.Errorf("package not found: %s/%s", tool, name)
-	}
-
-	pkg, exists := j.data.Packages[tool][name]
-	if !exists {
-		return nil, fmt.Errorf("package not found: %s/%s", tool, name)
-	}
-
-	copy := copyPackageValue(pkg)
-	return &copy, nil
-}
-
-func (j *JSONStorage) GetPackages(tool string) ([]*core.PackageInfo, error) {
-	j.mu.RLock()
-	defer j.mu.RUnlock()
-
-	var results []*core.PackageInfo
-
-	if tool == "" {
-		for _, toolPackages := range j.data.Packages {
-			for _, pkg := range toolPackages {
-				p := copyPackageValue(pkg)
-				results = append(results, &p)
-			}
-		}
-	} else {
-		if j.data.Packages[tool] != nil {
-			for _, pkg := range j.data.Packages[tool] {
-				p := copyPackageValue(pkg)
-				results = append(results, &p)
-			}
-		}
-	}
-
-	return results, nil
-}
-
-func (j *JSONStorage) GetAllPackages() (map[string]map[string]*core.PackageInfo, error) {
-	j.mu.RLock()
-	defer j.mu.RUnlock()
-
-	result := make(map[string]map[string]*core.PackageInfo)
-	for tool, packages := range j.data.Packages {
-		result[tool] = make(map[string]*core.PackageInfo)
-		for name, pkg := range packages {
-			p := copyPackageValue(pkg)
-			result[tool][name] = &p
-		}
-	}
-
-	return result, nil
+	j.clearPackageTombstone(tool, name)
 }
 
 func (j *JSONStorage) DeletePackage(tool, name string) error {
@@ -334,52 +344,182 @@ func (j *JSONStorage) DeletePackage(tool, name string) error {
 		if err := j.reload(); err != nil {
 			return err
 		}
-		if j.data.Packages == nil || j.data.Packages[tool] == nil {
-			return nil
-		}
+		j.deletePackageInternal(tool, name)
+		return j.save()
+	})
+}
+
+func (j *JSONStorage) deletePackageInternal(tool, name string) {
+	if j.data.Packages != nil && j.data.Packages[tool] != nil {
 		delete(j.data.Packages[tool], name)
 		if len(j.data.Packages[tool]) == 0 {
 			delete(j.data.Packages, tool)
+		}
+	}
+	if j.data.PackageTombstones == nil {
+		j.data.PackageTombstones = make(map[string]map[string]int64)
+	}
+	if j.data.PackageTombstones[tool] == nil {
+		j.data.PackageTombstones[tool] = make(map[string]int64)
+	}
+	j.data.PackageTombstones[tool][name] = time.Now().UnixNano()
+}
+
+func (j *JSONStorage) ReconcilePackages(scanned map[string]map[string]struct{}, startedAt time.Time) error {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+
+	return j.withFileLock(func() error {
+		if err := j.reload(); err != nil {
+			return err
+		}
+		changed := j.removeMissingPackages(scanned, startedAt)
+		if !changed {
+			return nil
 		}
 		return j.save()
 	})
 }
 
-func (j *JSONStorage) GetStatistics() (*core.StorageStatistics, error) {
-	j.mu.RLock()
-	defer j.mu.RUnlock()
+func (j *JSONStorage) ApplyPackageScan(
+	packages []*core.PackageInfo,
+	scanned map[string]map[string]struct{},
+	startedAt time.Time,
+) error {
+	j.mu.Lock()
+	defer j.mu.Unlock()
 
-	stats := copyStorageStatistics(j.data.Statistics)
-	return &stats, nil
+	return j.withFileLock(func() error {
+		if err := j.reload(); err != nil {
+			return err
+		}
+		for _, pkg := range packages {
+			j.applyScannedPackage(pkg, startedAt)
+		}
+		j.removeMissingPackages(scanned, startedAt)
+		j.prunePackageTombstones(scanned, startedAt)
+		return j.save()
+	})
+}
+
+func (j *JSONStorage) applyScannedPackage(pkg *core.PackageInfo, startedAt time.Time) {
+	if j.packageTombstonedAfter(pkg.Tool, pkg.Name, startedAt) {
+		return
+	}
+	stored := copyPackageValue(*pkg)
+	current := j.packageHistoryForScan(stored.Tool, stored.Name)
+	if packageUpdatedAfter(current, startedAt) {
+		preserveConcurrentUsage(&stored, current)
+	}
+	j.setPackage(&stored)
+}
+
+func (j *JSONStorage) packageHistoryForScan(tool, name string) core.PackageInfo {
+	current := j.data.Packages[tool][name]
+	if tool != core.ToolGoBinary {
+		return current
+	}
+	legacy := j.data.Packages[core.ToolGo][name]
+	current.UsageCount += legacy.UsageCount
+	if legacy.LastUsed.After(current.LastUsed) {
+		current.LastUsed = legacy.LastUsed
+	}
+	current.UpdatedAt = max(current.UpdatedAt, legacy.UpdatedAt)
+	return current
+}
+
+func preserveConcurrentUsage(scanned *core.PackageInfo, current core.PackageInfo) {
+	if current.UsageCount > scanned.UsageCount {
+		scanned.UsageCount = current.UsageCount
+	}
+	if current.LastUsed.After(scanned.LastUsed) {
+		scanned.LastUsed = current.LastUsed
+	}
+}
+
+func (j *JSONStorage) packageTombstonedAfter(tool, name string, startedAt time.Time) bool {
+	deletedAt := j.data.PackageTombstones[tool][name]
+	if deletedAt == 0 {
+		return false
+	}
+	return deletedAt >= startedAt.UnixNano()
+}
+
+func (j *JSONStorage) clearPackageTombstone(tool, name string) {
+	delete(j.data.PackageTombstones[tool], name)
+	if len(j.data.PackageTombstones[tool]) == 0 {
+		delete(j.data.PackageTombstones, tool)
+	}
+}
+
+func (j *JSONStorage) prunePackageTombstones(scanned map[string]map[string]struct{}, startedAt time.Time) {
+	for tool := range scanned {
+		for name, deletedAt := range j.data.PackageTombstones[tool] {
+			if deletedAt < startedAt.UnixNano() {
+				j.clearPackageTombstone(tool, name)
+			}
+		}
+	}
+}
+
+func (j *JSONStorage) removeMissingPackages(scanned map[string]map[string]struct{}, startedAt time.Time) bool {
+	changed := false
+	for tool, seen := range scanned {
+		toolPackages, exists := j.data.Packages[tool]
+		for name, pkg := range toolPackages {
+			if _, exists := seen[name]; exists {
+				continue
+			}
+			if packageUpdatedAfter(pkg, startedAt) {
+				continue
+			}
+			delete(j.data.Packages[tool], name)
+			changed = true
+		}
+		if exists && len(j.data.Packages[tool]) == 0 {
+			delete(j.data.Packages, tool)
+			changed = true
+		}
+	}
+	return changed
+}
+
+func packageUpdatedAfter(pkg core.PackageInfo, startedAt time.Time) bool {
+	if startedAt.IsZero() {
+		return false
+	}
+	if pkg.UpdatedAt >= startedAt.UnixNano() {
+		return true
+	}
+	return pkg.InstallDate.After(startedAt) || pkg.LastUsed.After(startedAt)
 }
 
 func (j *JSONStorage) UpdateStatistics() error {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 
-	dayCount := make(map[string]int)
-	for _, exec := range j.data.Executions {
-		day := exec.Timestamp.Format("2006-01-02")
-		dayCount[day]++
-	}
-
-	maxCount := 0
-	mostActiveDay := ""
-	for day, count := range dayCount {
-		if count > maxCount {
-			maxCount = count
-			mostActiveDay = day
+	return j.withFileLock(func() error {
+		if err := j.reload(); err != nil {
+			return err
 		}
-	}
-
-	j.data.Statistics.MostActiveDay = mostActiveDay
-	return j.save()
+		j.rebuildStatistics()
+		return j.save()
+	})
 }
 
 func (j *JSONStorage) Backup() error {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 
+	return j.withFileLock(func() error {
+		if err := j.reload(); err != nil {
+			return err
+		}
+		return j.backup()
+	})
+}
+
+func (j *JSONStorage) backup() error {
 	backupPath, err := j.nextBackupPath(time.Now())
 	if err != nil {
 		return err
@@ -405,23 +545,24 @@ func (j *JSONStorage) Restore(path string) error {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 
-	restorePath, err := j.cleanRestorePath(path)
-	if err != nil {
-		return err
-	}
+	return j.withFileLock(func() error {
+		restorePath, err := j.cleanRestorePath(path)
+		if err != nil {
+			return err
+		}
 
-	data, err := readManagedFile(restorePath)
-	if err != nil {
-		return fmt.Errorf("failed to read restore file: %w", err)
-	}
+		data, err := readManagedFile(restorePath)
+		if err != nil {
+			return fmt.Errorf("failed to read restore file: %w", err)
+		}
 
-	var storage core.StorageData
-	if err := json.Unmarshal(data, &storage); err != nil {
-		return fmt.Errorf("failed to unmarshal restore data: %w", err)
-	}
-
-	j.data = &storage
-	return j.save()
+		var restored core.StorageData
+		if err := json.Unmarshal(data, &restored); err != nil {
+			return fmt.Errorf("failed to unmarshal restore data: %w", err)
+		}
+		j.data = &restored
+		return j.save()
+	})
 }
 
 func (j *JSONStorage) Cleanup(before time.Time) error {
@@ -461,18 +602,12 @@ func (j *JSONStorage) enforceRetentionPolicies(before time.Time) error {
 		}
 	}
 
-	if maxExecutions := j.config.Storage.MaxExecutions; maxExecutions > 0 && len(j.data.Executions) > maxExecutions {
+	maxExecutions := j.config.Storage.MaxExecutions
+	exceedsMaximum := maxExecutions > 0 && len(j.data.Executions) > maxExecutions
+	if exceedsMaximum {
 		sortExecutionsNewestFirst(j.data.Executions)
 		j.data.Executions = append([]core.ExecutionRecord(nil), j.data.Executions[:maxExecutions]...)
 		changed = true
-	}
-
-	if maxBytes := j.config.Storage.MaxStorageBytes; maxBytes > 0 {
-		pruned, err := j.enforceMaxStorageBytes(maxBytes)
-		if err != nil {
-			return err
-		}
-		changed = changed || pruned
 	}
 
 	if changed {
@@ -482,48 +617,36 @@ func (j *JSONStorage) enforceRetentionPolicies(before time.Time) error {
 	return nil
 }
 
-func (j *JSONStorage) enforceMaxStorageBytes(maxBytes int64) (bool, error) {
-	size, err := j.estimatedStorageSize()
-	if err != nil {
-		return false, err
-	}
-	if size <= maxBytes || len(j.data.Executions) == 0 {
-		return false, nil
-	}
-
+func (j *JSONStorage) pruneExecutionsToSize(size, maxBytes int64) error {
 	sortExecutionsNewestFirst(j.data.Executions)
-	executions := append([]core.ExecutionRecord(nil), j.data.Executions...)
-
-	bestKeep := 0
-	low, high := 0, len(executions)
-	for low <= high {
-		keep := low + (high-low)/2
-		j.data.Executions = executions[:keep]
-
-		size, err := j.estimatedStorageSize()
+	targetSize := max(maxBytes-storagePruneHeadroomBytes, 0)
+	keep := len(j.data.Executions)
+	for size > targetSize && keep > 0 {
+		keep--
+		executionSize, err := indentedExecutionSize(j.data.Executions[keep])
 		if err != nil {
-			j.data.Executions = executions
-			return false, err
+			return err
 		}
-
-		if size <= maxBytes {
-			bestKeep = keep
-			low = keep + 1
-		} else {
-			high = keep - 1
-		}
+		size -= executionRemovalSize(executionSize, keep)
 	}
-
-	j.data.Executions = append([]core.ExecutionRecord(nil), executions[:bestKeep]...)
-	return bestKeep != len(executions), nil
+	j.data.Executions = append([]core.ExecutionRecord(nil), j.data.Executions[:keep]...)
+	return nil
 }
 
-func (j *JSONStorage) estimatedStorageSize() (int64, error) {
-	data, err := json.MarshalIndent(j.data, "", "  ")
+func indentedExecutionSize(record core.ExecutionRecord) (int64, error) {
+	data, err := json.MarshalIndent(record, "", "  ")
 	if err != nil {
-		return 0, fmt.Errorf("failed to marshal storage data for size check: %w", err)
+		return 0, fmt.Errorf("failed to marshal execution for size check: %w", err)
 	}
-	return int64(len(data)), nil
+	nestedIndentBytes := 4 * (bytes.Count(data, []byte{'\n'}) + 1)
+	return int64(len(data) + nestedIndentBytes), nil
+}
+
+func executionRemovalSize(executionSize int64, remaining int) int64 {
+	if remaining == 0 {
+		return executionSize + 4
+	}
+	return executionSize + 2
 }
 
 func sortExecutionsNewestFirst(executions []core.ExecutionRecord) {
@@ -533,11 +656,13 @@ func sortExecutionsNewestFirst(executions []core.ExecutionRecord) {
 }
 
 func (j *JSONStorage) rebuildStatistics() {
+	totalExecutions := len(j.data.Executions)
+	executionFrequency := make(map[string]int)
 	stats := core.StorageStatistics{
-		TotalExecutions:    len(j.data.Executions),
+		TotalExecutions:    totalExecutions,
 		ToolsUsed:          []string{},
 		MostActiveDay:      "",
-		ExecutionFrequency: make(map[string]int),
+		ExecutionFrequency: executionFrequency,
 	}
 
 	seenTools := make(map[string]bool)
@@ -587,7 +712,9 @@ func (j *JSONStorage) pruneBackups() error {
 			}
 			return fmt.Errorf("failed to stat backup file %s: %w", path, err)
 		}
-		backups = append(backups, backupFile{path: path, modTime: info.ModTime()})
+		modTime := info.ModTime()
+		backup := backupFile{path: path, modTime: modTime}
+		backups = append(backups, backup)
 	}
 	if len(backups) <= maxBackups {
 		return nil

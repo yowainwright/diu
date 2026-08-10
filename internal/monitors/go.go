@@ -1,14 +1,12 @@
 package monitors
 
 import (
-	"bufio"
 	"context"
+	"debug/buildinfo"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/yowainwright/diu/internal/core"
 )
@@ -149,18 +147,13 @@ func (m *GoMonitor) ParseCommand(cmd string, args []string) (*core.ExecutionReco
 func (m *GoMonitor) extractGoPackages(args []string) []string {
 	var packages []string
 	for _, arg := range args {
+		if arg == "." || arg == "./..." || arg == "..." {
+			continue
+		}
 		if strings.HasPrefix(arg, "-") {
 			continue
 		}
-		// Go packages typically look like domain.com/user/package
-		if strings.Contains(arg, "/") || strings.Contains(arg, ".") {
-			packages = append(packages, arg)
-		} else if arg == "." || arg == "./..." || arg == "..." {
-			// Current directory packages
-			continue
-		} else {
-			packages = append(packages, arg)
-		}
+		packages = append(packages, arg)
 	}
 	return packages
 }
@@ -178,64 +171,7 @@ func (m *GoMonitor) extractOutputFlag(args []string) string {
 }
 
 func (m *GoMonitor) GetInstalledPackages() ([]*core.PackageInfo, error) {
-	var packages []*core.PackageInfo
-
-	// Get modules if in module mode
-	if modPackages, err := m.getModules(); err == nil {
-		packages = append(packages, modPackages...)
-	}
-
-	// Get binaries in GOBIN
-	if binPackages, err := m.getBinaries(); err == nil {
-		packages = append(packages, binPackages...)
-	}
-
-	return packages, nil
-}
-
-func (m *GoMonitor) getModules() ([]*core.PackageInfo, error) {
-	cmd := exec.Command("go", "list", "-m", "all")
-	output, err := cmd.Output()
-	if err != nil {
-		// Might not be in a module
-		return nil, nil
-	}
-
-	var packages []*core.PackageInfo
-	scanner := bufio.NewScanner(strings.NewReader(string(output)))
-
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" {
-			continue
-		}
-
-		parts := strings.Fields(line)
-		if len(parts) == 0 {
-			continue
-		}
-
-		name := parts[0]
-		version := ""
-		if len(parts) > 1 {
-			version = parts[1]
-		}
-
-		// Skip the main module (first line without version)
-		if version == "" && strings.Count(line, " ") == 0 {
-			continue
-		}
-
-		pkg := &core.PackageInfo{
-			Name:        name,
-			Version:     version,
-			Tool:        core.ToolGo,
-			InstallDate: time.Now(),
-		}
-		packages = append(packages, pkg)
-	}
-
-	return packages, nil
+	return m.getBinaries()
 }
 
 func (m *GoMonitor) getBinaries() ([]*core.PackageInfo, error) {
@@ -272,8 +208,9 @@ func (m *GoMonitor) getBinaries() ([]*core.PackageInfo, error) {
 			Tool:        core.ToolGoBinary,
 			InstallDate: info.ModTime(),
 			Path:        filepath.Join(m.goBin, entry.Name()),
+			SizeBytes:   info.Size(),
+			ModifiedAt:  info.ModTime().UnixNano(),
 		}
-
 		// Try to get version
 		if version, err := m.getBinaryVersion(pkg.Path); err == nil {
 			pkg.Version = version
@@ -286,49 +223,15 @@ func (m *GoMonitor) getBinaries() ([]*core.PackageInfo, error) {
 }
 
 func (m *GoMonitor) getBinaryVersion(binaryPath string) (string, error) {
-	cmd := exec.Command(binaryPath, "version")
-	output, err := cmd.Output()
+	info, err := buildinfo.ReadFile(binaryPath)
 	if err != nil {
-		// Try --version flag
-		cmd = exec.Command(binaryPath, "--version")
-		output, err = cmd.Output()
-		if err != nil {
-			return "", err
-		}
+		return "", err
 	}
-
-	// Extract version from output
-	outputStr := strings.TrimSpace(string(output))
-	lines := strings.Split(outputStr, "\n")
-	if len(lines) > 0 {
-		// Look for version patterns
-		for _, line := range lines {
-			if strings.Contains(strings.ToLower(line), "version") {
-				parts := strings.Fields(line)
-				for _, part := range parts {
-					if versionToken := cleanVersionToken(part); versionToken != "" {
-						return versionToken, nil
-					}
-				}
-			}
-		}
+	version := strings.TrimSpace(info.Main.Version)
+	if version == "" || version == "(devel)" {
+		return "", fmt.Errorf("version not found")
 	}
-
-	return "", fmt.Errorf("version not found")
-}
-
-func cleanVersionToken(token string) string {
-	token = strings.Trim(token, " ,;()[]{}")
-	if token == "" || strings.EqualFold(token, "version") {
-		return ""
-	}
-	if strings.HasPrefix(token, "v") && len(token) > 1 && token[1] >= '0' && token[1] <= '9' {
-		return token
-	}
-	if strings.Contains(token, ".") {
-		return token
-	}
-	return ""
+	return version, nil
 }
 
 func (m *GoMonitor) Start(ctx context.Context, eventChan chan<- *core.ExecutionRecord) error {

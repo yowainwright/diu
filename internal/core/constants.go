@@ -31,17 +31,18 @@ func resolveVersion(linkedVersion, moduleVersion string) string {
 const (
 	ConfigVersion = "1.0"
 
-	ToolHomebrew = "homebrew"
-	ToolNPM      = "npm"
-	ToolPNPM     = "pnpm"
-	ToolBun      = "bun"
-	ToolGo       = "go"
-	ToolPip      = "pip"
-	ToolUV       = "uv"
-	ToolPoetry   = "poetry"
-	ToolGem      = "gem"
-	ToolCargo    = "cargo"
-	ToolGoBinary = "go-binary"
+	ToolHomebrew     = "homebrew"
+	ToolNPM          = "npm"
+	ToolPNPM         = "pnpm"
+	ToolBun          = "bun"
+	ToolGo           = "go"
+	ToolPip          = "pip"
+	ToolUV           = "uv"
+	ToolPoetry       = "poetry"
+	ToolGem          = "gem"
+	ToolCargo        = "cargo"
+	ToolGoBinary     = "go-binary"
+	ToolHomebrewCask = "homebrew-cask"
 
 	DefaultDaemonPort        = 8080
 	DefaultAPIPort           = 8081

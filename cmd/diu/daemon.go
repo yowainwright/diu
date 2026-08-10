@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"os"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -27,6 +26,7 @@ func (RealDaemonChecker) IsRunning(config *core.Config) bool {
 
 // defaultDaemonChecker is used by default
 var defaultDaemonChecker DaemonChecker = RealDaemonChecker{}
+var daemonStopRequester = daemon.RequestStop
 
 var daemonProcessStarter = func(execPath string, args []string, procAttr *syscall.ProcAttr) error {
 	// #nosec G204 -- execPath is the current executable path and is validated before forking.
@@ -144,34 +144,25 @@ const daemonStopPollInterval = 100 * time.Millisecond
 
 // stopDaemonWithConfig stops the DIU daemon with the given config
 func stopDaemonWithConfig(config *core.Config) error {
-	if !defaultDaemonChecker.IsRunning(config) {
+	running := defaultDaemonChecker.IsRunning(config)
+	pid, pidErr := daemon.ReadPID(config)
+	if !running && os.IsNotExist(pidErr) {
 		cliOutput().Status(dx.Info, "DIU daemon is not running")
 		return nil
 	}
 
-	pidBytes, err := os.ReadFile(config.Daemon.PIDFile)
-	if err != nil {
-		return fmt.Errorf("failed to read PID file: %w", err)
-	}
-
-	pid, err := strconv.Atoi(strings.TrimSpace(string(pidBytes)))
-	if err != nil {
-		return fmt.Errorf("invalid PID: %w", err)
-	}
-
-	process, err := os.FindProcess(pid)
-	if err != nil {
-		return fmt.Errorf("process not found: %w", err)
-	}
-
-	if err := process.Signal(syscall.SIGTERM); err != nil {
+	if err := daemonStopRequester(config); err != nil {
 		return fmt.Errorf("failed to stop daemon: %w", err)
 	}
 	out := cliOutput()
 	activity := out.StartActivity("Stopping DIU daemon")
 	defer activity.Stop()
 
-	if err := waitForDaemonStopped(config, daemonStopTimeout); err != nil {
+	if pidErr == nil {
+		if err := waitForDaemonProcessStopped(pid, daemonStopTimeout); err != nil {
+			return err
+		}
+	} else if err := waitForDaemonStopped(config, daemonStopTimeout); err != nil {
 		return err
 	}
 
@@ -193,6 +184,10 @@ func waitForDaemonStarted(config *core.Config, timeout time.Duration) error {
 
 // waitForDaemonStopped polls IsRunning until the daemon exits or the timeout elapses.
 func waitForDaemonStopped(config *core.Config, timeout time.Duration) error {
+	pid, err := daemon.ReadPID(config)
+	if err == nil {
+		return waitForDaemonProcessStopped(pid, timeout)
+	}
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		if !defaultDaemonChecker.IsRunning(config) {
@@ -201,6 +196,17 @@ func waitForDaemonStopped(config *core.Config, timeout time.Duration) error {
 		time.Sleep(daemonStopPollInterval)
 	}
 	return fmt.Errorf("timed out after %s waiting for daemon to stop", timeout)
+}
+
+func waitForDaemonProcessStopped(pid int, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if !daemon.ProcessRunning(pid) {
+			return nil
+		}
+		time.Sleep(daemonStopPollInterval)
+	}
+	return fmt.Errorf("timed out after %s waiting for daemon process %d to stop", timeout, pid)
 }
 
 // restartDaemon restarts the DIU daemon
@@ -231,8 +237,7 @@ func daemonStatus(cmd *command, args []string) error {
 		pid := strings.TrimSpace(string(pidBytes))
 		out.Println(out.DataStyle(dx.Muted, "  PID:"), pid)
 	} else {
-		out := cliOutput()
-		out.Println(out.DataStyle(dx.Error, "DIU daemon is not running"))
+		cliOutput().Status(dx.Info, "DIU daemon is not running")
 	}
 
 	return nil

@@ -35,7 +35,7 @@ const (
 	pip3CommandName     = "pip3"
 	uvCommandName       = "uv"
 
-	homebrewCaskTool = "homebrew-cask"
+	homebrewCaskTool = core.ToolHomebrewCask
 	homebrewCaskFlag = "--cask"
 	npmGlobalFlag    = "-g"
 	pipYesFlag       = "-y"
@@ -672,6 +672,20 @@ func removeGoBinary(pkg *core.PackageInfo) error {
 	if err != nil {
 		return err
 	}
+	if pkg.Fingerprint == "" {
+		return fmt.Errorf("go binary %s has no scan fingerprint; run diu scan before uninstalling", pkg.Name)
+	}
+	currentFingerprint, err := safefs.SHA256(binaryPath)
+	if err != nil {
+		return fmt.Errorf("failed to fingerprint %s: %w", binaryPath, err)
+	}
+	if currentFingerprint != pkg.Fingerprint {
+		return fmt.Errorf("go binary %s changed since the last scan; refusing to remove %s", pkg.Name, binaryPath)
+	}
+	return removeGoBinaryPath(binaryPath)
+}
+
+func removeGoBinaryPath(binaryPath string) error {
 	if err := os.Remove(binaryPath); err != nil {
 		return fmt.Errorf("failed to remove %s: %w", binaryPath, err)
 	}

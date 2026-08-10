@@ -182,7 +182,7 @@ func TestGoParseCommand(t *testing.T) {
 		{
 			name:     "test all",
 			args:     []string{"test", "./..."},
-			packages: []string{"./..."},
+			packages: nil,
 			metadata: map[string]interface{}{
 				"subcommand": "test",
 				"action":     "test",
@@ -339,7 +339,7 @@ func TestGoExtractGoPackages(t *testing.T) {
 		{
 			name:     "skip current directory patterns",
 			args:     []string{".", "./...", "..."},
-			expected: []string{".", "./...", "..."},
+			expected: nil,
 		},
 		{
 			name:     "simple package name",
@@ -462,46 +462,21 @@ func TestGoGetBinaries(t *testing.T) {
 		if packages[0].Tool != core.ToolGoBinary {
 			t.Errorf("Expected tool '%s', got %s", core.ToolGoBinary, packages[0].Tool)
 		}
-		if packages[0].Version != "v1.0.0" {
-			t.Errorf("Expected version v1.0.0, got %s", packages[0].Version)
+		if packages[0].Fingerprint != "" {
+			t.Error("Expected monitor to defer binary fingerprinting to inventory merge")
+		}
+		if packages[0].SizeBytes == 0 || packages[0].ModifiedAt == 0 {
+			t.Error("Expected binary size and modification signature")
 		}
 	}
 }
 
-func TestGoGetModulesWithFakeGo(t *testing.T) {
-	prependFakeCommand(t, "go", `#!/bin/sh
-if [ "$1" = "list" ] && [ "$2" = "-m" ] && [ "$3" = "all" ]; then
-  printf 'example.com/app\ngithub.com/pkg/errors v0.9.1\ngolang.org/x/mod v0.22.0\n'
-  exit 0
-fi
-exit 2
-`)
-
-	monitor := NewGoMonitor().(*GoMonitor)
-	packages, err := monitor.getModules()
-	if err != nil {
-		t.Fatalf("getModules failed: %v", err)
-	}
-	if len(packages) != 2 {
-		t.Fatalf("Expected 2 dependency modules, got %#v", packages)
-	}
-	if packages[0].Name != "github.com/pkg/errors" || packages[0].Version != "v0.9.1" {
-		t.Fatalf("Unexpected first module: %#v", packages[0])
-	}
-}
-
-func TestGoGetBinaryVersionFallsBackToVersionFlag(t *testing.T) {
-	binaryPath := filepath.Join(t.TempDir(), "tool")
-	if err := os.WriteFile(binaryPath, []byte(`#!/bin/sh
-if [ "$1" = "version" ]; then
-  exit 1
-fi
-if [ "$1" = "--version" ]; then
-  printf 'tool version v1.2.3\n'
-  exit 0
-fi
-exit 2
-`), core.PrivateFileMode); err != nil {
+func TestGoGetBinaryVersionDoesNotExecuteBinary(t *testing.T) {
+	tempDir := t.TempDir()
+	binaryPath := filepath.Join(tempDir, "tool")
+	markerPath := filepath.Join(tempDir, "executed")
+	script := "#!/bin/sh\ntouch " + markerPath + "\n"
+	if err := os.WriteFile(binaryPath, []byte(script), core.PrivateFileMode); err != nil {
 		t.Fatalf("Failed to write binary: %v", err)
 	}
 	if err := os.Chmod(binaryPath, core.OwnerExecutableMode); err != nil {
@@ -509,12 +484,11 @@ exit 2
 	}
 
 	monitor := NewGoMonitor().(*GoMonitor)
-	version, err := monitor.getBinaryVersion(binaryPath)
-	if err != nil {
-		t.Fatalf("getBinaryVersion failed: %v", err)
+	if _, err := monitor.getBinaryVersion(binaryPath); err == nil {
+		t.Fatal("getBinaryVersion should reject a non-Go binary")
 	}
-	if version != "v1.2.3" {
-		t.Fatalf("version = %s, want v1.2.3", version)
+	if _, err := os.Stat(markerPath); !os.IsNotExist(err) {
+		t.Fatalf("binary was executed, marker stat error = %v", err)
 	}
 }
 

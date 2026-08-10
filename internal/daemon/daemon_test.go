@@ -13,10 +13,12 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/yowainwright/diu/internal/core"
+	"github.com/yowainwright/diu/internal/observability"
 	"github.com/yowainwright/diu/internal/storage"
 )
 
@@ -30,6 +32,9 @@ type mockStorage struct {
 	packagesErr error
 	statsErr    error
 	initialized bool
+	batchCalls  int
+	backupCalls int
+	lastQuery   storage.QueryOptions
 }
 
 func newMockStorage() *mockStorage {
@@ -61,9 +66,21 @@ func (m *mockStorage) AddExecution(record *core.ExecutionRecord) error {
 	return nil
 }
 
+func (m *mockStorage) AddExecutions(records []*core.ExecutionRecord) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.addErr != nil {
+		return m.addErr
+	}
+	m.batchCalls++
+	m.executions = append(m.executions, records...)
+	return nil
+}
+
 func (m *mockStorage) GetExecutions(opts storage.QueryOptions) ([]*core.ExecutionRecord, error) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.lastQuery = opts
 	if m.getErr != nil {
 		return nil, m.getErr
 	}
@@ -178,6 +195,9 @@ func (m *mockStorage) UpdateStatistics() error {
 }
 
 func (m *mockStorage) Backup() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.backupCalls++
 	return nil
 }
 
@@ -230,6 +250,20 @@ func testConfig(t *testing.T) *core.Config {
 			Port:    0,
 		},
 	}
+}
+
+func shortSocketPath(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("/tmp", "diu-")
+	if err != nil {
+		t.Fatalf("MkdirTemp failed: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.RemoveAll(dir); err != nil {
+			t.Errorf("RemoveAll failed: %v", err)
+		}
+	})
+	return filepath.Join(dir, "diu.sock")
 }
 
 func setFakeCommandsInPath(t *testing.T, commands ...string) {
@@ -364,6 +398,16 @@ func TestDaemonStartStop(t *testing.T) {
 	if d.IsStopped() {
 		t.Error("Daemon should not be stopped after Start")
 	}
+	if !IsRunning(cfg) {
+		t.Error("Daemon should respond to an identity check after Start")
+	}
+	socketInfo, err := os.Stat(cfg.Daemon.SocketPath)
+	if err != nil {
+		t.Fatalf("Failed to stat daemon socket: %v", err)
+	}
+	if socketInfo.Mode().Perm() != core.PrivateFileMode {
+		t.Errorf("Socket mode: got %v, want %v", socketInfo.Mode().Perm(), core.PrivateFileMode)
+	}
 
 	if err := d.Stop(); err != nil {
 		t.Fatalf("Stop failed: %v", err)
@@ -376,10 +420,19 @@ func TestDaemonStartStop(t *testing.T) {
 	if _, err := os.Stat(cfg.Daemon.PIDFile); !os.IsNotExist(err) {
 		t.Error("PID file should be removed after Stop")
 	}
+	lines, err := observability.ReadRecentLogs(cfg.Daemon.DataDir)
+	if err != nil {
+		t.Fatalf("ReadRecentLogs failed: %v", err)
+	}
+	logs := strings.Join(lines, "\n")
+	if !strings.Contains(logs, "Starting DIU daemon") || !strings.Contains(logs, "DIU daemon stopped") {
+		t.Fatalf("Daemon lifecycle missing from local log: %q", logs)
+	}
 }
 
 func TestDaemonStartReportsPIDFileFailure(t *testing.T) {
 	cfg := testConfig(t)
+	cfg.Daemon.SocketPath = shortSocketPath(t)
 	blocked := filepath.Join(t.TempDir(), "blocked")
 	if err := os.WriteFile(blocked, []byte("file"), core.PrivateFileMode); err != nil {
 		t.Fatalf("WriteFile failed: %v", err)
@@ -393,8 +446,47 @@ func TestDaemonStartReportsPIDFileFailure(t *testing.T) {
 	defer closeStorageForTest(t, d.storage)
 
 	err = d.Start()
-	if err == nil || !strings.Contains(err.Error(), "failed to write PID file") {
+	if err == nil || !strings.Contains(err.Error(), "PID file") {
 		t.Fatalf("Start error = %v", err)
+	}
+	lines, logErr := observability.ReadRecentLogs(cfg.Daemon.DataDir)
+	if logErr != nil {
+		t.Fatalf("ReadRecentLogs failed: %v", logErr)
+	}
+	if !strings.Contains(strings.Join(lines, "\n"), err.Error()) {
+		t.Fatalf("startup failure missing from logs: %#v", lines)
+	}
+}
+
+func TestFailedSecondStartPreservesRunningDaemonPID(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Daemon.SocketPath = shortSocketPath(t)
+	first, err := NewDaemon(cfg)
+	if err != nil {
+		t.Fatalf("NewDaemon failed: %v", err)
+	}
+	if err := first.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	defer stopDaemonForTest(t, first)
+	wantPID, err := os.ReadFile(cfg.Daemon.PIDFile)
+	if err != nil {
+		t.Fatalf("ReadFile failed: %v", err)
+	}
+
+	second, err := NewDaemon(cfg)
+	if err != nil {
+		t.Fatalf("NewDaemon failed: %v", err)
+	}
+	if err := second.Start(); err == nil {
+		t.Fatal("second daemon start succeeded")
+	}
+	gotPID, err := os.ReadFile(cfg.Daemon.PIDFile)
+	if err != nil {
+		t.Fatalf("running daemon PID was removed: %v", err)
+	}
+	if string(gotPID) != string(wantPID) {
+		t.Fatalf("running daemon PID changed from %q to %q", wantPID, gotPID)
 	}
 }
 
@@ -688,9 +780,26 @@ func TestDaemonRejectsExecutionWhenQueueIsUnavailable(t *testing.T) {
 	body := `{"tool":"npm","command":"install"}`
 
 	recorder := httptest.NewRecorder()
-	d.handleExecutions(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/executions", strings.NewReader(body)))
-	if recorder.Code != http.StatusServiceUnavailable || !strings.Contains(recorder.Body.String(), "queue full") {
-		t.Fatalf("full queue response = %d, %q", recorder.Code, recorder.Body.String())
+	done := make(chan struct{})
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/executions", strings.NewReader(body))
+	go func() {
+		d.handleExecutions(recorder, request)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		t.Fatal("handler should apply backpressure while the event queue is full")
+	case <-time.After(20 * time.Millisecond):
+	}
+	<-d.eventChan
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("handler did not resume after event queue capacity became available")
+	}
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("backpressure response = %d, want 202", recorder.Code)
 	}
 
 	d.cancel()
@@ -864,6 +973,36 @@ func TestDaemonSocketListener(t *testing.T) {
 }
 
 func TestDaemonSocketListenerReportsInvalidPaths(t *testing.T) {
+	t.Run("active socket is preserved", func(t *testing.T) {
+		cfg := testConfig(t)
+		socketDir, err := os.MkdirTemp("/tmp", "diu-socket-test-")
+		if err != nil {
+			t.Fatalf("MkdirTemp failed: %v", err)
+		}
+		t.Cleanup(func() {
+			if err := os.RemoveAll(socketDir); err != nil {
+				t.Errorf("RemoveAll failed: %v", err)
+			}
+		})
+		cfg.Daemon.SocketPath = filepath.Join(socketDir, "diu.sock")
+		listener, err := net.Listen("unix", cfg.Daemon.SocketPath)
+		if err != nil {
+			t.Fatalf("Listen failed: %v", err)
+		}
+		defer closeForTest(t, listener)
+		d, err := NewDaemon(cfg)
+		if err != nil {
+			t.Fatalf("NewDaemon failed: %v", err)
+		}
+		err = d.Start()
+		if err == nil || !strings.Contains(err.Error(), "socket is active") {
+			t.Fatalf("Start error = %v", err)
+		}
+		if _, err := os.Stat(cfg.Daemon.SocketPath); err != nil {
+			t.Fatalf("active socket was removed: %v", err)
+		}
+	})
+
 	t.Run("stale socket cannot be removed", func(t *testing.T) {
 		cfg := testConfig(t)
 		socketDir := filepath.Join(t.TempDir(), "socket")
@@ -926,8 +1065,8 @@ func TestIsRunning(t *testing.T) {
 		t.Fatalf("Failed to write PID file: %v", err)
 	}
 
-	if !IsRunning(cfg) {
-		t.Error("Should return true for current process PID with trailing newline")
+	if IsRunning(cfg) {
+		t.Error("Should return false when the PID file has no matching daemon socket")
 	}
 
 	if err := os.WriteFile(cfg.Daemon.PIDFile, []byte("999999999"), core.PrivateFileMode); err != nil {
@@ -946,6 +1085,74 @@ func TestIsRunningRejectsDirectoryAsPIDFile(t *testing.T) {
 	cfg.Daemon.PIDFile = t.TempDir()
 	if IsRunning(cfg) {
 		t.Fatal("directory reported as a running daemon PID file")
+	}
+}
+
+func TestRequestStopSignalsProcessWhenSocketIsUnavailable(t *testing.T) {
+	cfg := testConfig(t)
+	pid := 4242
+	if err := os.WriteFile(cfg.Daemon.PIDFile, []byte(strconv.Itoa(pid)), core.PrivateFileMode); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+	originalSignaler := daemonProcessSignaler
+	t.Cleanup(func() {
+		daemonProcessSignaler = originalSignaler
+	})
+	signaledPID := 0
+	daemonProcessSignaler = func(gotPID int, signal os.Signal) error {
+		signaledPID = gotPID
+		if signal != syscall.SIGTERM {
+			t.Fatalf("signal = %v, want SIGTERM", signal)
+		}
+		return nil
+	}
+
+	if err := RequestStop(cfg); err != nil {
+		t.Fatalf("RequestStop failed: %v", err)
+	}
+	if signaledPID != pid {
+		t.Fatalf("signaled PID = %d, want %d", signaledPID, pid)
+	}
+}
+
+func TestRequestStopSignalsProcessWhenStopRequestFails(t *testing.T) {
+	cfg := testConfig(t)
+	pid := 4242
+	if err := os.WriteFile(cfg.Daemon.PIDFile, []byte(strconv.Itoa(pid)), core.PrivateFileMode); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+	restoreDaemonControlHooks(t)
+	daemonSocketControlSender = failingStopControlSender(pid)
+	signaledPID := 0
+	daemonProcessSignaler = func(gotPID int, signal os.Signal) error {
+		signaledPID = gotPID
+		return nil
+	}
+
+	if err := RequestStop(cfg); err != nil {
+		t.Fatalf("RequestStop failed: %v", err)
+	}
+	if signaledPID != pid {
+		t.Fatalf("signaled PID = %d, want %d", signaledPID, pid)
+	}
+}
+
+func restoreDaemonControlHooks(t *testing.T) {
+	t.Helper()
+	originalSender := daemonSocketControlSender
+	originalSignaler := daemonProcessSignaler
+	t.Cleanup(func() {
+		daemonSocketControlSender = originalSender
+		daemonProcessSignaler = originalSignaler
+	})
+}
+
+func failingStopControlSender(pid int) func(string, string) (socketControlResponse, error) {
+	return func(_ string, request string) (socketControlResponse, error) {
+		if request == socketRequestPing {
+			return socketControlResponse{Status: socketStatusOK, PID: pid}, nil
+		}
+		return socketControlResponse{}, errors.New("socket closed")
 	}
 }
 
@@ -1153,6 +1360,23 @@ func TestHandleExecutionsWithLimit(t *testing.T) {
 	}
 }
 
+func TestHandleExecutionsUsesBoundedDefaultLimit(t *testing.T) {
+	cfg := testConfig(t)
+	d, err := NewDaemon(cfg)
+	if err != nil {
+		t.Fatalf("NewDaemon failed: %v", err)
+	}
+	defer closeStorageForTest(t, d.storage)
+	mockStore := newMockStorage()
+	d.storage = mockStore
+
+	recorder := httptest.NewRecorder()
+	d.handleExecutions(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/executions", nil))
+	if mockStore.lastQuery.Limit != defaultExecutionQueryLimit {
+		t.Fatalf("default limit = %d, want %d", mockStore.lastQuery.Limit, defaultExecutionQueryLimit)
+	}
+}
+
 func TestDaemonExecutionsAPIReportsStorageFailure(t *testing.T) {
 	cfg := testConfig(t)
 	d, err := NewDaemon(cfg)
@@ -1244,6 +1468,41 @@ func TestDaemonPruneOldRecordsHandlesCleanupError(t *testing.T) {
 	d.pruneOldRecords()
 }
 
+func TestDaemonRunsConfiguredBackups(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Storage.BackupEnabled = true
+	cfg.Storage.BackupInterval = 10 * time.Millisecond
+	d, err := NewDaemon(cfg)
+	if err != nil {
+		t.Fatalf("NewDaemon failed: %v", err)
+	}
+
+	mock := newMockStorage()
+	d.storage = mock
+	d.wg.Add(1)
+	go d.runPeriodicCleanup()
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		mock.mu.RLock()
+		backupCalls := mock.backupCalls
+		mock.mu.RUnlock()
+		if backupCalls > 0 {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	d.cancel()
+	d.wg.Wait()
+
+	mock.mu.RLock()
+	backupCalls := mock.backupCalls
+	mock.mu.RUnlock()
+	if backupCalls == 0 {
+		t.Fatal("configured storage backup did not run")
+	}
+}
+
 func TestProcessEventsChannelClose(t *testing.T) {
 	cfg := testConfig(t)
 
@@ -1286,6 +1545,9 @@ func TestProcessEventsChannelClose(t *testing.T) {
 
 	if mockStore.getExecutionCount() != 1 {
 		t.Errorf("Expected 1 execution, got %d", mockStore.getExecutionCount())
+	}
+	if mockStore.batchCalls != 1 {
+		t.Errorf("Expected one batched storage write, got %d", mockStore.batchCalls)
 	}
 }
 

@@ -152,6 +152,24 @@ jobs:
           "$DIU_BINARY" query --help
           "$DIU_BINARY" stats --help
 
+  e2e:
+    name: Docker E2E Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run E2E tests
+        run: |
+          docker compose -f ops/docker/compose.yaml --profile e2e up \
+            --build \
+            --abort-on-container-exit \
+            --exit-code-from e2e-tests \
+            e2e-tests
+
+      - name: Stop E2E services
+        if: always()
+        run: docker compose -f ops/docker/compose.yaml --profile e2e down --volumes
+
   release-config:
     name: Release Config
     runs-on: macos-latest

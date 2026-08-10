@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -20,27 +21,64 @@ import (
 
 	"github.com/yowainwright/diu/internal/core"
 	"github.com/yowainwright/diu/internal/monitors"
+	"github.com/yowainwright/diu/internal/observability"
+	"github.com/yowainwright/diu/internal/safefs"
 	"github.com/yowainwright/diu/internal/storage"
 )
 
 const (
 	maxExecutionRecordBodyBytes = 1 << 20
 	maxRecordedCommandLength    = 4096
+	socketControlTimeout        = time.Second
+	socketRequestPing           = "ping"
+	socketRequestStop           = "stop"
+	socketStatusOK              = "ok"
+	maxEventBatchSize           = 64
+	maxSocketHandlers           = 16
+	eventAdmissionTimeout       = time.Second
+	defaultExecutionQueryLimit  = 100
 )
 
+type socketControlRequest struct {
+	Type string `json:"type"`
+}
+
+type socketControlResponse struct {
+	Status string `json:"status"`
+	PID    int    `json:"pid"`
+}
+
+var daemonProcessSignaler = func(pid int, signal os.Signal) error {
+	process, err := os.FindProcess(pid)
+	if err != nil {
+		return err
+	}
+	return process.Signal(signal)
+}
+
+var daemonSocketControlSender = sendSocketControl
+
 type Daemon struct {
-	config         *core.Config
-	storage        storage.Storage
-	registry       *monitors.MonitorRegistry
-	eventChan      chan *core.ExecutionRecord
-	httpServer     *http.Server
-	socketListener net.Listener
-	ctx            context.Context
-	cancel         context.CancelFunc
-	wg             sync.WaitGroup
-	startTime      time.Time
-	stopOnce       sync.Once
-	stopped        atomic.Bool
+	config          *core.Config
+	storage         storage.Storage
+	registry        *monitors.MonitorRegistry
+	eventChan       chan *core.ExecutionRecord
+	httpServer      *http.Server
+	socketListener  net.Listener
+	socketInfo      os.FileInfo
+	socketSlots     chan struct{}
+	ctx             context.Context
+	cancel          context.CancelFunc
+	wg              sync.WaitGroup
+	startTime       time.Time
+	stopOnce        sync.Once
+	stopErr         error
+	stopped         atomic.Bool
+	logger          *log.Logger
+	logSink         io.Closer
+	startupWarnings []string
+	pidFileOwned    bool
+	socketOwned     bool
 }
 
 func NewDaemon(config *core.Config) (*Daemon, error) {
@@ -50,6 +88,7 @@ func NewDaemon(config *core.Config) (*Daemon, error) {
 	}
 
 	registry := monitors.NewMonitorRegistry()
+	var startupWarnings []string
 
 	for _, tool := range config.Monitoring.EnabledTools {
 		tool = core.NormalizeToolName(tool)
@@ -72,106 +111,215 @@ func NewDaemon(config *core.Config) (*Daemon, error) {
 		case core.ToolPoetry:
 			monitor = monitors.NewPoetryMonitor()
 		default:
-			log.Printf("Unknown tool: %s", tool)
+			warning := fmt.Sprintf("Unknown tool: %s", tool)
+			startupWarnings = append(startupWarnings, warning)
 			continue
 		}
 
 		if err := monitor.Initialize(config); err != nil {
-			log.Printf("Failed to initialize %s monitor: %v", tool, err)
+			warning := fmt.Sprintf("Failed to initialize %s monitor: %v", tool, err)
+			startupWarnings = append(startupWarnings, warning)
 			continue
 		}
 		registry.Register(monitor)
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	background := context.Background()
+	ctx, cancel := context.WithCancel(background)
+	eventChan := make(chan *core.ExecutionRecord, core.DefaultEventBuffer)
+	socketSlots := make(chan struct{}, maxSocketHandlers)
+	startTime := time.Now()
 
 	d := &Daemon{
-		config:    config,
-		storage:   store,
-		registry:  registry,
-		eventChan: make(chan *core.ExecutionRecord, core.DefaultEventBuffer),
-		ctx:       ctx,
-		cancel:    cancel,
-		startTime: time.Now(),
+		config:          config,
+		storage:         store,
+		registry:        registry,
+		eventChan:       eventChan,
+		socketSlots:     socketSlots,
+		ctx:             ctx,
+		cancel:          cancel,
+		startTime:       startTime,
+		logger:          log.Default(),
+		startupWarnings: startupWarnings,
 	}
 
 	return d, nil
 }
 
 func (d *Daemon) Start() error {
-	log.Printf("Starting DIU daemon v%s", core.CurrentVersion())
-
-	if err := d.writePIDFile(); err != nil {
-		return fmt.Errorf("failed to write PID file: %w", err)
+	if err := d.startLocalObservability(); err != nil {
+		return fmt.Errorf("failed to initialize local observability: %w", err)
 	}
-
-	d.wg.Add(1)
-	go d.processEvents()
-
-	d.wg.Add(1)
-	go d.runPeriodicCleanup()
-
-	if err := d.registry.StartAll(d.ctx, d.eventChan); err != nil {
-		return fmt.Errorf("failed to start monitors: %w", err)
+	d.logStartup()
+	if err := d.claimRuntimePaths(); err != nil {
+		return d.failStart(err)
 	}
-
-	if err := d.startSocketListener(); err != nil {
-		log.Printf("Failed to start socket listener: %v", err)
+	d.startBackgroundWorkers()
+	if err := d.startConfiguredServices(); err != nil {
+		return d.failStart(err)
 	}
-
-	if d.config.API.Enabled {
-		if err := d.startHTTPServer(); err != nil {
-			return fmt.Errorf("failed to start HTTP server: %w", err)
-		}
-	}
-
 	d.handleSignals()
-
 	return nil
 }
 
+func (d *Daemon) logStartup() {
+	d.logger.Printf("Starting DIU daemon v%s", core.CurrentVersion())
+	for _, warning := range d.startupWarnings {
+		d.logger.Print(warning)
+	}
+}
+
+func (d *Daemon) claimRuntimePaths() error {
+	if err := d.rejectLivePID(); err != nil {
+		return err
+	}
+	if err := d.startSocketListener(); err != nil {
+		return fmt.Errorf("failed to start socket listener: %w", err)
+	}
+	if err := d.removeStalePIDFile(); err != nil {
+		return fmt.Errorf("failed to remove stale PID file: %w", err)
+	}
+	if err := d.writePIDFile(); err != nil {
+		return fmt.Errorf("failed to write PID file: %w", err)
+	}
+	d.pidFileOwned = true
+	return nil
+}
+
+func (d *Daemon) startBackgroundWorkers() {
+	d.wg.Add(1)
+	go d.processEvents()
+	d.wg.Add(1)
+	go d.runPeriodicCleanup()
+}
+
+func (d *Daemon) startConfiguredServices() error {
+	if err := d.registry.StartAll(d.ctx, d.eventChan); err != nil {
+		return fmt.Errorf("failed to start monitors: %w", err)
+	}
+	if !d.config.API.Enabled {
+		return nil
+	}
+	if err := d.startHTTPServer(); err != nil {
+		return fmt.Errorf("failed to start HTTP server: %w", err)
+	}
+	return nil
+}
+
+func (d *Daemon) rejectLivePID() error {
+	pid, err := readPID(d.config.Daemon.PIDFile)
+	if err != nil || !ProcessRunning(pid) {
+		return nil
+	}
+	return fmt.Errorf("daemon process %d is already running", pid)
+}
+
+func (d *Daemon) startLocalObservability() error {
+	logger, sink, err := observability.NewLocalLogger(d.config.Daemon.DataDir)
+	if err != nil {
+		return err
+	}
+	d.logger = logger
+	d.logSink = sink
+	return nil
+}
+
+func (d *Daemon) failStart(startErr error) error {
+	d.logger.Printf("Failed to start DIU daemon: %v", startErr)
+	if stopErr := d.Stop(); stopErr != nil {
+		return fmt.Errorf("%w; cleanup failed: %v", startErr, stopErr)
+	}
+	return startErr
+}
+
 func (d *Daemon) Stop() error {
-	var stopErr error
-	d.stopOnce.Do(func() {
-		log.Println("Stopping DIU daemon...")
-		d.stopped.Store(true)
+	d.stopOnce.Do(d.stop)
+	return d.stopErr
+}
 
-		d.cancel()
+func (d *Daemon) stop() {
+	d.logger.Println("Stopping DIU daemon...")
+	d.stopped.Store(true)
+	d.cancel()
+	d.stopMonitors()
+	d.stopHTTPServer()
+	d.stopSocketListener()
+	d.wg.Wait()
+	d.closeStorage()
+	d.releaseRuntimePaths()
+	d.logger.Println("DIU daemon stopped")
+	d.closeLogSink()
+}
 
-		if err := d.registry.StopAll(); err != nil {
-			log.Printf("Error stopping monitors: %v", err)
-		}
+func (d *Daemon) stopMonitors() {
+	d.recordStopError("stopping monitors", d.registry.StopAll())
+}
 
-		if d.httpServer != nil {
-			ctx, cancel := context.WithTimeout(context.Background(), core.DefaultShutdownTimeout)
-			defer cancel()
-			if err := d.httpServer.Shutdown(ctx); err != nil {
-				log.Printf("Error shutting down HTTP server: %v", err)
-			}
-		}
+func (d *Daemon) stopHTTPServer() {
+	if d.httpServer == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), core.DefaultShutdownTimeout)
+	defer cancel()
+	d.recordStopError("shutting down HTTP server", d.httpServer.Shutdown(ctx))
+}
 
-		if d.socketListener != nil {
-			if err := d.socketListener.Close(); err != nil {
-				log.Printf("Error closing socket listener: %v", err)
-			}
-		}
+func (d *Daemon) stopSocketListener() {
+	if d.socketListener != nil {
+		d.recordStopError("closing socket listener", d.socketListener.Close())
+	}
+}
 
-		d.wg.Wait()
+func (d *Daemon) closeStorage() {
+	d.recordStopError("closing storage", d.storage.Close())
+}
 
-		if err := d.storage.Close(); err != nil {
-			log.Printf("Error closing storage: %v", err)
-		}
+func (d *Daemon) releaseRuntimePaths() {
+	if d.pidFileOwned {
+		d.recordStopError("removing PID file", d.removeOwnedPIDFile())
+	}
+	if d.socketOwned {
+		d.recordStopError("removing socket file", d.removeOwnedSocket())
+	}
+}
 
-		if err := os.Remove(d.config.Daemon.PIDFile); err != nil && !os.IsNotExist(err) {
-			log.Printf("Error removing PID file: %v", err)
-		}
-		if err := os.Remove(d.config.Daemon.SocketPath); err != nil && !os.IsNotExist(err) {
-			log.Printf("Error removing socket file: %v", err)
-		}
+func (d *Daemon) closeLogSink() {
+	if d.logSink != nil {
+		d.stopErr = errors.Join(d.stopErr, d.logSink.Close())
+	}
+}
 
-		log.Println("DIU daemon stopped")
-	})
-	return stopErr
+func (d *Daemon) recordStopError(action string, err error) {
+	if err == nil {
+		return
+	}
+	d.logger.Printf("Error %s: %v", action, err)
+	d.stopErr = errors.Join(d.stopErr, err)
+}
+
+func (d *Daemon) removeOwnedPIDFile() error {
+	pid, err := readPID(d.config.Daemon.PIDFile)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil || pid != os.Getpid() {
+		return nil
+	}
+	return os.Remove(d.config.Daemon.PIDFile)
+}
+
+func (d *Daemon) removeOwnedSocket() error {
+	info, err := os.Lstat(d.config.Daemon.SocketPath)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if d.socketInfo == nil || !os.SameFile(d.socketInfo, info) {
+		return nil
+	}
+	return os.Remove(d.config.Daemon.SocketPath)
 }
 
 func (d *Daemon) Wait() {
@@ -191,7 +339,8 @@ func (d *Daemon) processEvents() {
 			if !ok {
 				return
 			}
-			d.storeExecution(event)
+			events := d.collectEventBatch(event)
+			d.storeExecutions(events)
 
 		case <-d.ctx.Done():
 			d.drainQueuedEvents()
@@ -207,17 +356,53 @@ func (d *Daemon) drainQueuedEvents() {
 			if !ok {
 				return
 			}
-			d.storeExecution(event)
+			events := d.collectEventBatch(event)
+			d.storeExecutions(events)
 		default:
 			return
 		}
 	}
 }
 
-func (d *Daemon) storeExecution(event *core.ExecutionRecord) {
-	d.enrichExecution(event)
-	if err := d.storage.AddExecution(event); err != nil {
-		log.Printf("Failed to store execution: %v", err)
+func (d *Daemon) collectEventBatch(first *core.ExecutionRecord) []*core.ExecutionRecord {
+	events := []*core.ExecutionRecord{first}
+	for len(events) < maxEventBatchSize {
+		select {
+		case event, ok := <-d.eventChan:
+			if !ok {
+				return events
+			}
+			events = append(events, event)
+		default:
+			return events
+		}
+	}
+	return events
+}
+
+type executionBatchStorage interface {
+	AddExecutions(records []*core.ExecutionRecord) error
+}
+
+func (d *Daemon) storeExecutions(events []*core.ExecutionRecord) {
+	for _, event := range events {
+		d.enrichExecution(event)
+	}
+	batchStore, supportsBatching := d.storage.(executionBatchStorage)
+	if supportsBatching {
+		err := batchStore.AddExecutions(events)
+		d.logStorageError(err)
+		return
+	}
+	for _, event := range events {
+		err := d.storage.AddExecution(event)
+		d.logStorageError(err)
+	}
+}
+
+func (d *Daemon) logStorageError(err error) {
+	if err != nil {
+		d.logger.Printf("Failed to store execution: %v", err)
 	}
 }
 
@@ -238,98 +423,266 @@ func (d *Daemon) enrichExecution(record *core.ExecutionRecord) {
 func (d *Daemon) runPeriodicCleanup() {
 	defer d.wg.Done()
 	d.pruneOldRecords()
-	ticker := time.NewTicker(24 * time.Hour)
-	defer ticker.Stop()
+	cleanupTicker := time.NewTicker(24 * time.Hour)
+	defer cleanupTicker.Stop()
+	backupTicker, backupEvents := d.backupSchedule()
+	if backupTicker != nil {
+		defer backupTicker.Stop()
+	}
 	for {
 		select {
-		case <-ticker.C:
+		case <-cleanupTicker.C:
 			d.pruneOldRecords()
+		case <-backupEvents:
+			d.backupStorage()
 		case <-d.ctx.Done():
 			return
 		}
 	}
 }
 
+func (d *Daemon) backupSchedule() (*time.Ticker, <-chan time.Time) {
+	if !d.config.Storage.BackupEnabled {
+		return nil, nil
+	}
+	interval := d.config.Storage.BackupInterval
+	if interval <= 0 {
+		interval = 24 * time.Hour
+	}
+	ticker := time.NewTicker(interval)
+	return ticker, ticker.C
+}
+
+func (d *Daemon) backupStorage() {
+	if err := d.storage.Backup(); err != nil {
+		d.logger.Printf("Failed to back up storage: %v", err)
+	}
+}
+
 func (d *Daemon) pruneOldRecords() {
-	if err := d.storage.Cleanup(time.Time{}); err != nil {
-		log.Printf("Failed to prune old records: %v", err)
+	emptyCutoff := time.Time{}
+	if err := d.storage.Cleanup(emptyCutoff); err != nil {
+		d.logger.Printf("Failed to prune old records: %v", err)
 	}
 }
 
 func (d *Daemon) startSocketListener() error {
-	socketPath := d.config.Daemon.SocketPath
-
-	if err := os.Remove(socketPath); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("failed to remove stale socket: %w", err)
+	listener, socketInfo, err := openSocketListener(d.config.Daemon.SocketPath)
+	if err != nil {
+		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(socketPath), core.OwnerDirectoryMode); err != nil {
+	d.socketListener = listener
+	d.socketInfo = socketInfo
+	d.socketOwned = true
+	d.startSocketAcceptLoop(listener)
+	return nil
+}
+
+func openSocketListener(path string) (net.Listener, os.FileInfo, error) {
+	if err := prepareSocketPath(path); err != nil {
+		return nil, nil, err
+	}
+	listener, err := net.Listen("unix", path)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to create socket: %w", err)
+	}
+	disableSocketAutoUnlink(listener)
+	info, err := secureAndInspectSocket(listener, path)
+	return listener, info, err
+}
+
+func prepareSocketPath(path string) error {
+	if err := removeStaleSocket(path); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), core.OwnerDirectoryMode); err != nil {
 		return fmt.Errorf("failed to create socket directory: %w", err)
 	}
+	return nil
+}
 
-	listener, err := net.Listen("unix", socketPath)
-	if err != nil {
-		return fmt.Errorf("failed to create socket: %w", err)
+func disableSocketAutoUnlink(listener net.Listener) {
+	if unixListener, ok := listener.(*net.UnixListener); ok {
+		unixListener.SetUnlinkOnClose(false)
 	}
+}
 
-	d.socketListener = listener
+func secureAndInspectSocket(listener net.Listener, path string) (os.FileInfo, error) {
+	if err := os.Chmod(path, core.PrivateFileMode); err != nil {
+		cleanupFailedSocket(listener, path)
+		return nil, fmt.Errorf("failed to secure socket: %w", err)
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		cleanupFailedSocket(listener, path)
+		return nil, fmt.Errorf("failed to inspect socket: %w", err)
+	}
+	return info, nil
+}
 
+func cleanupFailedSocket(listener net.Listener, path string) {
+	_ = listener.Close()
+	_ = os.Remove(path)
+}
+
+func (d *Daemon) startSocketAcceptLoop(listener net.Listener) {
+	d.wg.Add(1)
+	go d.acceptSocketConnections(listener)
+}
+
+func (d *Daemon) acceptSocketConnections(listener net.Listener) {
+	defer d.wg.Done()
+	for d.acceptSocketConnection(listener) {
+	}
+}
+
+func (d *Daemon) acceptSocketConnection(listener net.Listener) bool {
+	if !d.acquireSocketSlot() {
+		return false
+	}
+	conn, err := listener.Accept()
+	if err != nil {
+		d.releaseSocketSlot()
+		return d.continueAfterAcceptError(err)
+	}
+	d.startSocketHandler(conn)
+	return true
+}
+
+func (d *Daemon) continueAfterAcceptError(err error) bool {
+	if d.ctx.Err() != nil {
+		return false
+	}
+	d.logger.Printf("Socket accept error: %v", err)
+	return true
+}
+
+func (d *Daemon) startSocketHandler(conn net.Conn) {
 	d.wg.Add(1)
 	go func() {
 		defer d.wg.Done()
-		for {
-			conn, err := listener.Accept()
-			if err != nil {
-				select {
-				case <-d.ctx.Done():
-					return
-				default:
-					log.Printf("Socket accept error: %v", err)
-					continue
-				}
-			}
-
-			d.wg.Add(1)
-			go func() {
-				defer d.wg.Done()
-				d.handleSocketConnection(conn)
-			}()
-		}
+		defer d.releaseSocketSlot()
+		d.handleSocketConnection(conn)
 	}()
+}
 
+func (d *Daemon) acquireSocketSlot() bool {
+	select {
+	case d.socketSlots <- struct{}{}:
+		return true
+	case <-d.ctx.Done():
+		return false
+	}
+}
+
+func (d *Daemon) releaseSocketSlot() {
+	<-d.socketSlots
+}
+
+func removeStaleSocket(path string) error {
+	info, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("failed to inspect stale socket: %w", err)
+	}
+	if info.Mode()&os.ModeSocket == 0 {
+		return fmt.Errorf("failed to remove stale socket: path is not a socket: %s", path)
+	}
+	conn, dialErr := net.DialTimeout("unix", path, socketControlTimeout)
+	if dialErr == nil {
+		_ = conn.Close()
+		return fmt.Errorf("failed to remove stale socket: socket is active: %s", path)
+	}
+	if err := os.Remove(path); err != nil {
+		return fmt.Errorf("failed to remove stale socket: %w", err)
+	}
 	return nil
 }
 
 func (d *Daemon) handleSocketConnection(conn net.Conn) {
-	defer func() {
-		if err := conn.Close(); err != nil {
-			log.Printf("Error closing socket connection: %v", err)
-		}
-	}()
-
-	if err := conn.SetReadDeadline(time.Now().Add(core.DefaultSocketReadTimeout)); err != nil {
-		log.Printf("Failed to set socket read deadline: %v", err)
+	defer d.closeSocketConnection(conn)
+	raw, err := d.readSocketRequest(conn)
+	if err != nil {
+		d.logger.Printf("Failed to decode socket request: %v", err)
+		return
 	}
+	if d.handleSocketControlMessage(conn, raw) {
+		return
+	}
+	record, err := decodeSocketExecution(raw)
+	if err != nil {
+		d.logger.Printf("Failed to decode execution record: %v", err)
+		return
+	}
+	d.admitSocketExecution(record)
+}
 
-	decoder := json.NewDecoder(conn)
+func (d *Daemon) closeSocketConnection(conn net.Conn) {
+	if err := conn.Close(); err != nil {
+		d.logger.Printf("Error closing socket connection: %v", err)
+	}
+}
+
+func (d *Daemon) readSocketRequest(conn net.Conn) (json.RawMessage, error) {
+	readDeadline := time.Now().Add(core.DefaultSocketReadTimeout)
+	if err := conn.SetReadDeadline(readDeadline); err != nil {
+		d.logger.Printf("Failed to set socket read deadline: %v", err)
+	}
+	decoder := json.NewDecoder(io.LimitReader(conn, maxExecutionRecordBodyBytes+1))
+	var raw json.RawMessage
+	if err := decoder.Decode(&raw); err != nil {
+		return nil, err
+	}
+	if len(raw) > maxExecutionRecordBodyBytes {
+		return nil, fmt.Errorf("socket request exceeds %d bytes", maxExecutionRecordBodyBytes)
+	}
+	return raw, nil
+}
+
+func (d *Daemon) handleSocketControlMessage(conn net.Conn, raw json.RawMessage) bool {
+	var control socketControlRequest
+	if err := json.Unmarshal(raw, &control); err == nil && control.Type != "" {
+		d.handleSocketControl(conn, control)
+		return true
+	}
+	return false
+}
+
+func decodeSocketExecution(raw json.RawMessage) (*core.ExecutionRecord, error) {
 	var record core.ExecutionRecord
-	if err := decoder.Decode(&record); err != nil {
-		log.Printf("Failed to decode execution record: %v", err)
-		return
+	if err := json.Unmarshal(raw, &record); err != nil {
+		return nil, err
 	}
+	return &record, nil
+}
 
+func (d *Daemon) admitSocketExecution(record *core.ExecutionRecord) {
 	select {
+	case d.eventChan <- record:
 	case <-d.ctx.Done():
-		log.Printf("Daemon stopping, dropping socket event")
-		return
+		d.logger.Printf("Daemon stopping, dropping socket event")
+	case <-time.After(eventAdmissionTimeout):
+		d.logger.Printf("Event queue full, rejecting socket event")
+	}
+}
+
+func (d *Daemon) handleSocketControl(conn net.Conn, request socketControlRequest) {
+	pid := os.Getpid()
+	response := socketControlResponse{Status: socketStatusOK, PID: pid}
+	switch request.Type {
+	case socketRequestPing:
+		_ = json.NewEncoder(conn).Encode(response)
+	case socketRequestStop:
+		_ = json.NewEncoder(conn).Encode(response)
+		go func() {
+			if err := d.Stop(); err != nil {
+				d.logger.Printf("Error stopping daemon: %v", err)
+			}
+		}()
 	default:
-	}
-
-	select {
-	case d.eventChan <- &record:
-	case <-d.ctx.Done():
-		log.Printf("Daemon stopping, dropping socket event")
-	case <-time.After(time.Second):
-		log.Printf("Event channel full, dropping event")
+		d.logger.Printf("Unknown socket control request: %s", request.Type)
 	}
 }
 
@@ -361,9 +714,9 @@ func (d *Daemon) startHTTPServer() error {
 	d.wg.Add(1)
 	go func() {
 		defer d.wg.Done()
-		log.Printf("HTTP API server listening on %s", actualAddr)
+		d.logger.Printf("HTTP API server listening on %s", actualAddr)
 		if err := d.httpServer.Serve(listener); err != nil && err != http.ErrServerClosed {
-			log.Printf("HTTP server error: %v", err)
+			d.logger.Printf("HTTP server error: %v", err)
 		}
 	}()
 
@@ -373,9 +726,12 @@ func (d *Daemon) startHTTPServer() error {
 func (d *Daemon) handleExecutions(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
+		tool := core.NormalizeToolName(r.URL.Query().Get("tool"))
+		packageName := r.URL.Query().Get("package")
 		opts := storage.QueryOptions{
-			Tool:    core.NormalizeToolName(r.URL.Query().Get("tool")),
-			Package: r.URL.Query().Get("package"),
+			Tool:    tool,
+			Package: packageName,
+			Limit:   defaultExecutionQueryLimit,
 		}
 
 		if limitStr := r.URL.Query().Get("limit"); limitStr != "" {
@@ -395,7 +751,7 @@ func (d *Daemon) handleExecutions(w http.ResponseWriter, r *http.Request) {
 
 		w.Header().Set("Content-Type", "application/json")
 		if err := json.NewEncoder(w).Encode(executions); err != nil {
-			log.Printf("Failed to encode executions response: %v", err)
+			d.logger.Printf("Failed to encode executions response: %v", err)
 		}
 
 	case http.MethodPost:
@@ -410,7 +766,9 @@ func (d *Daemon) handleExecutions(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusAccepted)
 		case <-d.ctx.Done():
 			http.Error(w, "Daemon stopping", http.StatusServiceUnavailable)
-		default:
+		case <-r.Context().Done():
+			http.Error(w, "Request canceled", http.StatusRequestTimeout)
+		case <-time.After(eventAdmissionTimeout):
 			http.Error(w, "Event queue full", http.StatusServiceUnavailable)
 		}
 
@@ -427,7 +785,8 @@ func decodeExecutionRecordRequest(w http.ResponseWriter, r *http.Request) (*core
 	if err := decoder.Decode(&record); err != nil {
 		return nil, err
 	}
-	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+	emptyObject := &struct{}{}
+	if err := decoder.Decode(emptyObject); err != io.EOF {
 		return nil, fmt.Errorf("request body must contain a single JSON object")
 	}
 	if err := validateExecutionRecord(record); err != nil {
@@ -472,7 +831,7 @@ func (d *Daemon) handlePackages(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(packages); err != nil {
-		log.Printf("Failed to encode packages response: %v", err)
+		d.logger.Printf("Failed to encode packages response: %v", err)
 	}
 }
 
@@ -490,7 +849,7 @@ func (d *Daemon) handleStats(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(stats); err != nil {
-		log.Printf("Failed to encode stats response: %v", err)
+		d.logger.Printf("Failed to encode stats response: %v", err)
 	}
 }
 
@@ -500,25 +859,57 @@ func (d *Daemon) handleHealth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	version := core.CurrentVersion()
+	uptime := time.Since(d.startTime).String()
+	monitorsActive := len(d.registry.GetAll())
 	health := map[string]interface{}{
 		"status":          "healthy",
-		"version":         core.CurrentVersion(),
-		"uptime":          time.Since(d.startTime).String(),
-		"monitors_active": len(d.registry.GetAll()),
+		"version":         version,
+		"uptime":          uptime,
+		"monitors_active": monitorsActive,
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(health); err != nil {
-		log.Printf("Failed to encode health response: %v", err)
+		d.logger.Printf("Failed to encode health response: %v", err)
 	}
 }
 
 func (d *Daemon) writePIDFile() error {
-	pid := os.Getpid()
 	if err := os.MkdirAll(filepath.Dir(d.config.Daemon.PIDFile), core.OwnerDirectoryMode); err != nil {
 		return err
 	}
-	return os.WriteFile(d.config.Daemon.PIDFile, []byte(strconv.Itoa(pid)), core.PrivateFileMode)
+	flags := os.O_CREATE | os.O_EXCL | os.O_WRONLY
+	file, err := safefs.OpenFile(d.config.Daemon.PIDFile, flags, core.PrivateFileMode)
+	if err != nil {
+		return err
+	}
+	data := []byte(strconv.Itoa(os.Getpid()))
+	_, writeErr := file.Write(data)
+	closeErr := file.Close()
+	if err := errors.Join(writeErr, closeErr); err != nil {
+		_ = os.Remove(d.config.Daemon.PIDFile)
+		return err
+	}
+	return nil
+}
+
+func (d *Daemon) removeStalePIDFile() error {
+	info, err := safefs.Lstat(d.config.Daemon.PIDFile)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("PID path is not a regular file: %s", d.config.Daemon.PIDFile)
+	}
+	pid, pidErr := readPID(d.config.Daemon.PIDFile)
+	if pidErr == nil && ProcessRunning(pid) {
+		return fmt.Errorf("daemon process %d is still running", pid)
+	}
+	return os.Remove(d.config.Daemon.PIDFile)
 }
 
 func (d *Daemon) handleSignals() {
@@ -531,10 +922,10 @@ func (d *Daemon) handleSignals() {
 		defer signal.Stop(sigChan)
 		select {
 		case sig := <-sigChan:
-			log.Printf("Received signal: %v", sig)
+			d.logger.Printf("Received signal: %v", sig)
 			go func() {
 				if err := d.Stop(); err != nil {
-					log.Printf("Error stopping daemon: %v", err)
+					d.logger.Printf("Error stopping daemon: %v", err)
 				}
 			}()
 		case <-d.ctx.Done():
@@ -544,25 +935,100 @@ func (d *Daemon) handleSignals() {
 }
 
 func IsRunning(config *core.Config) bool {
-	if _, err := os.Stat(config.Daemon.PIDFile); err != nil {
-		return false
-	}
-
-	pidBytes, err := os.ReadFile(config.Daemon.PIDFile)
+	pid, err := readPID(config.Daemon.PIDFile)
 	if err != nil {
 		return false
 	}
+	response, err := sendSocketControl(config.Daemon.SocketPath, socketRequestPing)
+	return err == nil && response.PID == pid
+}
 
+func RequestStop(config *core.Config) error {
+	pid, err := readPID(config.Daemon.PIDFile)
+	if err != nil {
+		return fmt.Errorf("failed to read daemon PID: %w", err)
+	}
+	pingResponse, err := daemonSocketControlSender(config.Daemon.SocketPath, socketRequestPing)
+	if err != nil {
+		return signalDaemonProcess(pid)
+	}
+	if pingResponse.PID != pid {
+		return daemonIdentityError(pid, pingResponse.PID)
+	}
+	return requestSocketStop(config, pid)
+}
+
+func requestSocketStop(config *core.Config, pid int) error {
+	response, err := daemonSocketControlSender(config.Daemon.SocketPath, socketRequestStop)
+	if err != nil {
+		return signalDaemonProcess(pid)
+	}
+	if response.PID != pid {
+		return daemonIdentityError(pid, response.PID)
+	}
+	return nil
+}
+
+func daemonIdentityError(filePID, socketPID int) error {
+	return fmt.Errorf("daemon identity mismatch: PID file has %d, socket reports %d", filePID, socketPID)
+}
+
+func readPID(path string) (int, error) {
+	info, err := safefs.Lstat(path)
+	if err != nil {
+		return 0, err
+	}
+	if !info.Mode().IsRegular() {
+		return 0, fmt.Errorf("PID path is not a regular file: %s", path)
+	}
+	pidBytes, err := safefs.ReadFile(path)
+	if err != nil {
+		return 0, err
+	}
 	pid, err := strconv.Atoi(strings.TrimSpace(string(pidBytes)))
-	if err != nil {
-		return false
+	if err != nil || pid < 1 {
+		return 0, fmt.Errorf("invalid PID %q", strings.TrimSpace(string(pidBytes)))
 	}
+	return pid, nil
+}
 
-	process, err := os.FindProcess(pid)
-	if err != nil {
-		return false
+func signalDaemonProcess(pid int) error {
+	if err := daemonProcessSignaler(pid, syscall.SIGTERM); err != nil {
+		return fmt.Errorf("failed to signal daemon process %d: %w", pid, err)
 	}
+	return nil
+}
 
-	err = process.Signal(syscall.Signal(0))
-	return err == nil
+func ReadPID(config *core.Config) (int, error) {
+	return readPID(config.Daemon.PIDFile)
+}
+
+func ProcessRunning(pid int) bool {
+	err := syscall.Kill(pid, 0)
+	return err == nil || errors.Is(err, syscall.EPERM)
+}
+
+func sendSocketControl(path, requestType string) (socketControlResponse, error) {
+	conn, err := net.DialTimeout("unix", path, socketControlTimeout)
+	if err != nil {
+		return socketControlResponse{}, err
+	}
+	defer func() {
+		_ = conn.Close()
+	}()
+	if err := conn.SetDeadline(time.Now().Add(socketControlTimeout)); err != nil {
+		return socketControlResponse{}, err
+	}
+	request := socketControlRequest{Type: requestType}
+	if err := json.NewEncoder(conn).Encode(request); err != nil {
+		return socketControlResponse{}, err
+	}
+	var response socketControlResponse
+	if err := json.NewDecoder(conn).Decode(&response); err != nil {
+		return socketControlResponse{}, err
+	}
+	if response.Status != socketStatusOK || response.PID < 1 {
+		return socketControlResponse{}, fmt.Errorf("invalid daemon response")
+	}
+	return response, nil
 }

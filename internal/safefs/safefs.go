@@ -1,11 +1,32 @@
 package safefs
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 )
+
+func SHA256(path string) (digest string, err error) {
+	file, err := OpenFile(path, os.O_RDONLY, 0)
+	if err != nil {
+		return "", err
+	}
+	defer func() {
+		if closeErr := file.Close(); err == nil && closeErr != nil {
+			err = closeErr
+		}
+	}()
+
+	hash := sha256.New()
+	if _, err := io.Copy(hash, file); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(hash.Sum(nil)), nil
+}
 
 func Stat(path string) (info os.FileInfo, err error) {
 	root, name, err := openRootFor(path)

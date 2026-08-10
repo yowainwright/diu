@@ -22,14 +22,13 @@ import (
 func TestDaemonStatusNotRunning(t *testing.T) {
 	setupTestHomeConfig(t)
 
-	output := captureStdout(t, func() {
+	output := captureStderr(t, func() {
 		if err := daemonStatus(&command{}, nil); err != nil {
-			t.Fatalf("daemonStatus failed: %v", err)
+			t.Fatalf("daemonStatus error = %v", err)
 		}
 	})
-
 	if !strings.Contains(output, "DIU daemon is not running") {
-		t.Fatalf("Expected 'not running' message, got: %q", output)
+		t.Fatalf("daemonStatus output = %q", output)
 	}
 }
 
@@ -1663,12 +1662,15 @@ func TestStopDaemonWithConfigMissingPIDFile(t *testing.T) {
 	config := setupTestHomeConfig(t)
 	restore := SetDaemonChecker(MockDaemonChecker{isRunning: true})
 	defer restore()
+	requestErr := errors.New("failed to read daemon PID: file does not exist")
+	restoreStop := stubDaemonStopRequest(requestErr)
+	defer restoreStop()
 
 	err := stopDaemonWithConfig(config)
 	if err == nil {
 		t.Fatal("expected missing PID file error, got nil")
 	}
-	if !strings.Contains(err.Error(), "failed to read PID file") {
+	if !strings.Contains(err.Error(), "failed to read daemon PID") {
 		t.Fatalf("expected PID read error, got %v", err)
 	}
 }
@@ -1677,6 +1679,9 @@ func TestStopDaemonWithConfigInvalidPID(t *testing.T) {
 	config := setupTestHomeConfig(t)
 	restore := SetDaemonChecker(MockDaemonChecker{isRunning: true})
 	defer restore()
+	requestErr := errors.New("failed to read daemon PID: invalid PID")
+	restoreStop := stubDaemonStopRequest(requestErr)
+	defer restoreStop()
 
 	if err := config.EnsureDirectories(); err != nil {
 		t.Fatalf("failed to ensure directories: %v", err)
@@ -1698,6 +1703,9 @@ func TestStopDaemonWithConfigSignalError(t *testing.T) {
 	config := setupTestHomeConfig(t)
 	restore := SetDaemonChecker(MockDaemonChecker{isRunning: true})
 	defer restore()
+	requestErr := errors.New("socket unavailable")
+	restoreStop := stubDaemonStopRequest(requestErr)
+	defer restoreStop()
 
 	if err := config.EnsureDirectories(); err != nil {
 		t.Fatalf("failed to ensure directories: %v", err)
@@ -1712,6 +1720,16 @@ func TestStopDaemonWithConfigSignalError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "failed to stop daemon") {
 		t.Fatalf("expected signal error, got %v", err)
+	}
+}
+
+func stubDaemonStopRequest(requestErr error) func() {
+	old := daemonStopRequester
+	daemonStopRequester = func(*core.Config) error {
+		return requestErr
+	}
+	return func() {
+		daemonStopRequester = old
 	}
 }
 

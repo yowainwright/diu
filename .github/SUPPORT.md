@@ -10,6 +10,8 @@ https://github.com/yowainwright/diu/issues/new/choose
 
 Include the DIU version, macOS version, install method, exact command, expected behavior, and actual behavior.
 
+Run `diu diagnostics --output diu-diagnostics.json`, review the file, and attach it to the issue. DIU never uploads diagnostics.
+
 ## Feature Requests
 
 Open a feature request with the issue template:

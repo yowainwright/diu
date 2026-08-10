@@ -196,6 +196,20 @@ func newRootCommand() *command {
 		RunE:  backup,
 	}
 
+	var diagnosticsOutput string
+	diagnosticsCmd := &command{
+		Use:   "diagnostics",
+		Short: "Create a redacted local diagnostic report",
+		RunE:  diagnostics,
+	}
+	diagnosticsCmd.Flags().StringVarP(&diagnosticsOutput, "output", "o", "", "Write report to a new private file")
+
+	statusCmd := &command{
+		Use:   "status",
+		Short: "Show DIU usage, activity, and local paths",
+		RunE:  showStatus,
+	}
+
 	setupCmd := &command{
 		Use:   "setup",
 		Short: "Install wrappers and initialize local storage",
@@ -228,6 +242,8 @@ func newRootCommand() *command {
 		configCmd,
 		cleanupCmd,
 		backupCmd,
+		statusCmd,
+		diagnosticsCmd,
 		setupCmd,
 		uninstallCmd,
 		scanCmd,
