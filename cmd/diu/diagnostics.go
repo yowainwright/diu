@@ -16,6 +16,7 @@ import (
 	"github.com/yowainwright/diu/internal/dx"
 	"github.com/yowainwright/diu/internal/observability"
 	"github.com/yowainwright/diu/internal/safefs"
+	"github.com/yowainwright/diu/internal/storage"
 )
 
 const diagnosticSchemaVersion = 2
@@ -257,6 +258,7 @@ func diagnosticManagedPaths(config *core.Config) []string {
 	return []string{
 		configPath,
 		config.Storage.JSONFile,
+		storage.ExecutionLogPath(config.Storage.JSONFile),
 		config.Daemon.PIDFile,
 		config.Daemon.SocketPath,
 		observability.LogPath(config.Daemon.DataDir),
@@ -266,8 +268,10 @@ func diagnosticManagedPaths(config *core.Config) []string {
 
 func diagnosticReplacements(config *core.Config) map[string]string {
 	homeDir, _ := os.UserHomeDir()
+	executionLogPath := storage.ExecutionLogPath(config.Storage.JSONFile)
 	return map[string]string{
 		config.Storage.JSONFile:              "$STORAGE_FILE",
+		executionLogPath:                     "$EXECUTION_LOG",
 		config.Monitoring.Process.WrapperDir: "$WRAPPER_DIR",
 		config.Daemon.PIDFile:                "$PID_FILE",
 		config.Daemon.SocketPath:             "$SOCKET_PATH",

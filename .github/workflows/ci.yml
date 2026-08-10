@@ -44,7 +44,7 @@ jobs:
     runs-on: macos-latest
     strategy:
       matrix:
-        go: ['1.25.12', '1.26.5']
+        go: ['1.26.5']
     steps:
       - uses: actions/checkout@v4
 

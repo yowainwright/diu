@@ -154,6 +154,9 @@ func (d *Daemon) Start() error {
 		return fmt.Errorf("failed to initialize local observability: %w", err)
 	}
 	d.logStartup()
+	if err := d.prepareStorage(); err != nil {
+		return d.failStart(err)
+	}
 	if err := d.claimRuntimePaths(); err != nil {
 		return d.failStart(err)
 	}
@@ -162,6 +165,13 @@ func (d *Daemon) Start() error {
 		return d.failStart(err)
 	}
 	d.handleSignals()
+	return nil
+}
+
+func (d *Daemon) prepareStorage() error {
+	if err := d.storage.Cleanup(time.Time{}); err != nil {
+		return fmt.Errorf("failed to prepare storage: %w", err)
+	}
 	return nil
 }
 
@@ -443,7 +453,6 @@ func (d *Daemon) enrichExecution(record *core.ExecutionRecord) {
 
 func (d *Daemon) runPeriodicCleanup() {
 	defer d.wg.Done()
-	d.pruneOldRecords()
 	cleanupTicker := time.NewTicker(24 * time.Hour)
 	defer cleanupTicker.Stop()
 	backupTicker, backupEvents := d.backupSchedule()

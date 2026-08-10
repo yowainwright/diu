@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -23,18 +24,20 @@ import (
 )
 
 type mockStorage struct {
-	mu          sync.RWMutex
-	executions  []*core.ExecutionRecord
-	packages    map[string][]*core.PackageInfo
-	closed      bool
-	addErr      error
-	getErr      error
-	packagesErr error
-	statsErr    error
-	initialized bool
-	batchCalls  int
-	backupCalls int
-	lastQuery   storage.QueryOptions
+	mu           sync.RWMutex
+	executions   []*core.ExecutionRecord
+	packages     map[string][]*core.PackageInfo
+	closed       bool
+	addErr       error
+	getErr       error
+	packagesErr  error
+	statsErr     error
+	initialized  bool
+	batchCalls   int
+	backupCalls  int
+	cleanupCalls int
+	cleanupErr   error
+	lastQuery    storage.QueryOptions
 }
 
 func newMockStorage() *mockStorage {
@@ -208,6 +211,10 @@ func (m *mockStorage) Restore(path string) error {
 func (m *mockStorage) Cleanup(before time.Time) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.cleanupCalls++
+	if m.cleanupErr != nil {
+		return m.cleanupErr
+	}
 	filtered := make([]*core.ExecutionRecord, 0)
 	for _, e := range m.executions {
 		if e.Timestamp.After(before) {
@@ -216,6 +223,76 @@ func (m *mockStorage) Cleanup(before time.Time) error {
 	}
 	m.executions = filtered
 	return nil
+}
+
+func TestPrepareStorage(t *testing.T) {
+	store := newMockStorage()
+	d := &Daemon{storage: store}
+	if err := d.prepareStorage(); err != nil {
+		t.Fatalf("prepareStorage failed: %v", err)
+	}
+	if store.cleanupCalls != 1 {
+		t.Fatalf("cleanup calls = %d", store.cleanupCalls)
+	}
+}
+
+func TestPrepareStorageFailure(t *testing.T) {
+	store := newMockStorage()
+	store.cleanupErr = errors.New("cleanup failed")
+	d := &Daemon{storage: store}
+	err := d.prepareStorage()
+	if err == nil || !strings.Contains(err.Error(), "failed to prepare storage") {
+		t.Fatalf("prepareStorage error = %v", err)
+	}
+}
+
+func TestDaemonStartCompactsStorageBeforeReady(t *testing.T) {
+	config := testConfig(t)
+	config.Daemon.SocketPath = shortSocketPath(t)
+	config.Storage.MaxExecutions = 5
+	config.Storage.MaxStorageBytes = 4096
+	writeOversizedDaemonStorage(t, config.Storage.JSONFile)
+	d, err := NewDaemon(config)
+	if err != nil {
+		t.Fatalf("NewDaemon failed: %v", err)
+	}
+	if err := d.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	defer stopDaemonForTest(t, d)
+	executionPath := storage.ExecutionLogPath(config.Storage.JSONFile)
+	info, err := os.Stat(executionPath)
+	if err != nil || info.Size() > config.Storage.MaxStorageBytes {
+		t.Fatalf("compacted storage = %v, %v", info, err)
+	}
+	if !IsRunning(config) {
+		t.Fatal("daemon was not ready after storage compaction")
+	}
+}
+
+func writeOversizedDaemonStorage(t *testing.T, path string) {
+	t.Helper()
+	records := make([]core.ExecutionRecord, 20)
+	for index := range records {
+		records[index] = core.ExecutionRecord{
+			ID:        executionID(index),
+			Tool:      core.ToolNPM,
+			Command:   strings.Repeat("x", 512),
+			Timestamp: time.Now(),
+		}
+	}
+	data := core.StorageData{Version: "1.0.0", Executions: records}
+	encoded, err := json.Marshal(data)
+	if err != nil {
+		t.Fatalf("Marshal failed: %v", err)
+	}
+	if err := os.WriteFile(path, encoded, core.PrivateFileMode); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+}
+
+func executionID(index int) string {
+	return fmt.Sprintf("execution-%d", index)
 }
 
 func (m *mockStorage) getExecutionCount() int {

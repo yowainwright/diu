@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -67,7 +68,7 @@ func TestJSONStorage(t *testing.T) {
 		t.Error("Storage file was not created")
 	}
 
-	info, err := os.Stat(config.Storage.JSONFile)
+	info, err := os.Stat(ExecutionLogPath(config.Storage.JSONFile))
 	if err != nil {
 		t.Fatalf("Failed to stat storage file: %v", err)
 	}
@@ -140,6 +141,24 @@ func TestAddExecutionsStoresBatch(t *testing.T) {
 	}
 	if len(executions) != len(records) {
 		t.Fatalf("execution count = %d, want %d", len(executions), len(records))
+	}
+}
+
+func TestAddExecutionRejectsUnmarshalableMetadata(t *testing.T) {
+	store := newTestStorage(t)
+	defer closeStorage(t, store)
+	record := &core.ExecutionRecord{
+		Tool: core.ToolNPM,
+		Metadata: map[string]interface{}{
+			"invalid": make(chan struct{}),
+		},
+	}
+	if err := store.AddExecution(record); err == nil {
+		t.Fatal("AddExecution succeeded with unmarshalable metadata")
+	}
+	executions, err := store.GetExecutions(QueryOptions{})
+	if err != nil || len(executions) != 0 {
+		t.Fatalf("executions after rejected append = %d, %v", len(executions), err)
 	}
 }
 
@@ -626,7 +645,15 @@ func TestBackupRestore(t *testing.T) {
 		if got := info.Mode().Perm(); got != core.PrivateFileMode {
 			t.Errorf("Backup file mode = %v, want %v", got, core.PrivateFileMode)
 		}
+		executionBackup := storage.(*JSONStorage).executionBackupPath(files[0])
+		if _, err := os.Stat(executionBackup); err != nil {
+			t.Fatalf("execution backup was not created: %v", err)
+		}
 	}
+	addExecution(t, storage, &core.ExecutionRecord{
+		Tool:      "newer",
+		Timestamp: time.Now().Add(time.Minute),
+	})
 
 	closeStorage(t, storage)
 
@@ -641,9 +668,103 @@ func TestBackupRestore(t *testing.T) {
 		}
 
 		executions, _ := storage2.GetExecutions(QueryOptions{})
-		if len(executions) != 1 {
-			t.Error("Backup restore failed to restore executions")
+		if len(executions) != 1 || executions[0].Tool != "test" {
+			t.Fatalf("restored executions = %#v", executions)
 		}
+	}
+}
+
+func TestBackupFailsWithoutExecutionLog(t *testing.T) {
+	config := &core.Config{
+		Storage: core.StorageConfig{JSONFile: filepath.Join(t.TempDir(), "test.json")},
+	}
+	store, err := NewJSONStorage(config)
+	if err != nil {
+		t.Fatalf("NewJSONStorage failed: %v", err)
+	}
+	defer closeStorage(t, store)
+	if err := os.Remove(ExecutionLogPath(config.Storage.JSONFile)); err != nil {
+		t.Fatalf("Remove failed: %v", err)
+	}
+	if err := store.Backup(); err == nil {
+		t.Fatal("Backup succeeded without an execution log")
+	}
+	backups, err := filepath.Glob(config.Storage.JSONFile + ".backup.*")
+	if err != nil || len(backups) != 0 {
+		t.Fatalf("partial backups = %#v, %v", backups, err)
+	}
+}
+
+func TestRestoreLegacyBackupMigratesExecutions(t *testing.T) {
+	config := &core.Config{
+		Storage: core.StorageConfig{JSONFile: filepath.Join(t.TempDir(), "test.json")},
+	}
+	store, err := NewJSONStorage(config)
+	if err != nil {
+		t.Fatalf("NewJSONStorage failed: %v", err)
+	}
+	defer closeStorage(t, store)
+	backupPath := config.Storage.JSONFile + ".backup.legacy"
+	writeCompactionFixture(t, backupPath, 3)
+	if err := store.Restore(backupPath); err != nil {
+		t.Fatalf("Restore failed: %v", err)
+	}
+	executions, err := store.GetExecutions(QueryOptions{})
+	if err != nil || len(executions) != 3 {
+		t.Fatalf("restored executions = %d, %v", len(executions), err)
+	}
+}
+
+func TestRestoreRejectsMalformedExecutionBackup(t *testing.T) {
+	config := &core.Config{
+		Storage: core.StorageConfig{JSONFile: filepath.Join(t.TempDir(), "test.json")},
+	}
+	store, err := NewJSONStorage(config)
+	if err != nil {
+		t.Fatalf("NewJSONStorage failed: %v", err)
+	}
+	defer closeStorage(t, store)
+	addExecution(t, store, &core.ExecutionRecord{Tool: "original", Timestamp: time.Now()})
+	if err := store.Backup(); err != nil {
+		t.Fatalf("Backup failed: %v", err)
+	}
+	backups, err := filepath.Glob(config.Storage.JSONFile + ".backup.*")
+	if err != nil || len(backups) != 1 {
+		t.Fatalf("backups = %#v, %v", backups, err)
+	}
+	executionBackup := store.(*JSONStorage).executionBackupPath(backups[0])
+	if err := os.WriteFile(executionBackup, []byte("{invalid}\n"), core.PrivateFileMode); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+	if err := store.Restore(backups[0]); err == nil {
+		t.Fatal("Restore succeeded with malformed execution backup")
+	}
+	executions, err := store.GetExecutions(QueryOptions{})
+	if err != nil || len(executions) != 1 || executions[0].Tool != "original" {
+		t.Fatalf("executions after rejected restore = %#v, %v", executions, err)
+	}
+}
+
+func TestRestoreRejectsUnknownExecutionLogFormat(t *testing.T) {
+	config := &core.Config{
+		Storage: core.StorageConfig{JSONFile: filepath.Join(t.TempDir(), "test.json")},
+	}
+	store, err := NewJSONStorage(config)
+	if err != nil {
+		t.Fatalf("NewJSONStorage failed: %v", err)
+	}
+	defer closeStorage(t, store)
+	backupPath := config.Storage.JSONFile + ".backup.unknown"
+	backup := core.StorageData{Version: "1.0.0", ExecutionLogFormat: "unknown"}
+	encoded, err := json.Marshal(backup)
+	if err != nil {
+		t.Fatalf("Marshal failed: %v", err)
+	}
+	if err := os.WriteFile(backupPath, encoded, core.PrivateFileMode); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+	if err := store.Restore(backupPath); err == nil {
+		t.Fatal("Restore succeeded with an unknown execution log format")
 	}
 }
 
@@ -753,20 +874,20 @@ func TestAddExecutionEnforcesMaxStorageBytes(t *testing.T) {
 		t.Fatalf("Expected oversized execution to be pruned, got %d executions", len(executions))
 	}
 
-	info, err := os.Stat(config.Storage.JSONFile)
+	logPath := ExecutionLogPath(config.Storage.JSONFile)
+	info, err := os.Stat(logPath)
 	if err != nil {
-		t.Fatalf("Failed to stat storage file: %v", err)
+		t.Fatalf("Failed to stat execution log: %v", err)
 	}
 	if info.Size() > config.Storage.MaxStorageBytes {
 		t.Errorf("Expected storage file to be at most %d bytes, got %d", config.Storage.MaxStorageBytes, info.Size())
 	}
 }
 
-func TestAddExecutionUsesTwoFullStorageSerializationsWhenPruning(t *testing.T) {
+func TestAddExecutionStoresHistoryOutsideManifest(t *testing.T) {
 	config := &core.Config{
 		Storage: core.StorageConfig{
-			JSONFile:        filepath.Join(t.TempDir(), "test.json"),
-			MaxStorageBytes: 2048,
+			JSONFile: filepath.Join(t.TempDir(), "test.json"),
 		},
 	}
 	store, err := NewJSONStorage(config)
@@ -774,42 +895,21 @@ func TestAddExecutionUsesTwoFullStorageSerializationsWhenPruning(t *testing.T) {
 		t.Fatalf("Failed to create storage: %v", err)
 	}
 	defer closeStorage(t, store)
-	jsonStore := store.(*JSONStorage)
-	marshal := jsonStore.marshalStorage
-	marshalCalls := 0
-	jsonStore.marshalStorage = func(data *core.StorageData) ([]byte, error) {
-		marshalCalls++
-		return marshal(data)
-	}
-
-	record := &core.ExecutionRecord{Tool: "large", Command: strings.Repeat("x", 4096), Timestamp: time.Now()}
+	record := &core.ExecutionRecord{Tool: "npm", Command: "npm install eslint", Timestamp: time.Now()}
 	addExecution(t, store, record)
-	if marshalCalls != 2 {
-		t.Fatalf("full storage serialization calls = %d, want 2", marshalCalls)
-	}
-}
-
-func TestExecutionRemovalSizeMatchesIndentedStorage(t *testing.T) {
-	store := newTestStorage(t).(*JSONStorage)
-	defer closeStorage(t, store)
-	record := core.ExecutionRecord{Tool: "npm", Command: "npm install eslint", Args: []string{"install", "eslint"}}
-	store.data.Executions = []core.ExecutionRecord{{Tool: "go"}, record}
-	before, err := marshalStorageData(store.data)
+	manifest, err := os.ReadFile(config.Storage.JSONFile)
 	if err != nil {
-		t.Fatalf("marshalStorageData failed: %v", err)
+		t.Fatalf("ReadFile failed: %v", err)
 	}
-	store.data.Executions = store.data.Executions[:1]
-	after, err := marshalStorageData(store.data)
+	if strings.Contains(string(manifest), record.Command) {
+		t.Fatal("execution history was embedded in the manifest")
+	}
+	logData, err := os.ReadFile(ExecutionLogPath(config.Storage.JSONFile))
 	if err != nil {
-		t.Fatalf("marshalStorageData failed: %v", err)
+		t.Fatalf("ReadFile failed: %v", err)
 	}
-	executionSize, err := indentedExecutionSize(record)
-	if err != nil {
-		t.Fatalf("indentedExecutionSize failed: %v", err)
-	}
-	want := executionRemovalSize(executionSize, 1)
-	if got := int64(len(before) - len(after)); got != want {
-		t.Fatalf("removed bytes = %d, want %d", got, want)
+	if !strings.Contains(string(logData), record.Command) {
+		t.Fatal("execution was not appended to the execution log")
 	}
 }
 
@@ -847,6 +947,11 @@ func TestBackupPrunesOldBackups(t *testing.T) {
 	}
 	if len(files) != 2 {
 		t.Fatalf("Expected 2 backup files after pruning, got %d", len(files))
+	}
+	executionPattern := ExecutionLogPath(config.Storage.JSONFile) + ".backup.*"
+	executionFiles, err := filepath.Glob(executionPattern)
+	if err != nil || len(executionFiles) != 2 {
+		t.Fatalf("execution backups = %d, %v", len(executionFiles), err)
 	}
 }
 

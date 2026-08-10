@@ -29,10 +29,13 @@ type ExecutionSummary struct {
 }
 
 type jsonStorageVisitor struct {
-	execution   func(core.ExecutionRecord) error
-	packageInfo func(string, string, core.PackageInfo) error
-	metadata    func(core.StorageMetadata)
-	statistics  func(core.StorageStatistics)
+	version            func(string)
+	executionLogFormat func(string)
+	execution          func(core.ExecutionRecord) error
+	packageInfo        func(string, string, core.PackageInfo) error
+	packageTombstones  func(map[string]map[string]int64)
+	metadata           func(core.StorageMetadata)
+	statistics         func(core.StorageStatistics)
 }
 
 var errStopStorageScan = errors.New("stop storage scan")
@@ -48,7 +51,33 @@ func InspectJSONFile(path string) (JSONInspection, error) {
 	if err := scanJSONStorage(path, visitor); err != nil {
 		return inspection, err
 	}
+	usesLog, err := storageUsesExecutionLog(path)
+	if err != nil || !usesLog {
+		return inspection, err
+	}
+	if err := inspectExecutionLog(path, &inspection, visitor.execution); err != nil {
+		return inspection, err
+	}
 	return inspection, nil
+}
+
+func inspectExecutionLog(
+	manifestPath string,
+	inspection *JSONInspection,
+	visit func(core.ExecutionRecord) error,
+) error {
+	inspection.ExecutionCount = 0
+	inspection.LatestExecution = nil
+	logPath := ExecutionLogPath(manifestPath)
+	logInfo, err := inspectJSONFile(logPath)
+	if err != nil {
+		return err
+	}
+	if logInfo == nil {
+		return fmt.Errorf("execution log not found: %s", logPath)
+	}
+	inspection.SizeBytes += logInfo.Size()
+	return scanNDJSONExecutions(logPath, visit)
 }
 
 func inspectJSONFile(path string) (os.FileInfo, error) {
@@ -169,10 +198,16 @@ func nextJSONField(decoder *json.Decoder) (string, error) {
 
 func scanStorageField(decoder *json.Decoder, field string, visitor jsonStorageVisitor) error {
 	switch field {
+	case "version":
+		return scanVersion(decoder, visitor.version)
+	case "execution_log_format":
+		return scanExecutionLogFormat(decoder, visitor.executionLogFormat)
 	case "executions":
 		return scanExecutions(decoder, visitor.execution)
 	case "packages":
 		return scanPackages(decoder, visitor.packageInfo)
+	case "package_tombstones":
+		return scanPackageTombstones(decoder, visitor.packageTombstones)
 	case "metadata":
 		return scanMetadata(decoder, visitor.metadata)
 	case "statistics":
@@ -180,6 +215,30 @@ func scanStorageField(decoder *json.Decoder, field string, visitor jsonStorageVi
 	default:
 		return skipJSONValue(decoder)
 	}
+}
+
+func scanExecutionLogFormat(decoder *json.Decoder, visit func(string)) error {
+	if visit == nil {
+		return skipJSONValue(decoder)
+	}
+	var format string
+	if err := decoder.Decode(&format); err != nil {
+		return fmt.Errorf("failed to decode execution log format: %w", err)
+	}
+	visit(format)
+	return nil
+}
+
+func scanVersion(decoder *json.Decoder, visit func(string)) error {
+	if visit == nil {
+		return skipJSONValue(decoder)
+	}
+	var version string
+	if err := decoder.Decode(&version); err != nil {
+		return fmt.Errorf("failed to decode storage version: %w", err)
+	}
+	visit(version)
+	return nil
 }
 
 func scanExecutions(decoder *json.Decoder, visit func(core.ExecutionRecord) error) error {
@@ -261,6 +320,18 @@ func scanMetadata(decoder *json.Decoder, visit func(core.StorageMetadata)) error
 		return fmt.Errorf("failed to decode storage metadata: %w", err)
 	}
 	visit(metadata)
+	return nil
+}
+
+func scanPackageTombstones(decoder *json.Decoder, visit func(map[string]map[string]int64)) error {
+	if visit == nil {
+		return skipJSONValue(decoder)
+	}
+	var tombstones map[string]map[string]int64
+	if err := decoder.Decode(&tombstones); err != nil {
+		return fmt.Errorf("failed to decode package tombstones: %w", err)
+	}
+	visit(tombstones)
 	return nil
 }
 
@@ -352,14 +423,93 @@ func ensureStorageEOF(decoder *json.Decoder) error {
 	return fmt.Errorf("storage contains trailing JSON data")
 }
 
+func storageUsesExecutionLog(path string) (bool, error) {
+	format := ""
+	var visitor jsonStorageVisitor
+	visitor.executionLogFormat = func(value string) { format = value }
+	visitor.execution = func(core.ExecutionRecord) error { return errStopStorageScan }
+	err := scanJSONStorage(path, visitor)
+	if err != nil {
+		if !errors.Is(err, errStopStorageScan) {
+			return false, err
+		}
+		if format == "" {
+			return false, nil
+		}
+	}
+	if format == "" {
+		return false, nil
+	}
+	if format != executionLogFormat {
+		return false, fmt.Errorf("unsupported execution log format: %s", format)
+	}
+	return true, nil
+}
+
+func scanNDJSONExecutions(path string, visit func(core.ExecutionRecord) error) (err error) {
+	file, err := openJSONStorageFile(path)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if closeErr := file.Close(); err == nil && closeErr != nil {
+			err = fmt.Errorf("failed to close execution log: %w", closeErr)
+		}
+	}()
+	decoder := json.NewDecoder(file)
+	for {
+		var record core.ExecutionRecord
+		if err := decoder.Decode(&record); errors.Is(err, io.EOF) {
+			return nil
+		} else if err != nil {
+			return fmt.Errorf("failed to decode execution log: %w", err)
+		}
+		if visit != nil {
+			if err := visit(record); err != nil {
+				return err
+			}
+		}
+	}
+}
+
+func (j *JSONStorage) scanExecutionRecords(visit func(core.ExecutionRecord) error) error {
+	usesLog, err := storageUsesExecutionLog(j.filepath)
+	if err != nil {
+		return err
+	}
+	if usesLog {
+		return scanNDJSONExecutions(j.executionPath, visit)
+	}
+	var visitor jsonStorageVisitor
+	visitor.execution = visit
+	return scanJSONStorage(j.filepath, visitor)
+}
+
+func (j *JSONStorage) calculateExecutionStatistics() (core.StorageStatistics, error) {
+	statistics := core.StorageStatistics{
+		ToolsUsed:          []string{},
+		ExecutionFrequency: make(map[string]int),
+	}
+	dayCount := make(map[string]int)
+	visit := func(record core.ExecutionRecord) error {
+		statistics.TotalExecutions++
+		item := compactExecution{timestamp: record.Timestamp, tool: record.Tool}
+		updateCompactedStatistics(&statistics, dayCount, item)
+		return nil
+	}
+	if err := j.scanExecutionRecords(visit); err != nil {
+		return statistics, err
+	}
+	statistics.MostActiveDay = mostActiveDay(dayCount)
+	return statistics, nil
+}
+
 func (j *JSONStorage) GetExecutions(opts QueryOptions) ([]*core.ExecutionRecord, error) {
 	j.mu.RLock()
 	defer j.mu.RUnlock()
 
 	collector := newExecutionCollector(opts)
-	var visitor jsonStorageVisitor
-	visitor.execution = collector.add
-	if err := scanJSONStorage(j.filepath, visitor); err != nil {
+	if err := j.scanExecutionRecords(collector.add); err != nil {
 		return nil, err
 	}
 	return collector.results(), nil
@@ -371,9 +521,7 @@ func (j *JSONStorage) GetExecutionByID(id string) (*core.ExecutionRecord, error)
 
 	var found *core.ExecutionRecord
 	visit := findExecutionVisitor(id, &found)
-	var visitor jsonStorageVisitor
-	visitor.execution = visit
-	err := scanJSONStorage(j.filepath, visitor)
+	err := j.scanExecutionRecords(visit)
 	if err != nil && !errors.Is(err, errStopStorageScan) {
 		return nil, err
 	}
@@ -495,9 +643,7 @@ func (j *JSONStorage) SummarizeExecutions(opts QueryOptions) (ExecutionSummary, 
 
 	toolCounts := make(map[string]int)
 	summary := ExecutionSummary{ToolCounts: toolCounts}
-	var visitor jsonStorageVisitor
-	visitor.execution = summarizeExecutionVisitor(&summary, opts)
-	err := scanJSONStorage(j.filepath, visitor)
+	err := j.scanExecutionRecords(summarizeExecutionVisitor(&summary, opts))
 	return summary, err
 }
 

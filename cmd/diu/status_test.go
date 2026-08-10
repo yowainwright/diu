@@ -47,6 +47,7 @@ func TestShowStatusRendersUsageAndLocations(t *testing.T) {
 		"Fallback contention",
 		"detected",
 		"~/.local/share/diu/executions.json",
+		"~/.local/share/diu/executions.ndjson",
 		"~/.local/share/diu/diu.log",
 	} {
 		if !strings.Contains(output, expected) {

@@ -11,6 +11,7 @@ import (
 	"github.com/yowainwright/diu/internal/daemon"
 	"github.com/yowainwright/diu/internal/dx"
 	"github.com/yowainwright/diu/internal/observability"
+	"github.com/yowainwright/diu/internal/storage"
 )
 
 type usageStatus struct {
@@ -23,6 +24,7 @@ type usageStatus struct {
 	lastLocation       string
 	fallbackContention string
 	storagePath        string
+	historyPath        string
 	logPath            string
 	wrapperPath        string
 }
@@ -62,6 +64,7 @@ func baseUsageStatus(config *core.Config, storageExists bool, storageErr error) 
 		lastTool:     "none",
 		lastLocation: "none",
 		storagePath:  displayLocalPath(config.Storage.JSONFile),
+		historyPath:  displayLocalPath(storage.ExecutionLogPath(config.Storage.JSONFile)),
 		logPath:      displayLocalPath(observability.LogPath(config.Daemon.DataDir)),
 		wrapperPath:  displayLocalPath(config.Monitoring.Process.WrapperDir),
 	}
@@ -135,7 +138,8 @@ func usageStatusRows(out *dx.Out, status usageStatus) [][]string {
 		statusRow(out, "Last tool", dx.Accent, status.lastTool),
 		statusRow(out, "Last location", dx.Accent, status.lastLocation),
 		statusStateRow(out, "Fallback contention", status.fallbackContention),
-		statusRow(out, "Storage", dx.Muted, status.storagePath),
+		statusRow(out, "Storage manifest", dx.Muted, status.storagePath),
+		statusRow(out, "Execution history", dx.Muted, status.historyPath),
 		statusRow(out, "Logs", dx.Muted, status.logPath),
 		statusRow(out, "Wrappers", dx.Muted, status.wrapperPath),
 	}
