@@ -261,6 +261,12 @@ func TestFormulaPackagesUseNewestInstalledVersion(t *testing.T) {
 	}
 }
 
+func TestHomebrewListCommandRejectsUnknownKind(t *testing.T) {
+	if _, err := homebrewListCommand("unknown"); err == nil {
+		t.Fatal("unknown Homebrew package kind was accepted")
+	}
+}
+
 func TestHomebrewInitialize(t *testing.T) {
 	config := core.DefaultConfig()
 	config.Monitoring.Process.AutoInstallWrappers = false

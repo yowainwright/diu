@@ -820,6 +820,32 @@ func TestMergeExistingPackageReusesUnchangedGoFingerprint(t *testing.T) {
 	}
 }
 
+func TestPopulateGoBinaryFingerprintCachesFileSignature(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "gopls")
+	writeExecutableForTest(t, path, "#!/bin/sh\nexit 0\n")
+	pkg := &core.PackageInfo{Name: "gopls", Tool: core.ToolGoBinary, Path: path}
+	if err := populateGoBinaryFingerprint(pkg); err != nil {
+		t.Fatalf("populateGoBinaryFingerprint failed: %v", err)
+	}
+	if pkg.Fingerprint == "" || pkg.SizeBytes == 0 || pkg.ModifiedAt == 0 {
+		t.Fatalf("fingerprinted package = %#v", pkg)
+	}
+	originalFingerprint := pkg.Fingerprint
+	if err := populateGoBinaryFingerprint(pkg); err != nil {
+		t.Fatalf("cached populateGoBinaryFingerprint failed: %v", err)
+	}
+	if pkg.Fingerprint != originalFingerprint {
+		t.Fatalf("fingerprint changed: %q", pkg.Fingerprint)
+	}
+}
+
+func TestPopulateGoBinaryFingerprintRejectsMissingBinary(t *testing.T) {
+	pkg := &core.PackageInfo{Name: "missing", Tool: core.ToolGoBinary, Path: filepath.Join(t.TempDir(), "missing")}
+	if err := populateGoBinaryFingerprint(pkg); err == nil {
+		t.Fatal("missing Go binary was fingerprinted")
+	}
+}
+
 func legacyAndCurrentGoInventory() map[string]map[string]*core.PackageInfo {
 	return map[string]map[string]*core.PackageInfo{
 		core.ToolGo:       {"gopls": {Name: "gopls", UsageCount: 4}},

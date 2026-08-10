@@ -77,6 +77,7 @@ type Daemon struct {
 	logger          *log.Logger
 	logSink         io.Closer
 	startupWarnings []string
+	pidFile         *os.File
 	pidFileOwned    bool
 	socketOwned     bool
 }
@@ -211,6 +212,13 @@ func (d *Daemon) rejectLivePID() error {
 	if err != nil || !ProcessRunning(pid) {
 		return nil
 	}
+	locked, err := pidFileLocked(d.config.Daemon.PIDFile, pid)
+	if err != nil {
+		return fmt.Errorf("failed to verify existing PID file: %w", err)
+	}
+	if !locked {
+		return nil
+	}
 	return fmt.Errorf("daemon process %d is already running", pid)
 }
 
@@ -278,9 +286,20 @@ func (d *Daemon) releaseRuntimePaths() {
 	if d.pidFileOwned {
 		d.recordStopError("removing PID file", d.removeOwnedPIDFile())
 	}
+	d.recordStopError("closing PID file", d.closePIDFile())
 	if d.socketOwned {
 		d.recordStopError("removing socket file", d.removeOwnedSocket())
 	}
+}
+
+func (d *Daemon) closePIDFile() error {
+	if d.pidFile == nil {
+		return nil
+	}
+	unlockErr := syscall.Flock(int(d.pidFile.Fd()), syscall.LOCK_UN)
+	closeErr := d.pidFile.Close()
+	d.pidFile = nil
+	return errors.Join(unlockErr, closeErr)
 }
 
 func (d *Daemon) closeLogSink() {
@@ -879,19 +898,33 @@ func (d *Daemon) writePIDFile() error {
 	if err := os.MkdirAll(filepath.Dir(d.config.Daemon.PIDFile), core.OwnerDirectoryMode); err != nil {
 		return err
 	}
-	flags := os.O_CREATE | os.O_EXCL | os.O_WRONLY
-	file, err := safefs.OpenFile(d.config.Daemon.PIDFile, flags, core.PrivateFileMode)
+	file, err := openLockedPIDFile(d.config.Daemon.PIDFile)
 	if err != nil {
 		return err
 	}
 	data := []byte(strconv.Itoa(os.Getpid()))
 	_, writeErr := file.Write(data)
-	closeErr := file.Close()
-	if err := errors.Join(writeErr, closeErr); err != nil {
+	if writeErr != nil {
+		_ = file.Close()
 		_ = os.Remove(d.config.Daemon.PIDFile)
-		return err
+		return writeErr
 	}
+	d.pidFile = file
 	return nil
+}
+
+func openLockedPIDFile(path string) (*os.File, error) {
+	flags := os.O_CREATE | os.O_EXCL | os.O_WRONLY
+	file, err := safefs.OpenFile(path, flags, core.PrivateFileMode)
+	if err != nil {
+		return nil, err
+	}
+	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		_ = file.Close()
+		_ = os.Remove(path)
+		return nil, fmt.Errorf("failed to lock PID file: %w", err)
+	}
+	return file, nil
 }
 
 func (d *Daemon) removeStalePIDFile() error {
@@ -906,8 +939,15 @@ func (d *Daemon) removeStalePIDFile() error {
 		return fmt.Errorf("PID path is not a regular file: %s", d.config.Daemon.PIDFile)
 	}
 	pid, pidErr := readPID(d.config.Daemon.PIDFile)
-	if pidErr == nil && ProcessRunning(pid) {
-		return fmt.Errorf("daemon process %d is still running", pid)
+	if pidErr != nil {
+		return os.Remove(d.config.Daemon.PIDFile)
+	}
+	locked, lockErr := pidFileLocked(d.config.Daemon.PIDFile, pid)
+	if lockErr != nil {
+		return lockErr
+	}
+	if locked {
+		return fmt.Errorf("daemon PID file is still owned by a running process")
 	}
 	return os.Remove(d.config.Daemon.PIDFile)
 }
@@ -950,7 +990,7 @@ func RequestStop(config *core.Config) error {
 	}
 	pingResponse, err := daemonSocketControlSender(config.Daemon.SocketPath, socketRequestPing)
 	if err != nil {
-		return signalDaemonProcess(pid)
+		return signalLockedDaemonProcess(config, pid)
 	}
 	if pingResponse.PID != pid {
 		return daemonIdentityError(pid, pingResponse.PID)
@@ -961,12 +1001,61 @@ func RequestStop(config *core.Config) error {
 func requestSocketStop(config *core.Config, pid int) error {
 	response, err := daemonSocketControlSender(config.Daemon.SocketPath, socketRequestStop)
 	if err != nil {
-		return signalDaemonProcess(pid)
+		return signalLockedDaemonProcess(config, pid)
 	}
 	if response.PID != pid {
 		return daemonIdentityError(pid, response.PID)
 	}
 	return nil
+}
+
+func signalLockedDaemonProcess(config *core.Config, pid int) error {
+	locked, err := pidFileLocked(config.Daemon.PIDFile, pid)
+	if err != nil {
+		return fmt.Errorf("failed to verify daemon PID file: %w", err)
+	}
+	if !locked {
+		return fmt.Errorf("refusing to signal unverified process %d", pid)
+	}
+	return signalDaemonProcess(pid)
+}
+
+func pidFileLocked(path string, expectedPID int) (locked bool, err error) {
+	file, err := safefs.OpenFile(path, os.O_RDONLY, 0)
+	if err != nil {
+		return false, err
+	}
+	defer func() {
+		err = errors.Join(err, file.Close())
+	}()
+	matches, err := pidFileContainsPID(file, expectedPID)
+	if err != nil || !matches {
+		return false, err
+	}
+	return tryPIDFileLock(file)
+}
+
+func pidFileContainsPID(file *os.File, expectedPID int) (bool, error) {
+	data, err := io.ReadAll(file)
+	if err != nil {
+		return false, err
+	}
+	pid, err := parsePID(data)
+	if err != nil {
+		return false, nil
+	}
+	return pid == expectedPID, nil
+}
+
+func tryPIDFileLock(file *os.File) (bool, error) {
+	lockErr := syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+	if errors.Is(lockErr, syscall.EWOULDBLOCK) || errors.Is(lockErr, syscall.EAGAIN) {
+		return true, nil
+	}
+	if lockErr != nil {
+		return false, lockErr
+	}
+	return false, syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
 }
 
 func daemonIdentityError(filePID, socketPID int) error {
@@ -985,6 +1074,10 @@ func readPID(path string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	return parsePID(pidBytes)
+}
+
+func parsePID(pidBytes []byte) (int, error) {
 	pid, err := strconv.Atoi(strings.TrimSpace(string(pidBytes)))
 	if err != nil || pid < 1 {
 		return 0, fmt.Errorf("invalid PID %q", strings.TrimSpace(string(pidBytes)))

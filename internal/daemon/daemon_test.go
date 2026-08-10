@@ -394,6 +394,9 @@ func TestDaemonStartStop(t *testing.T) {
 	if err == nil && info.Mode().Perm() != core.PrivateFileMode {
 		t.Errorf("PID file mode: got %v, want %v", info.Mode().Perm(), core.PrivateFileMode)
 	}
+	if locked, err := pidFileLocked(cfg.Daemon.PIDFile, os.Getpid()); err != nil || !locked {
+		t.Fatalf("PID file lock = %v, %v", locked, err)
+	}
 
 	if d.IsStopped() {
 		t.Error("Daemon should not be stopped after Start")
@@ -488,6 +491,23 @@ func TestFailedSecondStartPreservesRunningDaemonPID(t *testing.T) {
 	if string(gotPID) != string(wantPID) {
 		t.Fatalf("running daemon PID changed from %q to %q", wantPID, gotPID)
 	}
+}
+
+func TestDaemonStartReclaimsUnlockedPIDForLiveUnrelatedProcess(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Daemon.SocketPath = shortSocketPath(t)
+	pid := strconv.Itoa(os.Getpid())
+	if err := os.WriteFile(cfg.Daemon.PIDFile, []byte(pid), core.PrivateFileMode); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+	d, err := NewDaemon(cfg)
+	if err != nil {
+		t.Fatalf("NewDaemon failed: %v", err)
+	}
+	if err := d.Start(); err != nil {
+		t.Fatalf("Start failed with stale reused PID: %v", err)
+	}
+	stopDaemonForTest(t, d)
 }
 
 func TestDaemonDoubleStop(t *testing.T) {
@@ -1091,9 +1111,7 @@ func TestIsRunningRejectsDirectoryAsPIDFile(t *testing.T) {
 func TestRequestStopSignalsProcessWhenSocketIsUnavailable(t *testing.T) {
 	cfg := testConfig(t)
 	pid := 4242
-	if err := os.WriteFile(cfg.Daemon.PIDFile, []byte(strconv.Itoa(pid)), core.PrivateFileMode); err != nil {
-		t.Fatalf("WriteFile failed: %v", err)
-	}
+	lockTestPIDFile(t, cfg.Daemon.PIDFile, pid)
 	originalSignaler := daemonProcessSignaler
 	t.Cleanup(func() {
 		daemonProcessSignaler = originalSignaler
@@ -1115,12 +1133,41 @@ func TestRequestStopSignalsProcessWhenSocketIsUnavailable(t *testing.T) {
 	}
 }
 
-func TestRequestStopSignalsProcessWhenStopRequestFails(t *testing.T) {
+func TestRequestStopRejectsUnlockedPIDFile(t *testing.T) {
 	cfg := testConfig(t)
 	pid := 4242
 	if err := os.WriteFile(cfg.Daemon.PIDFile, []byte(strconv.Itoa(pid)), core.PrivateFileMode); err != nil {
 		t.Fatalf("WriteFile failed: %v", err)
 	}
+	restoreDaemonControlHooks(t)
+	signaled := false
+	daemonProcessSignaler = func(int, os.Signal) error {
+		signaled = true
+		return nil
+	}
+
+	err := RequestStop(cfg)
+	if err == nil || !strings.Contains(err.Error(), "unverified process") {
+		t.Fatalf("RequestStop error = %v", err)
+	}
+	if signaled {
+		t.Fatal("unverified PID was signaled")
+	}
+}
+
+func TestPIDFileLockRejectsMismatchedPID(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "diu.pid")
+	lockTestPIDFile(t, path, 4242)
+	locked, err := pidFileLocked(path, 5252)
+	if err != nil || locked {
+		t.Fatalf("mismatched PID lock = %v, %v", locked, err)
+	}
+}
+
+func TestRequestStopSignalsProcessWhenStopRequestFails(t *testing.T) {
+	cfg := testConfig(t)
+	pid := 4242
+	lockTestPIDFile(t, cfg.Daemon.PIDFile, pid)
 	restoreDaemonControlHooks(t)
 	daemonSocketControlSender = failingStopControlSender(pid)
 	signaledPID := 0
@@ -1135,6 +1182,26 @@ func TestRequestStopSignalsProcessWhenStopRequestFails(t *testing.T) {
 	if signaledPID != pid {
 		t.Fatalf("signaled PID = %d, want %d", signaledPID, pid)
 	}
+}
+
+func lockTestPIDFile(t *testing.T, path string, pid int) {
+	t.Helper()
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|os.O_TRUNC, core.PrivateFileMode)
+	if err != nil {
+		t.Fatalf("OpenFile failed: %v", err)
+	}
+	if _, err := file.WriteString(strconv.Itoa(pid)); err != nil {
+		_ = file.Close()
+		t.Fatalf("WriteString failed: %v", err)
+	}
+	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		_ = file.Close()
+		t.Fatalf("Flock failed: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
+		_ = file.Close()
+	})
 }
 
 func restoreDaemonControlHooks(t *testing.T) {

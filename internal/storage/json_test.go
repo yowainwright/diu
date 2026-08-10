@@ -1330,3 +1330,85 @@ func TestRestoreInvalidJSON(t *testing.T) {
 		t.Error("Expected error for invalid JSON restore file")
 	}
 }
+
+func TestInspectJSONFileStreamsCountsAndLatestExecution(t *testing.T) {
+	store := newTestStorage(t)
+	defer closeStorage(t, store)
+	older := time.Now().Add(-time.Hour)
+	latest := time.Now()
+	addExecution(t, store, &core.ExecutionRecord{ID: "older", Tool: core.ToolHomebrew, Timestamp: older})
+	addExecution(t, store, &core.ExecutionRecord{ID: "latest", Tool: core.ToolNPM, Timestamp: latest})
+	updatePackage(t, store, &core.PackageInfo{Name: "jq", Tool: core.ToolHomebrew})
+
+	inspection, err := InspectJSONFile(store.(*JSONStorage).filepath)
+	if err != nil {
+		t.Fatalf("InspectJSONFile failed: %v", err)
+	}
+	if !inspection.Exists || inspection.SizeBytes == 0 {
+		t.Fatalf("inspection file state = %#v", inspection)
+	}
+	if inspection.ExecutionCount != 2 || inspection.PackageCount != 1 {
+		t.Fatalf("inspection counts = %#v", inspection)
+	}
+	if inspection.LatestExecution == nil || inspection.LatestExecution.ID != "latest" {
+		t.Fatalf("latest execution = %#v", inspection.LatestExecution)
+	}
+	if inspection.Statistics.TotalExecutions != 2 || inspection.Metadata.LastUpdated.IsZero() {
+		t.Fatalf("inspection metadata = %#v", inspection)
+	}
+}
+
+func TestSummarizeExecutionsStreamsFilteredCounts(t *testing.T) {
+	store := newTestStorage(t).(*JSONStorage)
+	defer closeStorage(t, store)
+	addExecution(t, store, &core.ExecutionRecord{Tool: core.ToolHomebrew, Timestamp: time.Now()})
+	addExecution(t, store, &core.ExecutionRecord{Tool: core.ToolHomebrew, Timestamp: time.Now()})
+	addExecution(t, store, &core.ExecutionRecord{Tool: core.ToolNPM, Timestamp: time.Now()})
+
+	summary, err := store.SummarizeExecutions(QueryOptions{Tool: core.ToolHomebrew})
+	if err != nil {
+		t.Fatalf("SummarizeExecutions failed: %v", err)
+	}
+	if summary.Total != 2 || summary.ToolCounts[core.ToolHomebrew] != 2 {
+		t.Fatalf("summary = %#v", summary)
+	}
+}
+
+func TestInspectJSONFileHandlesMissingAndUnknownFields(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "missing.json")
+	inspection, err := InspectJSONFile(missing)
+	if err != nil || inspection.Exists {
+		t.Fatalf("missing inspection = %#v, %v", inspection, err)
+	}
+	path := filepath.Join(t.TempDir(), "storage.json")
+	data := []byte(`{"unknown":{"nested":[1,{"ok":true}]},"metadata":null,"executions":null,"packages":null,"statistics":null}`)
+	if err := os.WriteFile(path, data, core.PrivateFileMode); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+	inspection, err = InspectJSONFile(path)
+	if err != nil || !inspection.Exists || inspection.ExecutionCount != 0 {
+		t.Fatalf("unknown-field inspection = %#v, %v", inspection, err)
+	}
+}
+
+func TestInspectJSONFileRejectsInvalidStorage(t *testing.T) {
+	tests := map[string]string{
+		"wrong executions type": `{"executions":{}}`,
+		"trailing data":         `{} {}`,
+		"truncated object":      `{"executions":[`,
+	}
+	for name, content := range tests {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "invalid.json")
+			if err := os.WriteFile(path, []byte(content), core.PrivateFileMode); err != nil {
+				t.Fatalf("WriteFile failed: %v", err)
+			}
+			if _, err := InspectJSONFile(path); err == nil {
+				t.Fatal("invalid storage was accepted")
+			}
+		})
+	}
+	if _, err := InspectJSONFile(t.TempDir()); err == nil {
+		t.Fatal("storage directory was accepted")
+	}
+}

@@ -259,12 +259,26 @@ func (m *HomebrewMonitor) listPackages(kind, tool string) ([]*core.PackageInfo, 
 	if _, err := exec.LookPath(homebrewCommandName); err != nil {
 		return nil, fmt.Errorf("brew not found: %w", err)
 	}
-	cmd := exec.Command(homebrewCommandName, homebrewListCmd, kind, homebrewVersions)
+	cmd, err := homebrewListCommand(kind)
+	if err != nil {
+		return nil, err
+	}
 	output, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("failed to list Homebrew packages: %w", err)
 	}
 	return parseHomebrewPackageList(output, tool)
+}
+
+func homebrewListCommand(kind string) (*exec.Cmd, error) {
+	switch kind {
+	case homebrewFormulaArg:
+		return exec.Command(homebrewCommandName, homebrewListCmd, homebrewFormulaArg, homebrewVersions), nil
+	case homebrewCaskArg:
+		return exec.Command(homebrewCommandName, homebrewListCmd, homebrewCaskArg, homebrewVersions), nil
+	default:
+		return nil, fmt.Errorf("unsupported Homebrew package kind: %s", kind)
+	}
 }
 
 func parseHomebrewPackageList(output []byte, tool string) ([]*core.PackageInfo, error) {

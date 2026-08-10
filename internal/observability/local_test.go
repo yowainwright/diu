@@ -145,3 +145,94 @@ func TestFallbackContentionMarkerRejectsSymlink(t *testing.T) {
 		t.Fatal("MarkFallbackContention accepted a symlink")
 	}
 }
+
+func TestRotatingWriterRotatesWhenWriteExceedsRemainingSpace(t *testing.T) {
+	dataDir := t.TempDir()
+	path := LogPath(dataDir)
+	writer, err := newRotatingLogWriter(path)
+	if err != nil {
+		t.Fatalf("newRotatingLogWriter failed: %v", err)
+	}
+	if _, err := writer.Write(make([]byte, maxLocalLogBytes)); err != nil {
+		t.Fatalf("initial Write failed: %v", err)
+	}
+	if _, err := writer.Write([]byte("after rotation\n")); err != nil {
+		t.Fatalf("rotating Write failed: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("Close failed: %v", err)
+	}
+	assertLogContains(t, path, "after rotation")
+	previousPath := filepath.Join(dataDir, previousLogFileName)
+	if info, err := os.Stat(previousPath); err != nil || info.Size() != maxLocalLogBytes {
+		t.Fatalf("previous log = %v, %v", info, err)
+	}
+}
+
+func TestOversizedLogWriteIsBounded(t *testing.T) {
+	path := LogPath(t.TempDir())
+	writer, err := newRotatingLogWriter(path)
+	if err != nil {
+		t.Fatalf("newRotatingLogWriter failed: %v", err)
+	}
+	data := make([]byte, maxLocalLogBytes+10)
+	written, err := writer.Write(data)
+	if err != nil || written != len(data) {
+		t.Fatalf("Write = %d, %v", written, err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("Close failed: %v", err)
+	}
+	if info, err := os.Stat(path); err != nil || info.Size() != maxLocalLogBytes {
+		t.Fatalf("bounded log = %v, %v", info, err)
+	}
+}
+
+func TestLogTailTrimsPartialLineAndRedactsText(t *testing.T) {
+	path := LogPath(t.TempDir())
+	data := []byte("discarded partial line\nkept line\n")
+	if err := os.WriteFile(path, data, core.PrivateFileMode); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	defer func() { _ = file.Close() }()
+	tail, err := readLogTail(file, int64(len("partial line\nkept line\n")))
+	if err != nil || string(tail) != "kept line\n" {
+		t.Fatalf("tail = %q, %v", tail, err)
+	}
+	if got := RedactText("path=/private/data", map[string]string{"/private": "$ROOT"}); got != "path=$ROOT/data" {
+		t.Fatalf("RedactText = %q", got)
+	}
+}
+
+func assertLogContains(t *testing.T, path, target string) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile failed: %v", err)
+	}
+	if !strings.Contains(string(data), target) {
+		t.Fatalf("log = %q, want %q", data, target)
+	}
+}
+
+func TestReadRecentLogsSeparatesUnterminatedRotatedLog(t *testing.T) {
+	dataDir := t.TempDir()
+	previousPath := filepath.Join(dataDir, previousLogFileName)
+	if err := os.WriteFile(previousPath, []byte("before"), core.PrivateFileMode); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+	if err := os.WriteFile(LogPath(dataDir), []byte("after\n"), core.PrivateFileMode); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+	lines, err := ReadRecentLogs(dataDir)
+	if err != nil {
+		t.Fatalf("ReadRecentLogs failed: %v", err)
+	}
+	if len(lines) != 2 || lines[0] != "before" || lines[1] != "after" {
+		t.Fatalf("recent logs = %#v", lines)
+	}
+}

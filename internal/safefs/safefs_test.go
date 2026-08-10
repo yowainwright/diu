@@ -1,6 +1,8 @@
 package safefs
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"path/filepath"
 	"strings"
@@ -132,5 +134,25 @@ func TestOpenFileReportsOpenError(t *testing.T) {
 	}
 	if err == nil {
 		t.Fatal("Expected missing file to fail")
+	}
+}
+
+func TestSHA256(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "content.txt")
+	content := []byte("hello")
+	if err := os.WriteFile(path, content, 0o600); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+	digest, err := SHA256(path)
+	if err != nil {
+		t.Fatalf("SHA256 failed: %v", err)
+	}
+	expectedBytes := sha256.Sum256(content)
+	expected := hex.EncodeToString(expectedBytes[:])
+	if digest != expected {
+		t.Fatalf("SHA256 = %q, want %q", digest, expected)
+	}
+	if _, err := SHA256(filepath.Join(t.TempDir(), "missing")); err == nil {
+		t.Fatal("SHA256 accepted missing file")
 	}
 }
