@@ -20,12 +20,15 @@ const (
 
 	homebrewCellarFlag = "--cellar"
 	homebrewPrefixFlag = "--prefix"
+	homebrewInfoCmd    = "info"
+	homebrewInstalled  = "--installed"
+	homebrewJSONV2Arg  = "--json=v2"
 	homebrewListCmd    = "list"
 	homebrewFormulaArg = "--formula"
 	homebrewCaskArg    = "--cask"
-	homebrewJSONV2Arg  = "--json=v2"
+	homebrewVersions   = "--versions"
 
-	homebrewCaskTool = "homebrew-cask"
+	homebrewCaskTool = core.ToolHomebrewCask
 )
 
 type HomebrewMonitor struct {
@@ -138,8 +141,10 @@ func (m *HomebrewMonitor) ParseCommand(cmd string, args []string) (*core.Executi
 		packages := m.extractPackagesFromArgs(args[1:], []string{"--cask", "--formula", "--force", "--ignore-dependencies"})
 		record.PackagesAffected = packages
 		record.Metadata["action"] = "uninstall"
+		setHomebrewPackageType(record, args)
 
 	case "upgrade":
+		setHomebrewPackageType(record, args)
 		if len(args) > 1 && !strings.HasPrefix(args[1], "-") {
 			record.PackagesAffected = m.extractPackagesFromArgs(args[1:], []string{"--cask", "--formula"})
 		} else {
@@ -151,6 +156,7 @@ func (m *HomebrewMonitor) ParseCommand(cmd string, args []string) (*core.Executi
 		packages := m.extractPackagesFromArgs(args[1:], []string{"--cask", "--formula"})
 		record.PackagesAffected = packages
 		record.Metadata["action"] = "reinstall"
+		setHomebrewPackageType(record, args)
 
 	case "tap":
 		if len(args) > 1 {
@@ -187,6 +193,16 @@ func (m *HomebrewMonitor) ParseCommand(cmd string, args []string) (*core.Executi
 	return record, nil
 }
 
+func setHomebrewPackageType(record *core.ExecutionRecord, args []string) {
+	if contains(args, "--cask") {
+		record.Metadata["type"] = "cask"
+		return
+	}
+	if contains(args, "--formula") {
+		record.Metadata["type"] = "formula"
+	}
+}
+
 func (m *HomebrewMonitor) extractPackagesFromArgs(args []string, flags []string) []string {
 	var packages []string
 	for _, arg := range args {
@@ -201,121 +217,163 @@ func (m *HomebrewMonitor) extractPackagesFromArgs(args []string, flags []string)
 }
 
 func (m *HomebrewMonitor) GetInstalledPackages() ([]*core.PackageInfo, error) {
-	var packages []*core.PackageInfo
-
-	// Get formulae
-	if formulae, err := m.getFormulae(); err == nil {
-		packages = append(packages, formulae...)
+	packages, err := m.getFormulae()
+	if err != nil {
+		return nil, err
 	}
-
-	// Get casks if configured
 	if m.config.Tools.Homebrew.TrackCasks {
-		if casks, err := m.getCasks(); err == nil {
-			packages = append(packages, casks...)
+		casks, err := m.getCasks()
+		if err != nil {
+			return nil, err
 		}
+		packages = append(packages, casks...)
 	}
-
 	return packages, nil
 }
 
 func (m *HomebrewMonitor) getFormulae() ([]*core.PackageInfo, error) {
+	cmd := exec.Command(homebrewCommandName, homebrewListCmd, homebrewFormulaArg, homebrewVersions)
+	packages, err := m.listPackages(cmd, core.ToolHomebrew)
+	if err == nil {
+		return packages, nil
+	}
+	installed, err := m.getInstalledInfo()
+	if err != nil {
+		return nil, err
+	}
+	return installed.formulaPackages(), nil
+}
+
+func (m *HomebrewMonitor) getCasks() ([]*core.PackageInfo, error) {
+	cmd := exec.Command(homebrewCommandName, homebrewListCmd, homebrewCaskArg, homebrewVersions)
+	packages, err := m.listPackages(cmd, homebrewCaskTool)
+	if err == nil {
+		return packages, nil
+	}
+	installed, err := m.getInstalledInfo()
+	if err != nil {
+		return nil, err
+	}
+	return installed.caskPackages(), nil
+}
+
+func (m *HomebrewMonitor) listPackages(cmd *exec.Cmd, tool string) ([]*core.PackageInfo, error) {
+	if _, err := exec.LookPath(homebrewCommandName); err != nil {
+		return nil, fmt.Errorf("brew not found: %w", err)
+	}
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("failed to list Homebrew packages: %w", err)
+	}
+	return parseHomebrewPackageList(output, tool)
+}
+
+func parseHomebrewPackageList(output []byte, tool string) ([]*core.PackageInfo, error) {
+	var packages []*core.PackageInfo
+	scanner := bufio.NewScanner(strings.NewReader(string(output)))
+	for scanner.Scan() {
+		fields := strings.Fields(scanner.Text())
+		if len(fields) == 0 {
+			continue
+		}
+		version := ""
+		if len(fields) > 1 {
+			version = fields[len(fields)-1]
+		}
+		pkg := &core.PackageInfo{Name: fields[0], Version: version, Tool: tool}
+		packages = append(packages, pkg)
+	}
+	return packages, scanner.Err()
+}
+
+type homebrewInstalledInfo struct {
+	Formulae []homebrewFormula `json:"formulae"`
+	Casks    []homebrewCask    `json:"casks"`
+}
+
+type homebrewFormula struct {
+	Name      string                 `json:"name"`
+	Installed []homebrewInstallation `json:"installed"`
+}
+
+type homebrewInstallation struct {
+	Version string `json:"version"`
+	Time    int64  `json:"time"`
+}
+
+type homebrewCask struct {
+	Token         string `json:"token"`
+	Version       string `json:"version"`
+	InstalledTime int64  `json:"installed_time"`
+}
+
+func (m *HomebrewMonitor) getInstalledInfo() (*homebrewInstalledInfo, error) {
 	if _, err := exec.LookPath(homebrewCommandName); err != nil {
 		return nil, fmt.Errorf("brew not found: %w", err)
 	}
 
-	// Get JSON info for all installed formulae
-	cmd := exec.Command(homebrewCommandName, homebrewListCmd, homebrewFormulaArg, homebrewJSONV2Arg)
+	cmd := exec.Command(homebrewCommandName, homebrewInfoCmd, homebrewJSONV2Arg, homebrewInstalled)
 	output, err := cmd.Output()
 	if err != nil {
-		return nil, fmt.Errorf("failed to list formulae: %w", err)
+		return nil, fmt.Errorf("failed to list installed Homebrew packages: %w", err)
 	}
 
-	var brewData struct {
-		Formulae []struct {
-			Name            string   `json:"name"`
-			FullName        string   `json:"full_name"`
-			Version         string   `json:"version"`
-			InstalledTime   string   `json:"installed_time"`
-			Dependencies    []string `json:"dependencies"`
-			InstalledAsPath string   `json:"installed_as_dependency"`
-		} `json:"formulae"`
+	var installed homebrewInstalledInfo
+	if err := json.Unmarshal(output, &installed); err != nil {
+		return nil, fmt.Errorf("failed to parse installed Homebrew packages: %w", err)
 	}
+	return &installed, nil
+}
 
-	if err := json.Unmarshal(output, &brewData); err != nil {
-		// Fallback to simple list
-		return m.getFormulaeSimple()
-	}
-
+func (i *homebrewInstalledInfo) formulaPackages() []*core.PackageInfo {
 	var packages []*core.PackageInfo
-	for _, formula := range brewData.Formulae {
-		installTime, _ := time.Parse(time.RFC3339, formula.InstalledTime)
+	for _, formula := range i.Formulae {
+		var version string
+		var installDate time.Time
+		installed, exists := latestHomebrewInstallation(formula.Installed)
+		if exists {
+			version = installed.Version
+			installDate = time.Unix(installed.Time, 0)
+		}
 		pkg := &core.PackageInfo{
-			Name:         formula.Name,
-			Version:      formula.Version,
-			Tool:         core.ToolHomebrew,
-			InstallDate:  installTime,
-			Dependencies: formula.Dependencies,
+			Name:        formula.Name,
+			Version:     version,
+			Tool:        core.ToolHomebrew,
+			InstallDate: installDate,
 		}
 		packages = append(packages, pkg)
 	}
-
-	return packages, nil
+	return packages
 }
 
-func (m *HomebrewMonitor) getFormulaeSimple() ([]*core.PackageInfo, error) {
-	if _, err := exec.LookPath(homebrewCommandName); err != nil {
-		return nil, err
+func latestHomebrewInstallation(installed []homebrewInstallation) (homebrewInstallation, bool) {
+	if len(installed) == 0 {
+		return homebrewInstallation{}, false
 	}
-
-	cmd := exec.Command(homebrewCommandName, homebrewListCmd, homebrewFormulaArg)
-	output, err := cmd.Output()
-	if err != nil {
-		return nil, err
-	}
-
-	var packages []*core.PackageInfo
-	scanner := bufio.NewScanner(strings.NewReader(string(output)))
-	for scanner.Scan() {
-		name := strings.TrimSpace(scanner.Text())
-		if name != "" {
-			pkg := &core.PackageInfo{
-				Name:        name,
-				Tool:        core.ToolHomebrew,
-				InstallDate: time.Now(),
-			}
-			packages = append(packages, pkg)
+	latest := installed[0]
+	for _, candidate := range installed[1:] {
+		if candidate.Time > latest.Time {
+			latest = candidate
 		}
 	}
-
-	return packages, nil
+	return latest, true
 }
 
-func (m *HomebrewMonitor) getCasks() ([]*core.PackageInfo, error) {
-	if _, err := exec.LookPath(homebrewCommandName); err != nil {
-		return nil, err
-	}
-
-	cmd := exec.Command(homebrewCommandName, homebrewListCmd, homebrewCaskArg)
-	output, err := cmd.Output()
-	if err != nil {
-		return nil, err
-	}
-
+func (i *homebrewInstalledInfo) caskPackages() []*core.PackageInfo {
 	var packages []*core.PackageInfo
-	scanner := bufio.NewScanner(strings.NewReader(string(output)))
-	for scanner.Scan() {
-		name := strings.TrimSpace(scanner.Text())
-		if name != "" {
-			pkg := &core.PackageInfo{
-				Name:        name,
-				Tool:        homebrewCaskTool,
-				InstallDate: time.Now(),
-			}
-			packages = append(packages, pkg)
+	for _, cask := range i.Casks {
+		installDate := time.Time{}
+		if cask.InstalledTime > 0 {
+			installDate = time.Unix(cask.InstalledTime, 0)
 		}
+		packages = append(packages, &core.PackageInfo{
+			Name:        cask.Token,
+			Version:     cask.Version,
+			Tool:        homebrewCaskTool,
+			InstallDate: installDate,
+		})
 	}
-
-	return packages, nil
+	return packages
 }
 
 func (m *HomebrewMonitor) Start(ctx context.Context, eventChan chan<- *core.ExecutionRecord) error {

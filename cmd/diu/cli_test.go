@@ -40,7 +40,7 @@ func TestRootCommandHelpListsPublicCommands(t *testing.T) {
 	if err := root.Execute([]string{"--help"}); err != nil {
 		t.Fatalf("help failed: %v", err)
 	}
-	for _, name := range []string{"daemon", "query", "stats", "packages", "check", "manage", "config", "setup", "uninstall", "scan"} {
+	for _, name := range []string{"daemon", "query", "stats", "packages", "check", "manage", "config", "status", "diagnostics", "setup", "uninstall", "scan"} {
 		if !strings.Contains(stdout.String(), name) {
 			t.Fatalf("help = %q, want command %q", stdout.String(), name)
 		}

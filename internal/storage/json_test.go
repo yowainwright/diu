@@ -122,6 +122,284 @@ func TestAddExecution(t *testing.T) {
 	}
 }
 
+func TestAddExecutionsStoresBatch(t *testing.T) {
+	store := newTestStorage(t)
+	defer closeStorage(t, store)
+	jsonStore := store.(*JSONStorage)
+	records := []*core.ExecutionRecord{
+		{Tool: core.ToolHomebrew, Timestamp: time.Now()},
+		{Tool: core.ToolGo, Timestamp: time.Now()},
+	}
+
+	if err := jsonStore.AddExecutions(records); err != nil {
+		t.Fatalf("AddExecutions failed: %v", err)
+	}
+	executions, err := store.GetExecutions(QueryOptions{})
+	if err != nil {
+		t.Fatalf("GetExecutions failed: %v", err)
+	}
+	if len(executions) != len(records) {
+		t.Fatalf("execution count = %d, want %d", len(executions), len(records))
+	}
+}
+
+func TestLocalJavaScriptExecutionDoesNotCreateGlobalPackage(t *testing.T) {
+	config := &core.Config{
+		Storage: core.StorageConfig{JSONFile: filepath.Join(t.TempDir(), "test.json")},
+		Tools:   core.ToolsConfig{NPM: core.NPMConfig{TrackGlobalOnly: true}},
+	}
+	store, err := NewJSONStorage(config)
+	if err != nil {
+		t.Fatalf("NewJSONStorage failed: %v", err)
+	}
+	defer closeStorage(t, store)
+
+	record := &core.ExecutionRecord{
+		Tool:             core.ToolNPM,
+		Timestamp:        time.Now(),
+		PackagesAffected: []string{"eslint"},
+		Metadata:         map[string]interface{}{"global": false},
+	}
+	addExecution(t, store, record)
+	if _, err := store.GetPackage(core.ToolNPM, "eslint"); err == nil {
+		t.Fatal("local npm execution created a global package entry")
+	}
+}
+
+func TestGlobalJavaScriptExecutionCreatesPackage(t *testing.T) {
+	config := &core.Config{
+		Storage: core.StorageConfig{JSONFile: filepath.Join(t.TempDir(), "test.json")},
+		Tools:   core.ToolsConfig{NPM: core.NPMConfig{TrackGlobalOnly: true}},
+	}
+	store, err := NewJSONStorage(config)
+	if err != nil {
+		t.Fatalf("NewJSONStorage failed: %v", err)
+	}
+	defer closeStorage(t, store)
+
+	record := &core.ExecutionRecord{
+		Tool:             core.ToolNPM,
+		Timestamp:        time.Now(),
+		PackagesAffected: []string{"typescript"},
+		Metadata:         map[string]interface{}{"global": true},
+	}
+	addExecution(t, store, record)
+	if _, err := store.GetPackage(core.ToolNPM, "typescript"); err != nil {
+		t.Fatalf("global npm execution did not create package: %v", err)
+	}
+}
+
+func TestUninstallExecutionRemovesPackage(t *testing.T) {
+	store := newTestStorage(t)
+	defer closeStorage(t, store)
+	updatePackage(t, store, &core.PackageInfo{Name: "jq", Tool: core.ToolHomebrew})
+	record := &core.ExecutionRecord{
+		Tool:             core.ToolHomebrew,
+		Timestamp:        time.Now(),
+		PackagesAffected: []string{"jq"},
+		Metadata:         map[string]interface{}{"action": "uninstall"},
+	}
+	addExecution(t, store, record)
+	if _, err := store.GetPackage(core.ToolHomebrew, "jq"); err == nil {
+		t.Fatal("uninstall execution left the package in inventory")
+	}
+}
+
+func TestGoExecutionDoesNotCreateModuleInventory(t *testing.T) {
+	store := newTestStorage(t)
+	defer closeStorage(t, store)
+	record := &core.ExecutionRecord{
+		Tool:             core.ToolGo,
+		Timestamp:        time.Now(),
+		PackagesAffected: []string{"example.com/tool@latest"},
+	}
+	addExecution(t, store, record)
+	if _, err := store.GetPackage(core.ToolGo, "example.com/tool@latest"); err == nil {
+		t.Fatal("Go execution created a module inventory entry")
+	}
+}
+
+func TestStorageReadsExternalWrites(t *testing.T) {
+	config := &core.Config{
+		Storage: core.StorageConfig{JSONFile: filepath.Join(t.TempDir(), "test.json")},
+	}
+	first, err := NewJSONStorage(config)
+	if err != nil {
+		t.Fatalf("first NewJSONStorage failed: %v", err)
+	}
+	defer closeStorage(t, first)
+	second, err := NewJSONStorage(config)
+	if err != nil {
+		t.Fatalf("second NewJSONStorage failed: %v", err)
+	}
+	defer closeStorage(t, second)
+
+	record := &core.ExecutionRecord{Tool: core.ToolGo, Timestamp: time.Now()}
+	addExecution(t, second, record)
+	executions, err := first.GetExecutions(QueryOptions{})
+	if err != nil {
+		t.Fatalf("GetExecutions failed: %v", err)
+	}
+	if len(executions) != 1 {
+		t.Fatalf("stale execution count = %d, want 1", len(executions))
+	}
+}
+
+func TestExistingStorageIsStreamedWithoutCachingHistory(t *testing.T) {
+	config := &core.Config{Storage: core.StorageConfig{JSONFile: filepath.Join(t.TempDir(), "test.json")}}
+	store, err := NewJSONStorage(config)
+	if err != nil {
+		t.Fatalf("NewJSONStorage failed: %v", err)
+	}
+	addExecution(t, store, &core.ExecutionRecord{Tool: core.ToolGo, Timestamp: time.Now()})
+	closeStorage(t, store)
+
+	reopened, err := NewJSONStorage(config)
+	if err != nil {
+		t.Fatalf("NewJSONStorage failed: %v", err)
+	}
+	defer closeStorage(t, reopened)
+	if reopened.(*JSONStorage).data != nil {
+		t.Fatal("existing storage history was cached during initialization")
+	}
+	executions, err := reopened.GetExecutions(QueryOptions{Limit: 1})
+	if err != nil || len(executions) != 1 {
+		t.Fatalf("streamed executions = %d, %v", len(executions), err)
+	}
+}
+
+func TestReconcilePackagesRemovesMissingInventory(t *testing.T) {
+	store := newTestStorage(t)
+	defer closeStorage(t, store)
+	updatePackage(t, store, &core.PackageInfo{Name: "keep", Tool: core.ToolHomebrew})
+	updatePackage(t, store, &core.PackageInfo{Name: "remove", Tool: core.ToolHomebrew})
+	updatePackage(t, store, &core.PackageInfo{Name: "untouched", Tool: core.ToolNPM})
+
+	seenHomebrew := map[string]struct{}{"keep": {}}
+	scanned := map[string]map[string]struct{}{core.ToolHomebrew: seenHomebrew}
+	if err := store.(*JSONStorage).ReconcilePackages(scanned, time.Time{}); err != nil {
+		t.Fatalf("ReconcilePackages failed: %v", err)
+	}
+	if _, err := store.GetPackage(core.ToolHomebrew, "remove"); err == nil {
+		t.Fatal("missing Homebrew package was not removed")
+	}
+	if _, err := store.GetPackage(core.ToolNPM, "untouched"); err != nil {
+		t.Fatalf("unscanned npm package was removed: %v", err)
+	}
+}
+
+func TestReconcilePackagesPreservesPackagesUpdatedDuringScan(t *testing.T) {
+	store := newTestStorage(t)
+	defer closeStorage(t, store)
+	scanStartedAt := time.Now()
+	installedAt := scanStartedAt.Add(-time.Hour)
+	pkg := &core.PackageInfo{Name: "new", Tool: core.ToolHomebrew, InstallDate: installedAt}
+	updatePackage(t, store, pkg)
+
+	scanned := map[string]map[string]struct{}{core.ToolHomebrew: {}}
+	if err := store.(*JSONStorage).ReconcilePackages(scanned, scanStartedAt); err != nil {
+		t.Fatalf("ReconcilePackages failed: %v", err)
+	}
+	if _, err := store.GetPackage(core.ToolHomebrew, "new"); err != nil {
+		t.Fatalf("concurrent package was removed: %v", err)
+	}
+}
+
+func TestApplyPackageScanPreservesConcurrentUsage(t *testing.T) {
+	store := newTestStorage(t).(*JSONStorage)
+	defer closeStorage(t, store)
+	oldUse := time.Now().Add(-time.Hour)
+	updatePackage(t, store, &core.PackageInfo{Name: "jq", Tool: core.ToolHomebrew, UsageCount: 1, LastUsed: oldUse})
+	scanStartedAt := time.Now()
+	concurrent := &core.PackageInfo{Name: "jq", Tool: core.ToolHomebrew, UsageCount: 2, LastUsed: oldUse}
+	updatePackage(t, store, concurrent)
+	scanned := &core.PackageInfo{Name: "jq", Tool: core.ToolHomebrew, UsageCount: 1, LastUsed: oldUse}
+	seen := map[string]map[string]struct{}{core.ToolHomebrew: {"jq": {}}}
+
+	if err := store.ApplyPackageScan([]*core.PackageInfo{scanned}, seen, scanStartedAt); err != nil {
+		t.Fatalf("ApplyPackageScan failed: %v", err)
+	}
+	stored, err := store.GetPackage(core.ToolHomebrew, "jq")
+	if err != nil {
+		t.Fatalf("GetPackage failed: %v", err)
+	}
+	if stored.UsageCount != concurrent.UsageCount {
+		t.Fatalf("usage count = %d, want %d", stored.UsageCount, concurrent.UsageCount)
+	}
+}
+
+func TestApplyPackageScanPreservesConcurrentGoUsageDelta(t *testing.T) {
+	store := newTestStorage(t).(*JSONStorage)
+	defer closeStorage(t, store)
+	updatePackage(t, store, &core.PackageInfo{Name: "gopls", Tool: core.ToolGo, UsageCount: 4})
+	updatePackage(t, store, &core.PackageInfo{Name: "gopls", Tool: core.ToolGoBinary, UsageCount: 3})
+	scanStartedAt := time.Now()
+	updatePackage(t, store, &core.PackageInfo{Name: "gopls", Tool: core.ToolGoBinary, UsageCount: 4})
+	scanned := &core.PackageInfo{Name: "gopls", Tool: core.ToolGoBinary, UsageCount: 7}
+	seen := map[string]map[string]struct{}{
+		core.ToolGo:       {},
+		core.ToolGoBinary: {"gopls": {}},
+	}
+
+	if err := store.ApplyPackageScan([]*core.PackageInfo{scanned}, seen, scanStartedAt); err != nil {
+		t.Fatalf("ApplyPackageScan failed: %v", err)
+	}
+	stored, err := store.GetPackage(core.ToolGoBinary, "gopls")
+	if err != nil {
+		t.Fatalf("GetPackage failed: %v", err)
+	}
+	if stored.UsageCount != 8 {
+		t.Fatalf("usage count = %d, want 8", stored.UsageCount)
+	}
+}
+
+func TestApplyPackageScanDoesNotRestoreConcurrentUninstall(t *testing.T) {
+	store := newTestStorage(t).(*JSONStorage)
+	defer closeStorage(t, store)
+	pkg := &core.PackageInfo{Name: "jq", Tool: core.ToolHomebrew}
+	updatePackage(t, store, pkg)
+	scanStartedAt := time.Now()
+	if err := store.DeletePackage(pkg.Tool, pkg.Name); err != nil {
+		t.Fatalf("DeletePackage failed: %v", err)
+	}
+	seen := map[string]map[string]struct{}{pkg.Tool: {pkg.Name: {}}}
+
+	if err := store.ApplyPackageScan([]*core.PackageInfo{pkg}, seen, scanStartedAt); err != nil {
+		t.Fatalf("ApplyPackageScan failed: %v", err)
+	}
+	if _, err := store.GetPackage(pkg.Tool, pkg.Name); err == nil {
+		t.Fatal("concurrently uninstalled package was restored")
+	}
+}
+
+func TestRemoveMissingPackagesReportsEmptyBucketRemoval(t *testing.T) {
+	store := newTestStorage(t).(*JSONStorage)
+	defer closeStorage(t, store)
+	store.data.Packages[core.ToolHomebrew] = map[string]core.PackageInfo{}
+	scanned := map[string]map[string]struct{}{core.ToolHomebrew: {}}
+	if !store.removeMissingPackages(scanned, time.Time{}) {
+		t.Fatal("empty package bucket removal was not reported")
+	}
+}
+
+func TestCaskUninstallRemovesCaskInventory(t *testing.T) {
+	store := newTestStorage(t)
+	defer closeStorage(t, store)
+	pkg := &core.PackageInfo{Name: "firefox", Tool: core.ToolHomebrewCask}
+	updatePackage(t, store, pkg)
+	record := &core.ExecutionRecord{
+		Tool:             core.ToolHomebrew,
+		Args:             []string{"uninstall", "--cask", "firefox"},
+		Timestamp:        time.Now(),
+		PackagesAffected: []string{"firefox"},
+		Metadata:         map[string]interface{}{"action": "uninstall", "type": "cask"},
+	}
+	addExecution(t, store, record)
+	if _, err := store.GetPackage(core.ToolHomebrewCask, "firefox"); err == nil {
+		t.Fatal("cask uninstall left the package in inventory")
+	}
+}
+
 func TestExecutionRecordsAreReturnedAsCopies(t *testing.T) {
 	storage := newTestStorage(t)
 	defer closeStorage(t, storage)
@@ -481,6 +759,57 @@ func TestAddExecutionEnforcesMaxStorageBytes(t *testing.T) {
 	}
 	if info.Size() > config.Storage.MaxStorageBytes {
 		t.Errorf("Expected storage file to be at most %d bytes, got %d", config.Storage.MaxStorageBytes, info.Size())
+	}
+}
+
+func TestAddExecutionUsesTwoFullStorageSerializationsWhenPruning(t *testing.T) {
+	config := &core.Config{
+		Storage: core.StorageConfig{
+			JSONFile:        filepath.Join(t.TempDir(), "test.json"),
+			MaxStorageBytes: 2048,
+		},
+	}
+	store, err := NewJSONStorage(config)
+	if err != nil {
+		t.Fatalf("Failed to create storage: %v", err)
+	}
+	defer closeStorage(t, store)
+	jsonStore := store.(*JSONStorage)
+	marshal := jsonStore.marshalStorage
+	marshalCalls := 0
+	jsonStore.marshalStorage = func(data *core.StorageData) ([]byte, error) {
+		marshalCalls++
+		return marshal(data)
+	}
+
+	record := &core.ExecutionRecord{Tool: "large", Command: strings.Repeat("x", 4096), Timestamp: time.Now()}
+	addExecution(t, store, record)
+	if marshalCalls != 2 {
+		t.Fatalf("full storage serialization calls = %d, want 2", marshalCalls)
+	}
+}
+
+func TestExecutionRemovalSizeMatchesIndentedStorage(t *testing.T) {
+	store := newTestStorage(t).(*JSONStorage)
+	defer closeStorage(t, store)
+	record := core.ExecutionRecord{Tool: "npm", Command: "npm install eslint", Args: []string{"install", "eslint"}}
+	store.data.Executions = []core.ExecutionRecord{{Tool: "go"}, record}
+	before, err := marshalStorageData(store.data)
+	if err != nil {
+		t.Fatalf("marshalStorageData failed: %v", err)
+	}
+	store.data.Executions = store.data.Executions[:1]
+	after, err := marshalStorageData(store.data)
+	if err != nil {
+		t.Fatalf("marshalStorageData failed: %v", err)
+	}
+	executionSize, err := indentedExecutionSize(record)
+	if err != nil {
+		t.Fatalf("indentedExecutionSize failed: %v", err)
+	}
+	want := executionRemovalSize(executionSize, 1)
+	if got := int64(len(before) - len(after)); got != want {
+		t.Fatalf("removed bytes = %d, want %d", got, want)
 	}
 }
 
@@ -999,5 +1328,87 @@ func TestRestoreInvalidJSON(t *testing.T) {
 	err = storage.Restore(invalidFile)
 	if err == nil {
 		t.Error("Expected error for invalid JSON restore file")
+	}
+}
+
+func TestInspectJSONFileStreamsCountsAndLatestExecution(t *testing.T) {
+	store := newTestStorage(t)
+	defer closeStorage(t, store)
+	older := time.Now().Add(-time.Hour)
+	latest := time.Now()
+	addExecution(t, store, &core.ExecutionRecord{ID: "older", Tool: core.ToolHomebrew, Timestamp: older})
+	addExecution(t, store, &core.ExecutionRecord{ID: "latest", Tool: core.ToolNPM, Timestamp: latest})
+	updatePackage(t, store, &core.PackageInfo{Name: "jq", Tool: core.ToolHomebrew})
+
+	inspection, err := InspectJSONFile(store.(*JSONStorage).filepath)
+	if err != nil {
+		t.Fatalf("InspectJSONFile failed: %v", err)
+	}
+	if !inspection.Exists || inspection.SizeBytes == 0 {
+		t.Fatalf("inspection file state = %#v", inspection)
+	}
+	if inspection.ExecutionCount != 2 || inspection.PackageCount != 1 {
+		t.Fatalf("inspection counts = %#v", inspection)
+	}
+	if inspection.LatestExecution == nil || inspection.LatestExecution.ID != "latest" {
+		t.Fatalf("latest execution = %#v", inspection.LatestExecution)
+	}
+	if inspection.Statistics.TotalExecutions != 2 || inspection.Metadata.LastUpdated.IsZero() {
+		t.Fatalf("inspection metadata = %#v", inspection)
+	}
+}
+
+func TestSummarizeExecutionsStreamsFilteredCounts(t *testing.T) {
+	store := newTestStorage(t).(*JSONStorage)
+	defer closeStorage(t, store)
+	addExecution(t, store, &core.ExecutionRecord{Tool: core.ToolHomebrew, Timestamp: time.Now()})
+	addExecution(t, store, &core.ExecutionRecord{Tool: core.ToolHomebrew, Timestamp: time.Now()})
+	addExecution(t, store, &core.ExecutionRecord{Tool: core.ToolNPM, Timestamp: time.Now()})
+
+	summary, err := store.SummarizeExecutions(QueryOptions{Tool: core.ToolHomebrew})
+	if err != nil {
+		t.Fatalf("SummarizeExecutions failed: %v", err)
+	}
+	if summary.Total != 2 || summary.ToolCounts[core.ToolHomebrew] != 2 {
+		t.Fatalf("summary = %#v", summary)
+	}
+}
+
+func TestInspectJSONFileHandlesMissingAndUnknownFields(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "missing.json")
+	inspection, err := InspectJSONFile(missing)
+	if err != nil || inspection.Exists {
+		t.Fatalf("missing inspection = %#v, %v", inspection, err)
+	}
+	path := filepath.Join(t.TempDir(), "storage.json")
+	data := []byte(`{"unknown":{"nested":[1,{"ok":true}]},"metadata":null,"executions":null,"packages":null,"statistics":null}`)
+	if err := os.WriteFile(path, data, core.PrivateFileMode); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+	inspection, err = InspectJSONFile(path)
+	if err != nil || !inspection.Exists || inspection.ExecutionCount != 0 {
+		t.Fatalf("unknown-field inspection = %#v, %v", inspection, err)
+	}
+}
+
+func TestInspectJSONFileRejectsInvalidStorage(t *testing.T) {
+	tests := map[string]string{
+		"wrong executions type": `{"executions":{}}`,
+		"trailing data":         `{} {}`,
+		"truncated object":      `{"executions":[`,
+	}
+	for name, content := range tests {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "invalid.json")
+			if err := os.WriteFile(path, []byte(content), core.PrivateFileMode); err != nil {
+				t.Fatalf("WriteFile failed: %v", err)
+			}
+			if _, err := InspectJSONFile(path); err == nil {
+				t.Fatal("invalid storage was accepted")
+			}
+		})
+	}
+	if _, err := InspectJSONFile(t.TempDir()); err == nil {
+		t.Fatal("storage directory was accepted")
 	}
 }

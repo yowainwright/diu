@@ -24,7 +24,8 @@ services:
       dockerfile: ops/docker/Dockerfile.e2e
     container_name: diu-e2e
     depends_on:
-      - diu
+      diu:
+        condition: service_healthy
     environment:
       - DIU_API_URL=http://diu:8081
       - TEST_TIMEOUT=60s

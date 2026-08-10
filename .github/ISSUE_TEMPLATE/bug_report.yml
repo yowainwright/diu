@@ -8,6 +8,8 @@ body:
     attributes:
       value: |
         Thanks for reporting a bug. Please include enough detail for someone else to reproduce the behavior.
+        Run `diu diagnostics --output diu-diagnostics.json` and review the file.
+        Attach it under Additional context. DIU never uploads diagnostics.
   - type: input
     id: version
     attributes:
@@ -69,7 +71,9 @@ body:
     id: logs
     attributes:
       label: Logs or output
-      description: Paste relevant output. Remove secrets, tokens, and private paths if needed.
+      description: |
+        Paste relevant output or attach the redacted diagnostic report under Additional context.
+        Remove secrets, tokens, and private paths if needed.
       render: text
   - type: textarea
     id: config
@@ -81,4 +85,6 @@ body:
     id: notes
     attributes:
       label: Additional context
-      description: Add anything else that may help diagnose the issue.
+      description: |
+        Drag the generated diu-diagnostics.json here.
+        Add anything else that may help diagnose the issue.

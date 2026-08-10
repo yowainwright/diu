@@ -15,9 +15,7 @@ RUN go mod download
 
 COPY . .
 
-# Install test tools
-RUN go install github.com/onsi/ginkgo/v2/ginkgo@latest && \
-    go install github.com/onsi/gomega/...@latest
+RUN go build -o /usr/local/bin/diu ./cmd/diu
 
 # Run tests
 CMD ["go", "test", "-tags=e2e", "-v", "./tests/e2e/..."]

@@ -85,15 +85,20 @@ type PackageInfo struct {
 	LastUsed     time.Time `json:"last_used"`
 	UsageCount   int       `json:"usage_count"`
 	Path         string    `json:"path,omitempty"`
+	Fingerprint  string    `json:"fingerprint,omitempty"`
+	SizeBytes    int64     `json:"size_bytes,omitempty"`
+	ModifiedAt   int64     `json:"modified_at_unix_nano,omitempty"`
+	UpdatedAt    int64     `json:"updated_at_unix_nano,omitempty"`
 	Dependencies []string  `json:"dependencies,omitempty"`
 }
 
 type StorageData struct {
-	Version    string                            `json:"version"`
-	Metadata   StorageMetadata                   `json:"metadata"`
-	Executions []ExecutionRecord                 `json:"executions"`
-	Packages   map[string]map[string]PackageInfo `json:"packages"`
-	Statistics StorageStatistics                 `json:"statistics"`
+	Version           string                            `json:"version"`
+	Metadata          StorageMetadata                   `json:"metadata"`
+	Executions        []ExecutionRecord                 `json:"executions"`
+	Packages          map[string]map[string]PackageInfo `json:"packages"`
+	PackageTombstones map[string]map[string]int64       `json:"package_tombstones,omitempty"`
+	Statistics        StorageStatistics                 `json:"statistics"`
 }
 
 type StorageMetadata struct {

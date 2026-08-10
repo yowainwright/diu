@@ -4,11 +4,15 @@ package e2e
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -131,6 +135,7 @@ func TestE2EPackageTracking(t *testing.T) {
 		"working_dir":       "/tmp",
 		"user":              "e2e-test",
 		"packages_affected": []string{"express"},
+		"metadata":          map[string]interface{}{"global": true},
 	}
 
 	jsonData, _ := json.Marshal(execution)
@@ -251,6 +256,16 @@ func TestE2ECLICommands(t *testing.T) {
 			args:          []string{"config", "list"},
 			expectSuccess: true,
 		},
+		{
+			name:          "diagnostics",
+			args:          []string{"diagnostics"},
+			expectSuccess: true,
+		},
+		{
+			name:          "status",
+			args:          []string{"status"},
+			expectSuccess: true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -266,6 +281,98 @@ func TestE2ECLICommands(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestE2EFallbackRecordersDoNotQueue(t *testing.T) {
+	if _, err := os.Stat("/usr/local/bin/diu"); os.IsNotExist(err) {
+		t.Skip("DIU binary not available, skipping fallback recorder test")
+	}
+	homeDir := t.TempDir()
+	storagePath := filepath.Join(homeDir, ".local", "share", "diu", "executions.json")
+	if err := os.MkdirAll(filepath.Dir(storagePath), core.OwnerDirectoryMode); err != nil {
+		t.Fatalf("MkdirAll failed: %v", err)
+	}
+	lock := openFallbackLock(t, storagePath+".fallback.lock")
+	defer closeFallbackLock(t, lock)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	payload := `{"tool":"npm","command":"npm install eslint"}`
+	commands := startFallbackRecorders(t, ctx, homeDir, payload, 24)
+	for _, command := range commands {
+		if err := command.cmd.Wait(); err == nil {
+			t.Fatalf("contended fallback recorder unexpectedly succeeded: %s", command.output.String())
+		}
+	}
+	if _, err := os.Stat(storagePath); !os.IsNotExist(err) {
+		t.Fatalf("contended fallback recorders touched storage: %v", err)
+	}
+	markerPath := filepath.Join(filepath.Dir(storagePath), "fallback-contention")
+	if _, err := os.Stat(markerPath); err != nil {
+		t.Fatalf("fallback contention marker missing: %v", err)
+	}
+}
+
+func openFallbackLock(t *testing.T, path string) *os.File {
+	t.Helper()
+	lock, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, core.PrivateFileMode)
+	if err != nil {
+		t.Fatalf("OpenFile failed: %v", err)
+	}
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
+		_ = lock.Close()
+		t.Fatalf("Flock failed: %v", err)
+	}
+	return lock
+}
+
+func closeFallbackLock(t *testing.T, lock *os.File) {
+	t.Helper()
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_UN); err != nil {
+		t.Errorf("unlock failed: %v", err)
+	}
+	if err := lock.Close(); err != nil {
+		t.Errorf("close failed: %v", err)
+	}
+}
+
+type fallbackRecorder struct {
+	cmd    *exec.Cmd
+	output *bytes.Buffer
+}
+
+func startFallbackRecorders(
+	t *testing.T,
+	ctx context.Context,
+	homeDir string,
+	payload string,
+	count int,
+) []fallbackRecorder {
+	t.Helper()
+	commands := make([]fallbackRecorder, 0, count)
+	for range count {
+		command := exec.CommandContext(ctx, "diu", "record")
+		command.Env = environmentWithHome(homeDir)
+		command.Stdin = strings.NewReader(payload)
+		output := &bytes.Buffer{}
+		command.Stdout = output
+		command.Stderr = output
+		if err := command.Start(); err != nil {
+			t.Fatalf("failed to start fallback recorder: %v", err)
+		}
+		commands = append(commands, fallbackRecorder{cmd: command, output: output})
+	}
+	return commands
+}
+
+func environmentWithHome(homeDir string) []string {
+	environment := make([]string, 0, len(os.Environ())+1)
+	for _, value := range os.Environ() {
+		if !strings.HasPrefix(value, "HOME=") {
+			environment = append(environment, value)
+		}
+	}
+	return append(environment, "HOME="+homeDir)
 }
 
 func TestE2EWrapperExecution(t *testing.T) {

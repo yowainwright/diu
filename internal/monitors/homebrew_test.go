@@ -77,6 +77,21 @@ func TestHomebrewParseCommand(t *testing.T) {
 			},
 		},
 		{
+			name: "uninstall cask",
+			args: []string{"uninstall", "--cask", "firefox"},
+			expected: struct {
+				packages []string
+				metadata map[string]interface{}
+			}{
+				packages: []string{"firefox"},
+				metadata: map[string]interface{}{
+					"subcommand": "uninstall",
+					"action":     "uninstall",
+					"type":       "cask",
+				},
+			},
+		},
+		{
 			name: "upgrade all",
 			args: []string{"upgrade"},
 			expected: struct {
@@ -230,6 +245,22 @@ func TestHomebrewParseCommand(t *testing.T) {
 	}
 }
 
+func TestFormulaPackagesUseNewestInstalledVersion(t *testing.T) {
+	info := homebrewInstalledInfo{
+		Formulae: []homebrewFormula{{
+			Name: "node",
+			Installed: []homebrewInstallation{
+				{Version: "20.0.0", Time: 200},
+				{Version: "18.0.0", Time: 100},
+			},
+		}},
+	}
+	packages := info.formulaPackages()
+	if len(packages) != 1 || packages[0].Version != "20.0.0" {
+		t.Fatalf("formula packages = %#v", packages)
+	}
+}
+
 func TestHomebrewInitialize(t *testing.T) {
 	config := core.DefaultConfig()
 	config.Monitoring.Process.AutoInstallWrappers = false
@@ -251,12 +282,8 @@ if [ "$1" = "--prefix" ]; then
   printf '%s\n' "$FAKE_BREW_PREFIX"
   exit 0
 fi
-if [ "$1" = "list" ] && [ "$2" = "--formula" ] && [ "$3" = "--json=v2" ]; then
-  printf '%s\n' '{"formulae":[{"name":"jq","full_name":"jq","version":"1.7","installed_time":"2024-01-02T03:04:05Z","dependencies":["oniguruma"]}]}'
-  exit 0
-fi
-if [ "$1" = "list" ] && [ "$2" = "--cask" ]; then
-  printf 'firefox\n'
+if [ "$1" = "info" ] && [ "$2" = "--json=v2" ] && [ "$3" = "--installed" ]; then
+  printf '%s\n' '{"formulae":[{"name":"jq","dependencies":["oniguruma"],"installed":[{"version":"1.7","time":1704164645}]}],"casks":[{"token":"firefox","version":"128.0","installed_time":1704164645}]}'
   exit 0
 fi
 exit 2
@@ -304,23 +331,56 @@ exit 2
 	if byName["jq"].Version != "1.7" || byName["jq"].Tool != core.ToolHomebrew {
 		t.Fatalf("Unexpected jq package: %#v", byName["jq"])
 	}
+	if len(byName["jq"].Dependencies) != 0 {
+		t.Fatalf("Unexpected jq dependencies: %#v", byName["jq"].Dependencies)
+	}
 	if byName["firefox"].Tool != homebrewCaskTool {
 		t.Fatalf("Unexpected firefox package: %#v", byName["firefox"])
 	}
 }
 
-func TestHomebrewFormulaFallbackWithFakeBrew(t *testing.T) {
+func TestHomebrewUsesFastInstalledPackageLists(t *testing.T) {
 	prependFakeCommand(t, homebrewCommandName, `#!/bin/sh
 if [ "$1" = "--prefix" ]; then
   printf '%s\n' "$FAKE_BREW_PREFIX"
   exit 0
 fi
-if [ "$1" = "list" ] && [ "$2" = "--formula" ] && [ "$3" = "--json=v2" ]; then
-  printf 'not json\n'
+if [ "$1" = "list" ] && [ "$2" = "--formula" ] && [ "$3" = "--versions" ]; then
+  printf 'jq 1.7.1\n'
   exit 0
 fi
-if [ "$1" = "list" ] && [ "$2" = "--formula" ]; then
-  printf 'jq\nripgrep\n'
+if [ "$1" = "list" ] && [ "$2" = "--cask" ] && [ "$3" = "--versions" ]; then
+  printf 'firefox 128.0\n'
+  exit 0
+fi
+exit 2
+`)
+	t.Setenv("FAKE_BREW_PREFIX", t.TempDir())
+	config := core.DefaultConfig()
+	config.Monitoring.Process.AutoInstallWrappers = false
+	config.Tools.Homebrew.TrackCasks = true
+	monitor := NewHomebrewMonitor().(*HomebrewMonitor)
+	if err := monitor.Initialize(config); err != nil {
+		t.Fatalf("Initialize failed: %v", err)
+	}
+
+	packages, err := monitor.GetInstalledPackages()
+	if err != nil {
+		t.Fatalf("GetInstalledPackages failed: %v", err)
+	}
+	if len(packages) != 2 || packages[0].Version != "1.7.1" || packages[1].Version != "128.0" {
+		t.Fatalf("installed packages = %#v", packages)
+	}
+}
+
+func TestHomebrewRejectsInvalidInstalledInfo(t *testing.T) {
+	prependFakeCommand(t, homebrewCommandName, `#!/bin/sh
+if [ "$1" = "--prefix" ]; then
+  printf '%s\n' "$FAKE_BREW_PREFIX"
+  exit 0
+fi
+if [ "$1" = "info" ] && [ "$2" = "--json=v2" ] && [ "$3" = "--installed" ]; then
+  printf 'not json\n'
   exit 0
 fi
 exit 2
@@ -336,11 +396,7 @@ exit 2
 		t.Fatalf("Initialize failed: %v", err)
 	}
 
-	packages, err := monitor.getFormulae()
-	if err != nil {
-		t.Fatalf("getFormulae failed: %v", err)
-	}
-	if len(packages) != 2 || packages[0].Name != "jq" || packages[1].Name != "ripgrep" {
-		t.Fatalf("Unexpected fallback packages: %#v", packages)
+	if _, err := monitor.getFormulae(); err == nil {
+		t.Fatal("getFormulae should reject invalid Homebrew JSON")
 	}
 }

@@ -13,6 +13,10 @@ import (
 	"github.com/yowainwright/diu/internal/storage"
 )
 
+type executionSummarizer interface {
+	SummarizeExecutions(storage.QueryOptions) (storage.ExecutionSummary, error)
+}
+
 // queryExecutions queries and displays execution history
 func queryExecutions(cmd *command, args []string) error {
 	config, err := core.LoadConfig("")
@@ -58,7 +62,7 @@ func queryExecutions(cmd *command, args []string) error {
 
 	case "csv":
 		writer := csv.NewWriter(out.Stdout())
-		if err := writer.Write([]string{"tool", "command", "timestamp", "duration_ms", "exit_code"}); err != nil {
+		if err := writer.Write([]string{"tool", "command", "timestamp", "duration_ms", "exit_code", "working_dir"}); err != nil {
 			return err
 		}
 		for _, exec := range executions {
@@ -68,6 +72,7 @@ func queryExecutions(cmd *command, args []string) error {
 				exec.Timestamp.Format(time.RFC3339),
 				fmt.Sprintf("%d", exec.Duration.Milliseconds()),
 				fmt.Sprintf("%d", exec.ExitCode),
+				exec.WorkingDir,
 			}); err != nil {
 				return err
 			}
@@ -95,6 +100,13 @@ func queryExecutions(cmd *command, args []string) error {
 				out.Printf("  %s %s\n",
 					out.DataStyle(dx.Muted, "Packages:"),
 					strings.Join(exec.PackagesAffected, ", "),
+				)
+			}
+
+			if exec.WorkingDir != "" {
+				out.Printf("  %s %s\n",
+					out.DataStyle(dx.Muted, "Location:"),
+					displayLocalPath(exec.WorkingDir),
 				)
 			}
 
@@ -147,19 +159,14 @@ func showStats(cmd *command, args []string) error {
 	}
 	out.Println()
 
-	executions, err := store.GetExecutions(opts)
+	summary, err := summarizeExecutions(store, opts)
 	if err != nil {
-		return fmt.Errorf("failed to get executions: %w", err)
-	}
-
-	toolCounts := make(map[string]int)
-	for _, exec := range executions {
-		toolCounts[exec.Tool]++
+		return fmt.Errorf("failed to summarize executions: %w", err)
 	}
 
 	out.Printf("%s %d\n",
 		out.DataStyle(dx.Info, "Total executions:"),
-		len(executions),
+		summary.Total,
 	)
 
 	stats, _ := store.GetStatistics()
@@ -172,7 +179,7 @@ func showStats(cmd *command, args []string) error {
 
 	out.Println()
 	out.Println(out.DataStyle(dx.Muted, "Tool usage:"))
-	for tool, count := range toolCounts {
+	for tool, count := range summary.ToolCounts {
 		out.Printf("  %s %d\n", out.DataStyle(dx.Accent, tool+":"), count)
 	}
 
@@ -202,4 +209,20 @@ func showStats(cmd *command, args []string) error {
 	}
 
 	return nil
+}
+
+func summarizeExecutions(store storage.Storage, opts storage.QueryOptions) (storage.ExecutionSummary, error) {
+	if summarizer, ok := store.(executionSummarizer); ok {
+		return summarizer.SummarizeExecutions(opts)
+	}
+	executions, err := store.GetExecutions(opts)
+	if err != nil {
+		return storage.ExecutionSummary{}, err
+	}
+	toolCounts := make(map[string]int)
+	for _, execution := range executions {
+		toolCounts[execution.Tool]++
+	}
+	summary := storage.ExecutionSummary{Total: len(executions), ToolCounts: toolCounts}
+	return summary, nil
 }

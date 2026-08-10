@@ -156,7 +156,7 @@ flowchart LR
     record --> storage
     scan["diu scan"] --> inventory["Package inventory"]
     inventory --> storage
-    storage --> cli["check / query / stats / packages / manage"]
+    storage --> cli["status / diagnostics / check / query / stats / packages / manage"]
 ```
 
 ## Commands
@@ -170,6 +170,8 @@ flowchart LR
 | `diu packages` | List tracked packages, optionally filtered by tool or unused duration. |
 | `diu query` | Show recorded executions. |
 | `diu stats` | Summarize usage by time range, tool, and top packages. |
+| `diu status` | Show daemon state, local usage, last location, and observability paths. |
+| `diu diagnostics [--output FILE]` | Print or save a redacted local bug report. |
 | `diu manage` | Search packages and uninstall them interactively or by flag. |
 | `diu daemon start` | Start the optional local recorder/API daemon. |
 | `diu config list` | Print the resolved config as JSON. |
@@ -243,6 +245,8 @@ curl -X POST http://127.0.0.1:8081/api/v1/executions \
 | --- | --- |
 | `~/.config/diu/config.json` | User config. |
 | `~/.local/share/diu/executions.json` | Execution history, package inventory, and stats. |
+| `~/.local/share/diu/diu.log` | Private, size-bounded daemon log. |
+| `~/.local/share/diu/fallback-contention` | Private marker for daemon-off recorder contention. |
 | `~/.local/share/diu/diu.pid` | Daemon PID file. |
 | `~/.local/share/diu/diu.sock` | Daemon Unix socket. |
 | `~/.local/bin/diu-wrappers` | Generated command wrappers. |
@@ -269,9 +273,17 @@ diu scan
 # Check daemon state
 diu daemon status
 
-# Run the daemon in the foreground for logs
-DIU_DAEMON_FOREGROUND=1 diu daemon start
+# Show current usage, last activity/location, and local paths
+diu status
+
+# Generate a redacted report to attach to a bug
+diu diagnostics --output diu-diagnostics.json
+
+# Stream the same report as JSON
+diu diagnostics
 ```
+
+Diagnostics remain local and are never uploaded by DIU. Reports include fallback contention signals. They exclude command history, package names, environment variables, usernames, hostnames, and absolute managed paths.
 
 ## Development
 

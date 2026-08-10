@@ -8,11 +8,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/yowainwright/diu/internal/core"
+	"github.com/yowainwright/diu/internal/safefs"
 	"github.com/yowainwright/diu/internal/storage"
 )
 
@@ -331,6 +333,40 @@ func TestRecordExecutionWritesToConfiguredStorage(t *testing.T) {
 	}
 }
 
+func TestRecordExecutionDropsConcurrentFallback(t *testing.T) {
+	config := setupTestHomeConfig(t)
+	lock, acquired, err := tryAcquireFallbackRecordLock(config.Storage.JSONFile)
+	if err != nil || !acquired {
+		t.Fatalf("tryAcquireFallbackRecordLock = %v, %v", acquired, err)
+	}
+	defer func() {
+		if err := releaseFallbackRecordLock(lock); err != nil {
+			t.Fatalf("releaseFallbackRecordLock failed: %v", err)
+		}
+	}()
+
+	payload := `{"tool":"brew","command":"brew install jq"}`
+	withStdin(t, payload, func() {
+		err := recordExecution(&command{}, nil)
+		if err == nil || !strings.Contains(err.Error(), "remained busy") {
+			t.Fatalf("recordExecution error = %v", err)
+		}
+	})
+	store := openTestStore(t, config)
+	defer closeTestStore(t, store)
+	executions, err := store.GetExecutions(storage.QueryOptions{})
+	if err != nil {
+		t.Fatalf("GetExecutions failed: %v", err)
+	}
+	if len(executions) != 0 {
+		t.Fatalf("concurrent fallback stored %d executions", len(executions))
+	}
+	report := collectDiagnosticReport(config)
+	if !report.Fallback.ContentionDetected {
+		t.Fatal("diagnostics did not report fallback contention")
+	}
+}
+
 func TestQueryExecutionsFormats(t *testing.T) {
 	config := setupTestHomeConfig(t)
 	store := openTestStore(t, config)
@@ -341,6 +377,7 @@ func TestQueryExecutionsFormats(t *testing.T) {
 		Timestamp:        time.Now(),
 		Duration:         1500 * time.Millisecond,
 		ExitCode:         0,
+		WorkingDir:       filepath.Join(os.Getenv("HOME"), "projects", "diu"),
 		PackagesAffected: []string{"eslint"},
 	})
 	closeTestStore(t, store)
@@ -363,7 +400,7 @@ func TestQueryExecutionsFormats(t *testing.T) {
 			t.Fatalf("queryExecutions CSV failed: %v", err)
 		}
 	})
-	if !strings.Contains(csvOutput, "tool,command,timestamp,duration_ms,exit_code") || !strings.Contains(csvOutput, "npm install eslint") {
+	if !strings.Contains(csvOutput, "tool,command,timestamp,duration_ms,exit_code,working_dir") || !strings.Contains(csvOutput, "npm install eslint") {
 		t.Fatalf("Unexpected CSV output:\n%s", csvOutput)
 	}
 
@@ -372,7 +409,7 @@ func TestQueryExecutionsFormats(t *testing.T) {
 			t.Fatalf("queryExecutions table failed: %v", err)
 		}
 	})
-	if !strings.Contains(tableOutput, "Execution History") || !strings.Contains(tableOutput, "npm install eslint") {
+	if !strings.Contains(tableOutput, "Execution History") || !strings.Contains(tableOutput, "Location: ~/projects/diu") {
 		t.Fatalf("Unexpected table output:\n%s", tableOutput)
 	}
 }
@@ -708,6 +745,122 @@ func TestScanPackagesDiscoversExecutableWrappers(t *testing.T) {
 	}
 }
 
+func TestMergeExistingPackageMigratesLegacyGoUsage(t *testing.T) {
+	lastUsed := time.Now().Add(-time.Hour)
+	legacy := &core.PackageInfo{
+		Name:       "gopls",
+		Tool:       core.ToolGo,
+		LastUsed:   lastUsed,
+		UsageCount: 12,
+	}
+	inventory := map[string]map[string]*core.PackageInfo{
+		core.ToolGo: {"gopls": legacy},
+	}
+	pkg := &core.PackageInfo{Name: "gopls", Tool: core.ToolGoBinary}
+
+	mergeExistingPackage(inventory, pkg)
+	if pkg.UsageCount != legacy.UsageCount || !pkg.LastUsed.Equal(lastUsed) {
+		t.Fatalf("migrated package = %#v", pkg)
+	}
+	scopes := inventoryScopes(core.ToolGo, core.DefaultConfig())
+	if !slices.Contains(scopes, core.ToolGo) || !slices.Contains(scopes, core.ToolGoBinary) {
+		t.Fatalf("Go inventory scopes = %#v", scopes)
+	}
+}
+
+func TestMergeExistingPackageCombinesLegacyAndCurrentGoUsage(t *testing.T) {
+	legacyUse := time.Now().Add(-time.Hour)
+	currentUse := time.Now()
+	inventory := map[string]map[string]*core.PackageInfo{
+		core.ToolGo:       {"gopls": {Name: "gopls", UsageCount: 4, LastUsed: legacyUse}},
+		core.ToolGoBinary: {"gopls": {Name: "gopls", UsageCount: 3, LastUsed: currentUse}},
+	}
+	pkg := &core.PackageInfo{Name: "gopls", Tool: core.ToolGoBinary}
+
+	mergeExistingPackage(inventory, pkg)
+	if pkg.UsageCount != 7 {
+		t.Fatalf("usage count = %d, want 7", pkg.UsageCount)
+	}
+	if !pkg.LastUsed.Equal(currentUse) {
+		t.Fatalf("last used = %s, want %s", pkg.LastUsed, currentUse)
+	}
+}
+
+func TestPackageScannerDeduplicatesGoMonitorAndWrapperEntries(t *testing.T) {
+	scanner := &packageScanner{
+		scan:            newInventoryScan(),
+		existing:        legacyAndCurrentGoInventory(),
+		scannedPackages: make(map[string]*core.PackageInfo),
+	}
+	scanner.addPackage(&core.PackageInfo{Name: "gopls", Tool: core.ToolGoBinary})
+	scanner.addPackage(&core.PackageInfo{Name: "gopls", Tool: core.ToolGoBinary, Path: "/go/bin/gopls"})
+
+	if len(scanner.packages) != 1 {
+		t.Fatalf("packages = %d, want 1", len(scanner.packages))
+	}
+	if scanner.packages[0].UsageCount != 7 {
+		t.Fatalf("usage count = %d, want 7", scanner.packages[0].UsageCount)
+	}
+}
+
+func TestMergeExistingPackageReusesUnchangedGoFingerprint(t *testing.T) {
+	existing := &core.PackageInfo{
+		Name: "gopls", Tool: core.ToolGoBinary, Path: "/go/bin/gopls",
+		Fingerprint: "sha256", SizeBytes: 42, ModifiedAt: 123,
+	}
+	inventory := map[string]map[string]*core.PackageInfo{core.ToolGoBinary: {"gopls": existing}}
+	pkg := &core.PackageInfo{
+		Name: "gopls", Tool: core.ToolGoBinary, Path: existing.Path,
+		SizeBytes: existing.SizeBytes, ModifiedAt: existing.ModifiedAt,
+	}
+
+	mergeExistingPackage(inventory, pkg)
+	if pkg.Fingerprint != existing.Fingerprint {
+		t.Fatalf("fingerprint = %q, want %q", pkg.Fingerprint, existing.Fingerprint)
+	}
+}
+
+func TestPopulateGoBinaryFingerprintCachesFileSignature(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "gopls")
+	writeExecutableForTest(t, path, "#!/bin/sh\nexit 0\n")
+	pkg := &core.PackageInfo{Name: "gopls", Tool: core.ToolGoBinary, Path: path}
+	if err := populateGoBinaryFingerprint(pkg); err != nil {
+		t.Fatalf("populateGoBinaryFingerprint failed: %v", err)
+	}
+	if pkg.Fingerprint == "" || pkg.SizeBytes == 0 || pkg.ModifiedAt == 0 {
+		t.Fatalf("fingerprinted package = %#v", pkg)
+	}
+	originalFingerprint := pkg.Fingerprint
+	if err := populateGoBinaryFingerprint(pkg); err != nil {
+		t.Fatalf("cached populateGoBinaryFingerprint failed: %v", err)
+	}
+	if pkg.Fingerprint != originalFingerprint {
+		t.Fatalf("fingerprint changed: %q", pkg.Fingerprint)
+	}
+}
+
+func TestPopulateGoBinaryFingerprintRejectsMissingBinary(t *testing.T) {
+	pkg := &core.PackageInfo{Name: "missing", Tool: core.ToolGoBinary, Path: filepath.Join(t.TempDir(), "missing")}
+	if err := populateGoBinaryFingerprint(pkg); err == nil {
+		t.Fatal("missing Go binary was fingerprinted")
+	}
+}
+
+func legacyAndCurrentGoInventory() map[string]map[string]*core.PackageInfo {
+	return map[string]map[string]*core.PackageInfo{
+		core.ToolGo:       {"gopls": {Name: "gopls", UsageCount: 4}},
+		core.ToolGoBinary: {"gopls": {Name: "gopls", UsageCount: 3}},
+	}
+}
+
+func TestInventoryScopesSkipIncompleteNPMScan(t *testing.T) {
+	config := core.DefaultConfig()
+	config.Tools.NPM.TrackGlobalOnly = false
+	if scopes := inventoryScopes(core.ToolNPM, config); scopes != nil {
+		t.Fatalf("npm inventory scopes = %#v", scopes)
+	}
+}
+
 func TestScanPackagesAdditionalManagers(t *testing.T) {
 	config := setupTestHomeConfig(t)
 	t.Setenv("PATH", t.TempDir())
@@ -902,19 +1055,30 @@ func TestUninstallGoBinaryRemovesExecutableWrapperAndState(t *testing.T) {
 
 	binaryPath := filepath.Join(t.TempDir(), "mytool")
 	writeExecutableForTest(t, binaryPath, "#!/bin/bash\nexit 0\n")
+	fingerprint, err := safefs.SHA256(binaryPath)
+	if err != nil {
+		t.Fatalf("Failed to fingerprint binary: %v", err)
+	}
 	wrapperPath := filepath.Join(config.Monitoring.Process.WrapperDir, "mytool")
 	writeExecutableForTest(t, wrapperPath, "#!/bin/bash\nexit 0\n")
 
 	store := openTestStore(t, config)
 	updateTestPackage(t, store, &core.PackageInfo{
-		Name: "mytool",
-		Tool: core.ToolGo,
-		Path: binaryPath,
+		Name:        "mytool",
+		Tool:        core.ToolGo,
+		Path:        binaryPath,
+		Fingerprint: fingerprint,
 	})
 	closeTestStore(t, store)
 
 	output := captureStderr(t, func() {
-		if err := uninstallPackage(&core.PackageInfo{Name: "mytool", Tool: core.ToolGo, Path: binaryPath}, true); err != nil {
+		pkg := &core.PackageInfo{
+			Name:        "mytool",
+			Tool:        core.ToolGo,
+			Path:        binaryPath,
+			Fingerprint: fingerprint,
+		}
+		if err := uninstallPackage(pkg, true); err != nil {
 			t.Fatalf("uninstallPackage failed: %v", err)
 		}
 	})
@@ -1525,11 +1689,16 @@ func TestRunUninstallGoBinary(t *testing.T) {
 	dir := t.TempDir()
 	binPath := filepath.Join(dir, "mytool")
 	writeExecutableForTest(t, binPath, "#!/bin/sh\nexit 0\n")
+	fingerprint, err := safefs.SHA256(binPath)
+	if err != nil {
+		t.Fatalf("Failed to fingerprint binary: %v", err)
+	}
 
 	pkg := &core.PackageInfo{
-		Name: "mytool",
-		Tool: core.ToolGoBinary,
-		Path: binPath,
+		Name:        "mytool",
+		Tool:        core.ToolGoBinary,
+		Path:        binPath,
+		Fingerprint: fingerprint,
 	}
 
 	if err := runUninstall(pkg); err != nil {
@@ -1620,6 +1789,44 @@ func TestRemoveGoBinaryFailsForMissingPath(t *testing.T) {
 	pkg := &core.PackageInfo{Name: "ghost", Tool: core.ToolGo, Path: ""}
 	if err := removeGoBinary(pkg); err == nil {
 		t.Fatal("expected validation error for empty path")
+	}
+}
+
+func TestRemoveGoBinaryRejectsChangedExecutable(t *testing.T) {
+	binaryPath := filepath.Join(t.TempDir(), "tool")
+	writeExecutableForTest(t, binaryPath, "#!/bin/sh\nexit 0\n")
+	fingerprint, err := safefs.SHA256(binaryPath)
+	if err != nil {
+		t.Fatalf("Failed to fingerprint binary: %v", err)
+	}
+	writeExecutableForTest(t, binaryPath, "#!/bin/sh\nexit 1\n")
+	pkg := &core.PackageInfo{
+		Name:        "tool",
+		Tool:        core.ToolGoBinary,
+		Path:        binaryPath,
+		Fingerprint: fingerprint,
+	}
+
+	err = removeGoBinary(pkg)
+	if err == nil || !strings.Contains(err.Error(), "changed since the last scan") {
+		t.Fatalf("removeGoBinary error = %v", err)
+	}
+	if _, err := os.Stat(binaryPath); err != nil {
+		t.Fatalf("changed binary should remain: %v", err)
+	}
+}
+
+func TestRemoveGoBinaryRequiresScanFingerprint(t *testing.T) {
+	binaryPath := filepath.Join(t.TempDir(), "tool")
+	writeExecutableForTest(t, binaryPath, "#!/bin/sh\nexit 0\n")
+	pkg := &core.PackageInfo{Name: "tool", Tool: core.ToolGoBinary, Path: binaryPath}
+
+	err := removeGoBinary(pkg)
+	if err == nil || !strings.Contains(err.Error(), "run diu scan") {
+		t.Fatalf("removeGoBinary error = %v", err)
+	}
+	if _, err := os.Stat(binaryPath); err != nil {
+		t.Fatalf("unfingerprinted binary should remain: %v", err)
 	}
 }
 
