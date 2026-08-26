@@ -4,15 +4,17 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
 
 	"github.com/yowainwright/diu/internal/core"
+	"github.com/yowainwright/diu/internal/fn"
 	"github.com/yowainwright/diu/internal/safefs"
 )
 
@@ -30,7 +32,7 @@ const (
 	executionLogFormat    = "ndjson-v1"
 )
 
-func NewJSONStorage(config *core.Config) (Storage, error) {
+func NewJSONStorage(config *core.Config) (*JSONStorage, error) {
 	storagePath, err := cleanManagedPath(config.Storage.JSONFile)
 	if err != nil {
 		return nil, fmt.Errorf("invalid storage path: %w", err)
@@ -61,8 +63,15 @@ func (j *JSONStorage) Initialize(config *core.Config) error {
 		return j.initializeEmptyStorage()
 	}
 
-	_, err := inspectJSONFile(j.filepath)
-	return err
+	usesLog, err := storageUsesExecutionLog(j.filepath)
+	if err != nil || !usesLog {
+		return err
+	}
+	if err := j.ensureCurrentExecutionLog(); err != nil {
+		return err
+	}
+	j.data = nil
+	return nil
 }
 
 func ExecutionLogPath(manifestPath string) string {
@@ -149,16 +158,74 @@ func (j *JSONStorage) save() error {
 		return fmt.Errorf("failed to marshal storage data: %w", err)
 	}
 
-	tempFile := j.filepath + ".tmp"
-	if err := os.WriteFile(tempFile, data, core.PrivateFileMode); err != nil {
+	return writeFileAtomically(j.filepath, data)
+}
+
+func writeFileAtomically(path string, data []byte) error {
+	tempPath := path + ".tmp"
+	file, err := safefs.OpenFile(tempPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, core.PrivateFileMode)
+	if err != nil {
 		return fmt.Errorf("failed to write storage file: %w", err)
 	}
+	if err := writeAll(file, data); err != nil {
+		discardTempFile(file, tempPath)
+		return fmt.Errorf("failed to write storage file: %w", err)
+	}
+	if err := commitTempFile(file, tempPath, path); err != nil {
+		return fmt.Errorf("failed to replace storage file: %w", err)
+	}
+	return nil
+}
 
-	if err := os.Rename(tempFile, j.filepath); err != nil {
+func writeAll(writer io.Writer, data []byte) error {
+	for len(data) > 0 {
+		written, err := writer.Write(data)
+		if err != nil {
+			return err
+		}
+		if written == 0 {
+			return io.ErrShortWrite
+		}
+		data = data[written:]
+	}
+	return nil
+}
+
+func commitTempFile(file *os.File, tempPath, destination string) error {
+	if err := file.Sync(); err != nil {
+		discardTempFile(file, tempPath)
+		return fmt.Errorf("failed to sync temp file: %w", err)
+	}
+	if err := file.Close(); err != nil {
+		_ = os.Remove(tempPath)
+		return fmt.Errorf("failed to close temp file: %w", err)
+	}
+	if err := os.Rename(tempPath, destination); err != nil {
+		_ = os.Remove(tempPath)
 		return fmt.Errorf("failed to rename temp file: %w", err)
 	}
+	return syncDirectory(filepath.Dir(destination))
+}
 
+func syncDirectory(path string) (err error) {
+	dir, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("failed to open storage directory: %w", err)
+	}
+	defer func() {
+		if closeErr := dir.Close(); err == nil && closeErr != nil {
+			err = fmt.Errorf("failed to close storage directory: %w", closeErr)
+		}
+	}()
+	if err := dir.Sync(); err != nil {
+		return fmt.Errorf("failed to sync storage directory: %w", err)
+	}
 	return nil
+}
+
+func discardTempFile(file *os.File, path string) {
+	_ = file.Close()
+	_ = os.Remove(path)
 }
 
 func marshalStorageData(data *core.StorageData) ([]byte, error) {
@@ -187,7 +254,7 @@ func validateExecutionRecords(records []*core.ExecutionRecord) error {
 	}
 	for _, record := range records {
 		if record == nil {
-			return fmt.Errorf("execution record cannot be nil")
+			return ErrNilExecutionRecord
 		}
 	}
 	return nil
@@ -204,6 +271,7 @@ func (j *JSONStorage) addExecutionsLocked(records []*core.ExecutionRecord) error
 	if err := appendExecutionRecords(j.executionPath, storedRecords); err != nil {
 		return err
 	}
+	j.applyExecutions(storedRecords)
 	if err := j.save(); err != nil {
 		return err
 	}
@@ -211,23 +279,27 @@ func (j *JSONStorage) addExecutionsLocked(records []*core.ExecutionRecord) error
 }
 
 func (j *JSONStorage) prepareExecutions(records []*core.ExecutionRecord) []core.ExecutionRecord {
-	stored := make([]core.ExecutionRecord, 0, len(records))
-	for _, record := range records {
-		stored = append(stored, j.prepareExecution(record))
-	}
-	return stored
+	return fn.Map(records, j.prepareExecution)
 }
 
 func (j *JSONStorage) prepareExecution(record *core.ExecutionRecord) core.ExecutionRecord {
 	if record.ID == "" {
 		record.ID = fmt.Sprintf("exec_%s_%s", time.Now().Format("20060102_150405"), generateID())
 	}
-	storedRecord := copyExecutionValue(*record)
-	j.updateExecutionStatistics(storedRecord.Tool)
-	if j.shouldUpdateInventory(storedRecord) {
-		j.applyPackageEffects(storedRecord)
+	return copyExecutionValue(*record)
+}
+
+func (j *JSONStorage) applyExecutions(records []core.ExecutionRecord) {
+	for _, record := range records {
+		j.applyExecution(record)
 	}
-	return storedRecord
+}
+
+func (j *JSONStorage) applyExecution(record core.ExecutionRecord) {
+	j.updateExecutionStatistics(record.Tool)
+	if j.shouldUpdateInventory(record) {
+		j.applyPackageEffects(record)
+	}
 }
 
 func (j *JSONStorage) applyPackageEffects(record core.ExecutionRecord) {
@@ -248,7 +320,7 @@ func packageToolForRecord(record core.ExecutionRecord) string {
 		return record.Tool
 	}
 	packageType, _ := record.Metadata["type"].(string)
-	if packageType == "cask" || containsString(record.Args, "--cask") {
+	if packageType == "cask" || slices.Contains(record.Args, "--cask") {
 		return core.ToolHomebrewCask
 	}
 	return record.Tool
@@ -300,7 +372,7 @@ func (j *JSONStorage) UpdatePackages(packages []*core.PackageInfo) error {
 	}
 	for _, pkg := range packages {
 		if pkg == nil {
-			return fmt.Errorf("package cannot be nil")
+			return ErrNilPackage
 		}
 	}
 	j.mu.Lock()
@@ -596,6 +668,48 @@ func (j *JSONStorage) Cleanup(before time.Time) error {
 	})
 }
 
+func (j *JSONStorage) Prepare() error {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+
+	return j.withFileLock(func() error {
+		usesLog, err := storageUsesExecutionLog(j.filepath)
+		if err != nil {
+			return err
+		}
+		if !usesLog {
+			return j.compact(time.Time{})
+		}
+		if err := j.load(); err != nil {
+			return err
+		}
+		if err := j.ensureCurrentExecutionLog(); err != nil {
+			return err
+		}
+		return j.compactIfNeeded()
+	})
+}
+
+func (j *JSONStorage) ensureCurrentExecutionLog() error {
+	info, err := inspectJSONFile(j.executionPath)
+	if err != nil {
+		return err
+	}
+	if info != nil {
+		return nil
+	}
+	if err := ensureExecutionLog(j.executionPath); err != nil {
+		return err
+	}
+	if j.data == nil {
+		if err := j.load(); err != nil {
+			return err
+		}
+	}
+	j.data.Statistics = emptyStorageStatistics()
+	return j.save()
+}
+
 func (j *JSONStorage) pruneBackups() error {
 	maxBackups := j.config.Storage.MaxBackups
 	if maxBackups <= 0 {
@@ -624,11 +738,11 @@ func (j *JSONStorage) pruneBackups() error {
 		return nil
 	}
 
-	sort.Slice(backups, func(i, k int) bool {
-		if !backups[i].modTime.Equal(backups[k].modTime) {
-			return backups[i].modTime.Before(backups[k].modTime)
+	slices.SortFunc(backups, func(a, b backupFile) int {
+		if order := a.modTime.Compare(b.modTime); order != 0 {
+			return order
 		}
-		return backups[i].path < backups[k].path
+		return strings.Compare(a.path, b.path)
 	})
 
 	for _, backup := range backups[:len(backups)-maxBackups] {
@@ -694,8 +808,12 @@ func (j *JSONStorage) reload() error {
 		if err := j.compact(time.Time{}); err != nil {
 			return err
 		}
+		return nil
 	}
-	return j.load()
+	if err := j.load(); err != nil {
+		return err
+	}
+	return j.ensureCurrentExecutionLog()
 }
 
 func (j *JSONStorage) withFileLock(fn func() error) (err error) {
@@ -714,24 +832,12 @@ func (j *JSONStorage) withFileLock(fn func() error) (err error) {
 		return fmt.Errorf("failed to lock storage: %w", err)
 	}
 
-	if err := fn(); err != nil {
-		unlockErr := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
-		if unlockErr != nil {
-			return fmt.Errorf("%w; additionally failed to unlock storage: %v", err, unlockErr)
-		}
-		return err
-	}
-
-	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN); err != nil {
-		return fmt.Errorf("failed to unlock storage: %w", err)
-	}
-
-	return nil
+	return fn()
 }
 
 func cleanManagedPath(path string) (string, error) {
 	if strings.TrimSpace(path) == "" {
-		return "", fmt.Errorf("path cannot be empty")
+		return "", ErrEmptyPath
 	}
 
 	cleanPath := filepath.Clean(path)

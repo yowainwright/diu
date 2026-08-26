@@ -169,7 +169,7 @@ func (d *Daemon) Start() error {
 }
 
 func (d *Daemon) prepareStorage() error {
-	if err := d.storage.Cleanup(time.Time{}); err != nil {
+	if err := d.storage.Prepare(); err != nil {
 		return fmt.Errorf("failed to prepare storage: %w", err)
 	}
 	return nil

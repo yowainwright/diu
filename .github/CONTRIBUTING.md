@@ -15,7 +15,7 @@ Thanks for taking the time to improve DIU. This project is intentionally small, 
 Requirements:
 
 - macOS 10.15 or later for the primary supported environment.
-- Go 1.26.5 or later.
+- Go 1.26 or later.
 - mise, Docker, GoReleaser, svu, golangci-lint, and gosec are optional development or release tools.
 
 Common commands:

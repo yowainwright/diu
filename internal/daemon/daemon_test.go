@@ -36,6 +36,7 @@ type mockStorage struct {
 	batchCalls   int
 	backupCalls  int
 	cleanupCalls int
+	prepareCalls int
 	cleanupErr   error
 	lastQuery    storage.QueryOptions
 }
@@ -225,13 +226,23 @@ func (m *mockStorage) Cleanup(before time.Time) error {
 	return nil
 }
 
+func (m *mockStorage) Prepare() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.prepareCalls++
+	return m.cleanupErr
+}
+
 func TestPrepareStorage(t *testing.T) {
 	store := newMockStorage()
 	d := &Daemon{storage: store}
 	if err := d.prepareStorage(); err != nil {
 		t.Fatalf("prepareStorage failed: %v", err)
 	}
-	if store.cleanupCalls != 1 {
+	if store.prepareCalls != 1 {
+		t.Fatalf("prepare calls = %d", store.prepareCalls)
+	}
+	if store.cleanupCalls != 0 {
 		t.Fatalf("cleanup calls = %d", store.cleanupCalls)
 	}
 }

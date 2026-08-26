@@ -2,6 +2,7 @@ package storage
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -32,7 +33,7 @@ func updatePackage(t *testing.T, store Storage, pkg *core.PackageInfo) {
 	}
 }
 
-func newTestStorage(t *testing.T) Storage {
+func newTestStorage(t *testing.T) *JSONStorage {
 	t.Helper()
 	config := &core.Config{
 		Storage: core.StorageConfig{
@@ -74,6 +75,13 @@ func TestJSONStorage(t *testing.T) {
 	}
 	if got := info.Mode().Perm(); got != core.PrivateFileMode {
 		t.Errorf("Storage file mode = %v, want %v", got, core.PrivateFileMode)
+	}
+}
+
+func TestNewJSONStorageRejectsEmptyPath(t *testing.T) {
+	config := &core.Config{Storage: core.StorageConfig{JSONFile: " "}}
+	if _, err := NewJSONStorage(config); !errors.Is(err, ErrEmptyPath) {
+		t.Fatalf("NewJSONStorage error = %v", err)
 	}
 }
 
@@ -126,13 +134,12 @@ func TestAddExecution(t *testing.T) {
 func TestAddExecutionsStoresBatch(t *testing.T) {
 	store := newTestStorage(t)
 	defer closeStorage(t, store)
-	jsonStore := store.(*JSONStorage)
 	records := []*core.ExecutionRecord{
 		{Tool: core.ToolHomebrew, Timestamp: time.Now()},
 		{Tool: core.ToolGo, Timestamp: time.Now()},
 	}
 
-	if err := jsonStore.AddExecutions(records); err != nil {
+	if err := store.AddExecutions(records); err != nil {
 		t.Fatalf("AddExecutions failed: %v", err)
 	}
 	executions, err := store.GetExecutions(QueryOptions{})
@@ -141,6 +148,14 @@ func TestAddExecutionsStoresBatch(t *testing.T) {
 	}
 	if len(executions) != len(records) {
 		t.Fatalf("execution count = %d, want %d", len(executions), len(records))
+	}
+}
+
+func TestAddExecutionRejectsNilRecord(t *testing.T) {
+	store := newTestStorage(t)
+	defer closeStorage(t, store)
+	if err := store.AddExecution(nil); !errors.Is(err, ErrNilExecutionRecord) {
+		t.Fatalf("AddExecution error = %v", err)
 	}
 }
 
@@ -159,6 +174,36 @@ func TestAddExecutionRejectsUnmarshalableMetadata(t *testing.T) {
 	executions, err := store.GetExecutions(QueryOptions{})
 	if err != nil || len(executions) != 0 {
 		t.Fatalf("executions after rejected append = %d, %v", len(executions), err)
+	}
+}
+
+func TestAddExecutionDoesNotMutateStateWhenAppendFails(t *testing.T) {
+	store := newTestStorage(t)
+	defer closeStorage(t, store)
+	store.executionPath = t.TempDir()
+
+	record := &core.ExecutionRecord{
+		Tool:             core.ToolNPM,
+		Timestamp:        time.Now(),
+		PackagesAffected: []string{"eslint"},
+	}
+	if err := store.AddExecution(record); err == nil {
+		t.Fatal("AddExecution succeeded with invalid execution log path")
+	}
+	stats, err := store.GetStatistics()
+	if err != nil || stats.TotalExecutions != 0 {
+		t.Fatalf("statistics after failed append = %#v, %v", stats, err)
+	}
+	if _, err := store.GetPackage(core.ToolNPM, "eslint"); err == nil {
+		t.Fatal("package inventory changed after failed append")
+	}
+}
+
+func TestUpdatePackageRejectsNilPackage(t *testing.T) {
+	store := newTestStorage(t)
+	defer closeStorage(t, store)
+	if err := store.UpdatePackage(nil); !errors.Is(err, ErrNilPackage) {
+		t.Fatalf("UpdatePackage error = %v", err)
 	}
 }
 
@@ -278,12 +323,42 @@ func TestExistingStorageIsStreamedWithoutCachingHistory(t *testing.T) {
 		t.Fatalf("NewJSONStorage failed: %v", err)
 	}
 	defer closeStorage(t, reopened)
-	if reopened.(*JSONStorage).data != nil {
+	if reopened.data != nil {
 		t.Fatal("existing storage history was cached during initialization")
 	}
 	executions, err := reopened.GetExecutions(QueryOptions{Limit: 1})
 	if err != nil || len(executions) != 1 {
 		t.Fatalf("streamed executions = %d, %v", len(executions), err)
+	}
+}
+
+func TestInitializeRecreatesMissingExecutionLogAsEmptyHistory(t *testing.T) {
+	config := &core.Config{Storage: core.StorageConfig{JSONFile: filepath.Join(t.TempDir(), "test.json")}}
+	store, err := NewJSONStorage(config)
+	if err != nil {
+		t.Fatalf("NewJSONStorage failed: %v", err)
+	}
+	addExecution(t, store, &core.ExecutionRecord{Tool: core.ToolGo, Timestamp: time.Now()})
+	closeStorage(t, store)
+
+	if err := os.Remove(ExecutionLogPath(config.Storage.JSONFile)); err != nil {
+		t.Fatalf("Remove failed: %v", err)
+	}
+	reopened, err := NewJSONStorage(config)
+	if err != nil {
+		t.Fatalf("NewJSONStorage failed: %v", err)
+	}
+	defer closeStorage(t, reopened)
+	if _, err := os.Stat(ExecutionLogPath(config.Storage.JSONFile)); err != nil {
+		t.Fatalf("execution log was not recreated: %v", err)
+	}
+	executions, err := reopened.GetExecutions(QueryOptions{})
+	if err != nil || len(executions) != 0 {
+		t.Fatalf("executions after missing log repair = %d, %v", len(executions), err)
+	}
+	stats, err := reopened.GetStatistics()
+	if err != nil || stats.TotalExecutions != 0 {
+		t.Fatalf("statistics after missing log repair = %#v, %v", stats, err)
 	}
 }
 
@@ -296,7 +371,7 @@ func TestReconcilePackagesRemovesMissingInventory(t *testing.T) {
 
 	seenHomebrew := map[string]struct{}{"keep": {}}
 	scanned := map[string]map[string]struct{}{core.ToolHomebrew: seenHomebrew}
-	if err := store.(*JSONStorage).ReconcilePackages(scanned, time.Time{}); err != nil {
+	if err := store.ReconcilePackages(scanned, time.Time{}); err != nil {
 		t.Fatalf("ReconcilePackages failed: %v", err)
 	}
 	if _, err := store.GetPackage(core.ToolHomebrew, "remove"); err == nil {
@@ -316,7 +391,7 @@ func TestReconcilePackagesPreservesPackagesUpdatedDuringScan(t *testing.T) {
 	updatePackage(t, store, pkg)
 
 	scanned := map[string]map[string]struct{}{core.ToolHomebrew: {}}
-	if err := store.(*JSONStorage).ReconcilePackages(scanned, scanStartedAt); err != nil {
+	if err := store.ReconcilePackages(scanned, scanStartedAt); err != nil {
 		t.Fatalf("ReconcilePackages failed: %v", err)
 	}
 	if _, err := store.GetPackage(core.ToolHomebrew, "new"); err != nil {
@@ -325,7 +400,7 @@ func TestReconcilePackagesPreservesPackagesUpdatedDuringScan(t *testing.T) {
 }
 
 func TestApplyPackageScanPreservesConcurrentUsage(t *testing.T) {
-	store := newTestStorage(t).(*JSONStorage)
+	store := newTestStorage(t)
 	defer closeStorage(t, store)
 	oldUse := time.Now().Add(-time.Hour)
 	updatePackage(t, store, &core.PackageInfo{Name: "jq", Tool: core.ToolHomebrew, UsageCount: 1, LastUsed: oldUse})
@@ -348,7 +423,7 @@ func TestApplyPackageScanPreservesConcurrentUsage(t *testing.T) {
 }
 
 func TestApplyPackageScanPreservesConcurrentGoUsageDelta(t *testing.T) {
-	store := newTestStorage(t).(*JSONStorage)
+	store := newTestStorage(t)
 	defer closeStorage(t, store)
 	updatePackage(t, store, &core.PackageInfo{Name: "gopls", Tool: core.ToolGo, UsageCount: 4})
 	updatePackage(t, store, &core.PackageInfo{Name: "gopls", Tool: core.ToolGoBinary, UsageCount: 3})
@@ -373,7 +448,7 @@ func TestApplyPackageScanPreservesConcurrentGoUsageDelta(t *testing.T) {
 }
 
 func TestApplyPackageScanDoesNotRestoreConcurrentUninstall(t *testing.T) {
-	store := newTestStorage(t).(*JSONStorage)
+	store := newTestStorage(t)
 	defer closeStorage(t, store)
 	pkg := &core.PackageInfo{Name: "jq", Tool: core.ToolHomebrew}
 	updatePackage(t, store, pkg)
@@ -392,7 +467,7 @@ func TestApplyPackageScanDoesNotRestoreConcurrentUninstall(t *testing.T) {
 }
 
 func TestRemoveMissingPackagesReportsEmptyBucketRemoval(t *testing.T) {
-	store := newTestStorage(t).(*JSONStorage)
+	store := newTestStorage(t)
 	defer closeStorage(t, store)
 	store.data.Packages[core.ToolHomebrew] = map[string]core.PackageInfo{}
 	scanned := map[string]map[string]struct{}{core.ToolHomebrew: {}}
@@ -645,7 +720,7 @@ func TestBackupRestore(t *testing.T) {
 		if got := info.Mode().Perm(); got != core.PrivateFileMode {
 			t.Errorf("Backup file mode = %v, want %v", got, core.PrivateFileMode)
 		}
-		executionBackup := storage.(*JSONStorage).executionBackupPath(files[0])
+		executionBackup := storage.executionBackupPath(files[0])
 		if _, err := os.Stat(executionBackup); err != nil {
 			t.Fatalf("execution backup was not created: %v", err)
 		}
@@ -674,7 +749,7 @@ func TestBackupRestore(t *testing.T) {
 	}
 }
 
-func TestBackupFailsWithoutExecutionLog(t *testing.T) {
+func TestBackupRecreatesMissingExecutionLog(t *testing.T) {
 	config := &core.Config{
 		Storage: core.StorageConfig{JSONFile: filepath.Join(t.TempDir(), "test.json")},
 	}
@@ -686,18 +761,22 @@ func TestBackupFailsWithoutExecutionLog(t *testing.T) {
 	if err := os.Remove(ExecutionLogPath(config.Storage.JSONFile)); err != nil {
 		t.Fatalf("Remove failed: %v", err)
 	}
-	if err := store.Backup(); err == nil {
-		t.Fatal("Backup succeeded without an execution log")
+	if err := store.Backup(); err != nil {
+		t.Fatalf("Backup failed: %v", err)
 	}
 	backups, err := filepath.Glob(config.Storage.JSONFile + ".backup.*")
-	if err != nil || len(backups) != 0 {
-		t.Fatalf("partial backups = %#v, %v", backups, err)
+	if err != nil || len(backups) != 1 {
+		t.Fatalf("backups = %#v, %v", backups, err)
 	}
 }
 
 func TestRestoreLegacyBackupMigratesExecutions(t *testing.T) {
 	config := &core.Config{
-		Storage: core.StorageConfig{JSONFile: filepath.Join(t.TempDir(), "test.json")},
+		Storage: core.StorageConfig{
+			JSONFile:      filepath.Join(t.TempDir(), "test.json"),
+			MaxExecutions: 1,
+			RetentionDays: 1,
+		},
 	}
 	store, err := NewJSONStorage(config)
 	if err != nil {
@@ -732,7 +811,7 @@ func TestRestoreRejectsMalformedExecutionBackup(t *testing.T) {
 	if err != nil || len(backups) != 1 {
 		t.Fatalf("backups = %#v, %v", backups, err)
 	}
-	executionBackup := store.(*JSONStorage).executionBackupPath(backups[0])
+	executionBackup := store.executionBackupPath(backups[0])
 	if err := os.WriteFile(executionBackup, []byte("{invalid}\n"), core.PrivateFileMode); err != nil {
 		t.Fatalf("WriteFile failed: %v", err)
 	}
@@ -998,7 +1077,7 @@ func TestNextBackupPathUsesSuffixForCollision(t *testing.T) {
 	}
 	defer closeStorage(t, storage)
 
-	jsonStorage := storage.(*JSONStorage)
+	jsonStorage := storage
 	now := time.Date(2026, 6, 1, 12, 0, 0, 123, time.UTC)
 	firstPath, err := jsonStorage.nextBackupPath(now)
 	if err != nil {
@@ -1445,7 +1524,7 @@ func TestInspectJSONFileStreamsCountsAndLatestExecution(t *testing.T) {
 	addExecution(t, store, &core.ExecutionRecord{ID: "latest", Tool: core.ToolNPM, Timestamp: latest})
 	updatePackage(t, store, &core.PackageInfo{Name: "jq", Tool: core.ToolHomebrew})
 
-	inspection, err := InspectJSONFile(store.(*JSONStorage).filepath)
+	inspection, err := InspectJSONFile(store.filepath)
 	if err != nil {
 		t.Fatalf("InspectJSONFile failed: %v", err)
 	}
@@ -1464,7 +1543,7 @@ func TestInspectJSONFileStreamsCountsAndLatestExecution(t *testing.T) {
 }
 
 func TestSummarizeExecutionsStreamsFilteredCounts(t *testing.T) {
-	store := newTestStorage(t).(*JSONStorage)
+	store := newTestStorage(t)
 	defer closeStorage(t, store)
 	addExecution(t, store, &core.ExecutionRecord{Tool: core.ToolHomebrew, Timestamp: time.Now()})
 	addExecution(t, store, &core.ExecutionRecord{Tool: core.ToolHomebrew, Timestamp: time.Now()})

@@ -23,6 +23,7 @@ type Storage interface {
 	GetStatistics() (*core.StorageStatistics, error)
 	UpdateStatistics() error
 
+	Prepare() error
 	Backup() error
 	Restore(path string) error
 	Cleanup(before time.Time) error

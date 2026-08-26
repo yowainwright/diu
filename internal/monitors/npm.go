@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/yowainwright/diu/internal/core"
+	"github.com/yowainwright/diu/internal/fn"
 )
 
 type NPMMonitor struct {
@@ -264,11 +265,7 @@ func (m *NPMMonitor) getGlobalPackages() ([]*core.PackageInfo, error) {
 
 		// Extract dependencies if available
 		if info.Dependencies != nil {
-			deps := make([]string, 0, len(info.Dependencies))
-			for dep := range info.Dependencies {
-				deps = append(deps, dep)
-			}
-			pkg.Dependencies = deps
+			pkg.Dependencies = fn.SortedKeys(info.Dependencies)
 		}
 
 		packages = append(packages, pkg)

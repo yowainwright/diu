@@ -7,7 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -51,11 +51,11 @@ func listPackages(cmd *command, args []string) error {
 		out.Println(out.DataStyle(dx.Info, "No packages tracked"))
 		return nil
 	}
-	sort.Slice(packages, func(i, j int) bool {
-		if packages[i].Tool == packages[j].Tool {
-			return packages[i].Name < packages[j].Name
+	slices.SortFunc(packages, func(a, b *core.PackageInfo) int {
+		if order := strings.Compare(a.Tool, b.Tool); order != 0 {
+			return order
 		}
-		return packages[i].Tool < packages[j].Tool
+		return strings.Compare(a.Name, b.Name)
 	})
 
 	// Filter by unused duration if specified

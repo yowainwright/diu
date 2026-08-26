@@ -8,12 +8,13 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/yowainwright/diu/internal/core"
+	"github.com/yowainwright/diu/internal/fn"
 	"github.com/yowainwright/diu/internal/safefs"
 )
 
@@ -296,11 +297,9 @@ func trimPartialLine(data []byte) []byte {
 
 func RedactLines(lines []string, replacements map[string]string) []string {
 	keys := replacementKeys(replacements)
-	redacted := make([]string, len(lines))
-	for index, line := range lines {
-		redacted[index] = redact(line, keys, replacements)
-	}
-	return redacted
+	return fn.Map(lines, func(line string) string {
+		return redact(line, keys, replacements)
+	})
 }
 
 func RedactText(value string, replacements map[string]string) string {
@@ -308,14 +307,11 @@ func RedactText(value string, replacements map[string]string) string {
 }
 
 func replacementKeys(replacements map[string]string) []string {
-	keys := make([]string, 0, len(replacements))
-	for value := range replacements {
-		if value != "" {
-			keys = append(keys, value)
-		}
-	}
-	sort.Slice(keys, func(left, right int) bool {
-		return len(keys[left]) > len(keys[right])
+	keys := fn.Filter(fn.SortedKeys(replacements), func(key string) bool {
+		return key != ""
+	})
+	slices.SortStableFunc(keys, func(a, b string) int {
+		return len(b) - len(a)
 	})
 	return keys
 }

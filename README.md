@@ -318,7 +318,7 @@ Release, GoReleaser artifacts, and Homebrew formula.
 ## Requirements
 
 - macOS 10.15 or later
-- Go 1.26.5+ when building from source
+- Go 1.26+ when building from source
 
 ## License
 

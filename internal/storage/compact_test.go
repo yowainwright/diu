@@ -73,6 +73,19 @@ func TestCleanupPreservesMalformedExecutionLog(t *testing.T) {
 	assertStorageContents(t, logPath, original)
 }
 
+func TestCleanupPreservesPartialExecutionLogTail(t *testing.T) {
+	store, config := newCompactionTestStorage(t)
+	logPath := ExecutionLogPath(config.Storage.JSONFile)
+	original := []byte(`{"tool":"npm"}`)
+	if err := os.WriteFile(logPath, original, core.PrivateFileMode); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+	if err := store.Cleanup(time.Time{}); err == nil {
+		t.Fatal("Cleanup succeeded with partial execution log tail")
+	}
+	assertStorageContents(t, logPath, original)
+}
+
 func TestCompactionLimitsReserveHeadroom(t *testing.T) {
 	if got := compactedLimit(10*byteHeadroomThreshold, byteHeadroomThreshold); got != 9*byteHeadroomThreshold {
 		t.Fatalf("byte limit with headroom = %d", got)
@@ -96,11 +109,11 @@ func TestWriteCompactedStorageCleansUpAfterRenameFailure(t *testing.T) {
 	}
 }
 
-func TestWriteBytesReturnsWriterError(t *testing.T) {
+func TestWriteAllReturnsWriterError(t *testing.T) {
 	want := errors.New("write failed")
 	writer := failingWriter{err: want}
-	if err := writeBytes(writer, []byte("record")); !errors.Is(err, want) {
-		t.Fatalf("writeBytes error = %v", err)
+	if err := writeAll(writer, []byte("record")); !errors.Is(err, want) {
+		t.Fatalf("writeAll error = %v", err)
 	}
 }
 
@@ -122,7 +135,7 @@ func newCompactionTestStorage(t *testing.T) (*JSONStorage, *core.Config) {
 	if err != nil {
 		t.Fatalf("NewJSONStorage failed: %v", err)
 	}
-	return store.(*JSONStorage), config
+	return store, config
 }
 
 func writeCompactionFixture(t *testing.T, path string, count int) {

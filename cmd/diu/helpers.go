@@ -2,12 +2,13 @@ package main
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -770,16 +771,16 @@ func packageUnusedSince(pkg *core.PackageInfo, cutoff time.Time) bool {
 
 // sortPackages sorts packages by usage count (descending), last used (descending), tool, then name
 func sortPackages(packages []*core.PackageInfo) {
-	sort.Slice(packages, func(i, j int) bool {
-		if packages[i].UsageCount != packages[j].UsageCount {
-			return packages[i].UsageCount > packages[j].UsageCount
+	slices.SortFunc(packages, func(a, b *core.PackageInfo) int {
+		if order := cmp.Compare(b.UsageCount, a.UsageCount); order != 0 {
+			return order
 		}
-		if !packages[i].LastUsed.Equal(packages[j].LastUsed) {
-			return packages[i].LastUsed.After(packages[j].LastUsed)
+		if order := b.LastUsed.Compare(a.LastUsed); order != 0 {
+			return order
 		}
-		if packages[i].Tool != packages[j].Tool {
-			return packages[i].Tool < packages[j].Tool
+		if order := strings.Compare(a.Tool, b.Tool); order != 0 {
+			return order
 		}
-		return packages[i].Name < packages[j].Name
+		return strings.Compare(a.Name, b.Name)
 	})
 }

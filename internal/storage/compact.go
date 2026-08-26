@@ -4,14 +4,15 @@ import (
 	"bufio"
 	"container/heap"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"time"
 
 	"github.com/yowainwright/diu/internal/core"
+	"github.com/yowainwright/diu/internal/fn"
 )
 
 const (
@@ -36,8 +37,8 @@ type compactExecution struct {
 type compactExecutionHeap []compactExecution
 
 func (h compactExecutionHeap) Len() int           { return len(h) }
-func (h compactExecutionHeap) Less(i, k int) bool { return h[i].timestamp.Before(h[k].timestamp) }
-func (h compactExecutionHeap) Swap(i, k int)      { h[i], h[k] = h[k], h[i] }
+func (h compactExecutionHeap) Less(i, j int) bool { return h[i].timestamp.Before(h[j].timestamp) }
+func (h compactExecutionHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
 
 func (h *compactExecutionHeap) Push(value any) {
 	*h = append(*h, value.(compactExecution))
@@ -67,6 +68,12 @@ func newCompactionCollector(config *core.Config, before time.Time) *compactionCo
 		maxRecords: maxRecords,
 		cutoff:     cutoff,
 	}
+	heap.Init(&collector.records)
+	return collector
+}
+
+func newUnboundedCompactionCollector() *compactionCollector {
+	collector := &compactionCollector{}
 	heap.Init(&collector.records)
 	return collector
 }
@@ -123,8 +130,8 @@ func (c *compactionCollector) exceedsLimits() bool {
 
 func (c *compactionCollector) sortedRecords() []compactExecution {
 	records := append([]compactExecution(nil), c.records...)
-	sort.Slice(records, func(i, k int) bool {
-		return records[i].timestamp.Before(records[k].timestamp)
+	slices.SortFunc(records, func(a, b compactExecution) int {
+		return a.timestamp.Compare(b.timestamp)
 	})
 	return records
 }
@@ -175,12 +182,15 @@ func (j *JSONStorage) collectCurrentStorage(
 	if err := scanJSONStorage(j.filepath, visitor); err != nil {
 		return err
 	}
+	if err := j.ensureCurrentExecutionLog(); err != nil {
+		return err
+	}
 	return scanNDJSONExecutions(j.executionPath, collector.add)
 }
 
 func (j *JSONStorage) collectLegacyCompaction(path string) (compactStorageState, []compactExecution, error) {
 	state := newCompactStorageState()
-	collector := newCompactionCollector(j.config, time.Time{})
+	collector := newUnboundedCompactionCollector()
 	visitor := compactionVisitor(&state, collector)
 	if err := scanJSONStorage(path, visitor); err != nil {
 		return state, nil, fmt.Errorf("failed to scan legacy storage: %w", err)
@@ -195,7 +205,7 @@ func (j *JSONStorage) compactIfLimitsExceeded() error {
 		return err
 	}
 	if info == nil {
-		return fmt.Errorf("execution log not found: %s", j.executionPath)
+		return fmt.Errorf("%w: %s", ErrExecutionLogNotFound, j.executionPath)
 	}
 	exceedsBytes := j.executionBytesExceeded(info.Size())
 	exceedsRecords := j.executionCountExceeded()
@@ -203,6 +213,34 @@ func (j *JSONStorage) compactIfLimitsExceeded() error {
 		return nil
 	}
 	return j.compact(time.Time{})
+}
+
+func (j *JSONStorage) compactIfNeeded() error {
+	exceedsRetention, err := j.executionRetentionExceeded()
+	if err != nil {
+		return err
+	}
+	if exceedsRetention {
+		return j.compact(time.Time{})
+	}
+	return j.compactIfLimitsExceeded()
+}
+
+func (j *JSONStorage) executionRetentionExceeded() (bool, error) {
+	cutoff := compactionCutoff(j.config.Storage.RetentionDays, time.Time{})
+	if cutoff.IsZero() {
+		return false, nil
+	}
+	err := scanNDJSONExecutions(j.executionPath, func(record core.ExecutionRecord) error {
+		if !record.Timestamp.After(cutoff) {
+			return errStopStorageScan
+		}
+		return nil
+	})
+	if errors.Is(err, errStopStorageScan) {
+		return true, nil
+	}
+	return false, err
 }
 
 func (j *JSONStorage) executionBytesExceeded(size int64) bool {
@@ -270,7 +308,7 @@ func compactedStatistics(records []compactExecution) core.StorageStatistics {
 	for _, record := range records {
 		updateCompactedStatistics(&statistics, dayCount, record)
 	}
-	statistics.MostActiveDay = mostActiveDay(dayCount)
+	statistics.MostActiveDay = fn.MaxValueKey(dayCount)
 	return statistics
 }
 
@@ -291,25 +329,13 @@ func updateCompactedStatistics(
 	}
 }
 
-func mostActiveDay(dayCount map[string]int) string {
-	activeDay := ""
-	maxCount := 0
-	for day, count := range dayCount {
-		if count > maxCount {
-			activeDay = day
-			maxCount = count
-		}
-	}
-	return activeDay
-}
-
 func writeCompactedStorage(path string, records []compactExecution) error {
 	file, tempPath, err := createCompactionFile(path)
 	if err != nil {
 		return err
 	}
 	if err := commitCompactedStorage(file, tempPath, path, records); err != nil {
-		discardCompactionFile(file, tempPath)
+		discardTempFile(file, tempPath)
 		return err
 	}
 	return nil
@@ -319,18 +345,7 @@ func commitCompactedStorage(file *os.File, tempPath, path string, records []comp
 	if err := writeCompactionFile(file, records); err != nil {
 		return err
 	}
-	if err := file.Close(); err != nil {
-		return fmt.Errorf("failed to close compacted storage: %w", err)
-	}
-	if err := os.Rename(tempPath, path); err != nil {
-		return fmt.Errorf("failed to replace compacted storage: %w", err)
-	}
-	return nil
-}
-
-func discardCompactionFile(file *os.File, path string) {
-	_ = file.Close()
-	_ = os.Remove(path)
+	return commitTempFile(file, tempPath, path)
 }
 
 func createCompactionFile(path string) (*os.File, string, error) {
@@ -340,7 +355,7 @@ func createCompactionFile(path string) (*os.File, string, error) {
 		return nil, "", fmt.Errorf("failed to create compacted storage: %w", err)
 	}
 	if err := file.Chmod(core.PrivateFileMode); err != nil {
-		discardCompactionFile(file, file.Name())
+		discardTempFile(file, file.Name())
 		return nil, "", fmt.Errorf("failed to secure compacted storage: %w", err)
 	}
 	return file, file.Name(), nil
@@ -349,22 +364,15 @@ func createCompactionFile(path string) (*os.File, string, error) {
 func writeCompactionFile(file *os.File, records []compactExecution) error {
 	writer := bufio.NewWriter(file)
 	for _, record := range records {
-		if err := writeBytes(writer, record.data); err != nil {
-			return err
+		if _, err := writer.Write(record.data); err != nil {
+			return fmt.Errorf("failed to write compacted storage: %w", err)
 		}
-		if err := writeBytes(writer, []byte{'\n'}); err != nil {
-			return err
+		if err := writer.WriteByte('\n'); err != nil {
+			return fmt.Errorf("failed to write compacted storage: %w", err)
 		}
 	}
 	if err := writer.Flush(); err != nil {
 		return fmt.Errorf("failed to flush compacted storage: %w", err)
-	}
-	return nil
-}
-
-func writeBytes(writer io.Writer, data []byte) error {
-	if _, err := writer.Write(data); err != nil {
-		return fmt.Errorf("failed to write compacted storage: %w", err)
 	}
 	return nil
 }

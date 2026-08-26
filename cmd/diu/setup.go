@@ -4,11 +4,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"os/user"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -1056,14 +1057,9 @@ func discoverExecutableWrappers(config *core.Config) []executableWrapper {
 		}
 	}
 
-	results := make([]executableWrapper, 0, len(targets))
-	for _, target := range targets {
-		results = append(results, target)
-	}
-	sort.Slice(results, func(i, j int) bool {
-		return results[i].Name < results[j].Name
+	return slices.SortedFunc(maps.Values(targets), func(a, b executableWrapper) int {
+		return strings.Compare(a.Name, b.Name)
 	})
-	return results
 }
 
 // writeExecutableWrapper writes a wrapper script for an executable

@@ -1,15 +1,17 @@
 package main
 
 import (
+	"cmp"
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
-	"sort"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/yowainwright/diu/internal/core"
 	"github.com/yowainwright/diu/internal/dx"
+	"github.com/yowainwright/diu/internal/fn"
 	"github.com/yowainwright/diu/internal/storage"
 )
 
@@ -179,18 +181,19 @@ func showStats(cmd *command, args []string) error {
 
 	out.Println()
 	out.Println(out.DataStyle(dx.Muted, "Tool usage:"))
-	for tool, count := range summary.ToolCounts {
+	for _, tool := range fn.SortedKeys(summary.ToolCounts) {
+		count := summary.ToolCounts[tool]
 		out.Printf("  %s %d\n", out.DataStyle(dx.Accent, tool+":"), count)
 	}
 
 	top, _ := cmd.Flags().GetInt("top")
 	if top > 0 {
 		packages, _ := store.GetPackages(core.NormalizeToolName(toolFilter))
-		sort.Slice(packages, func(i, j int) bool {
-			if packages[i].UsageCount == packages[j].UsageCount {
-				return packages[i].Name < packages[j].Name
+		slices.SortFunc(packages, func(a, b *core.PackageInfo) int {
+			if order := cmp.Compare(b.UsageCount, a.UsageCount); order != 0 {
+				return order
 			}
-			return packages[i].UsageCount > packages[j].UsageCount
+			return strings.Compare(a.Name, b.Name)
 		})
 		out.Println()
 		out.Printf(out.DataStyle(dx.Muted, "Top %d packages:\n"), top)

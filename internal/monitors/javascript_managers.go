@@ -6,11 +6,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
-	"sort"
 	"strings"
 	"time"
 
 	"github.com/yowainwright/diu/internal/core"
+	"github.com/yowainwright/diu/internal/fn"
 )
 
 const (
@@ -253,24 +253,17 @@ func packagesFromNodeLists(tool string, projects []nodePackageList) []*core.Pack
 }
 
 func packagesFromNodeDeps(tool string, deps map[string]nodePackageInfo) []*core.PackageInfo {
-	names := make([]string, 0, len(deps))
-	for name := range deps {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-
-	packages := make([]*core.PackageInfo, 0, len(names))
-	for _, name := range names {
+	names := fn.SortedKeys(deps)
+	return fn.Map(names, func(name string) *core.PackageInfo {
 		info := deps[name]
-		packages = append(packages, &core.PackageInfo{
+		return &core.PackageInfo{
 			Name:        name,
 			Version:     info.Version,
 			Tool:        tool,
 			InstallDate: time.Now(),
 			Path:        info.Path,
-		})
-	}
-	return packages
+		}
+	})
 }
 
 func parseSimplePackageLines(tool, output string) []*core.PackageInfo {

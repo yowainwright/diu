@@ -2,9 +2,9 @@ package storage
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -42,7 +42,7 @@ func TestStorageUsesExecutionLogRejectsUnknownFormat(t *testing.T) {
 		t.Fatalf("WriteFile failed: %v", err)
 	}
 	usesLog, err := storageUsesExecutionLog(path)
-	if err == nil || usesLog || !strings.Contains(err.Error(), "unsupported") {
+	if !errors.Is(err, ErrUnsupportedExecutionLogFormat) || usesLog {
 		t.Fatalf("format detection = %v, %v", usesLog, err)
 	}
 }
@@ -60,7 +60,7 @@ func TestInspectJSONFileReportsMissingExecutionLog(t *testing.T) {
 		t.Fatalf("Remove failed: %v", err)
 	}
 	inspection, err := InspectJSONFile(config.Storage.JSONFile)
-	if err == nil || !inspection.Exists {
+	if !errors.Is(err, ErrExecutionLogNotFound) || !inspection.Exists {
 		t.Fatalf("inspection = %#v, %v", inspection, err)
 	}
 }
@@ -69,5 +69,32 @@ func TestAppendExecutionRecordsRejectsDirectoryPath(t *testing.T) {
 	records := []core.ExecutionRecord{{Tool: core.ToolNPM}}
 	if err := appendExecutionRecords(t.TempDir(), records); err == nil {
 		t.Fatal("appendExecutionRecords succeeded with a directory path")
+	}
+}
+
+func TestGetExecutionsIgnoresPartialTrailingLogLine(t *testing.T) {
+	config := &core.Config{
+		Storage: core.StorageConfig{JSONFile: filepath.Join(t.TempDir(), "storage.json")},
+	}
+	store, err := NewJSONStorage(config)
+	if err != nil {
+		t.Fatalf("NewJSONStorage failed: %v", err)
+	}
+	defer closeStorage(t, store)
+	addExecution(t, store, &core.ExecutionRecord{Tool: core.ToolNPM, Timestamp: time.Now()})
+
+	file, err := os.OpenFile(ExecutionLogPath(config.Storage.JSONFile), os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatalf("OpenFile failed: %v", err)
+	}
+	if _, err := file.WriteString(`{"tool":"tail"}`); err != nil {
+		t.Fatalf("WriteString failed: %v", err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("Close failed: %v", err)
+	}
+	executions, err := store.GetExecutions(QueryOptions{})
+	if err != nil || len(executions) != 1 {
+		t.Fatalf("executions with partial tail = %d, %v", len(executions), err)
 	}
 }

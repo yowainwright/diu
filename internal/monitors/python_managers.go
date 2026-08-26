@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/yowainwright/diu/internal/core"
+	"github.com/yowainwright/diu/internal/fn"
 )
 
 const (
@@ -397,18 +398,17 @@ func parsePythonPackageJSON(tool string, output []byte) ([]*core.PackageInfo, er
 	if err := json.Unmarshal(output, &raw); err != nil {
 		return nil, err
 	}
-	packages := make([]*core.PackageInfo, 0, len(raw))
-	for _, item := range raw {
-		if item.Name == "" {
-			continue
-		}
-		packages = append(packages, &core.PackageInfo{
+	named := fn.Filter(raw, func(item pythonPackageJSON) bool {
+		return item.Name != ""
+	})
+	packages := fn.Map(named, func(item pythonPackageJSON) *core.PackageInfo {
+		return &core.PackageInfo{
 			Name:        item.Name,
 			Version:     item.Version,
 			Tool:        tool,
 			InstallDate: time.Now(),
-		})
-	}
+		}
+	})
 	return packages, nil
 }
 

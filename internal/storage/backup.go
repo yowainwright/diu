@@ -60,7 +60,7 @@ func (j *JSONStorage) restoreBackup(path string) error {
 		return j.restoreLegacyBackup(path)
 	}
 	if restored.ExecutionLogFormat != executionLogFormat {
-		return fmt.Errorf("unsupported execution log format: %s", restored.ExecutionLogFormat)
+		return fmt.Errorf("%w: %s", ErrUnsupportedExecutionLogFormat, restored.ExecutionLogFormat)
 	}
 	executionBackup := j.executionBackupPath(path)
 	if err := replaceExecutionLog(executionBackup, j.executionPath); err != nil {
@@ -92,10 +92,10 @@ func replaceExecutionLog(source, destination string) error {
 		return err
 	}
 	if err := copyExecutionLog(file, source); err != nil {
-		discardCompactionFile(file, tempPath)
+		discardTempFile(file, tempPath)
 		return err
 	}
-	return commitCopiedExecutionLog(file, tempPath, destination)
+	return commitTempFile(file, tempPath, destination)
 }
 
 func validateExecutionLog(path string) error {
@@ -112,18 +112,6 @@ func copyExecutionLog(destination *os.File, source string) (err error) {
 	}()
 	if _, err := io.Copy(destination, input); err != nil {
 		return fmt.Errorf("failed to copy execution log: %w", err)
-	}
-	return nil
-}
-
-func commitCopiedExecutionLog(file *os.File, tempPath, destination string) error {
-	if err := file.Close(); err != nil {
-		discardCompactionFile(file, tempPath)
-		return err
-	}
-	if err := os.Rename(tempPath, destination); err != nil {
-		_ = os.Remove(tempPath)
-		return err
 	}
 	return nil
 }

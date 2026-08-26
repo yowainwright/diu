@@ -4,6 +4,8 @@ import (
 	"strconv"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/yowainwright/diu/internal/fn"
 )
 
 const ansiReset = "\x1b[0m"
@@ -73,10 +75,7 @@ func Progress(current, total, width int) string {
 }
 
 func tableWidths(headers []string, rows [][]string) []int {
-	widths := make([]int, len(headers))
-	for index, header := range headers {
-		widths[index] = VisibleWidth(header)
-	}
+	widths := fn.Map(headers, VisibleWidth)
 	for _, row := range rows {
 		growWidths(widths, row)
 	}
