@@ -77,7 +77,11 @@ func (j *JSONStorage) Initialize(config *core.Config) error {
 func ExecutionLogPath(manifestPath string) string {
 	extension := filepath.Ext(manifestPath)
 	base := strings.TrimSuffix(manifestPath, extension)
-	return base + ".ndjson"
+	logPath := base + ".ndjson"
+	if logPath == manifestPath {
+		return base + ".executions.ndjson"
+	}
+	return logPath
 }
 
 func (j *JSONStorage) initializeEmptyStorage() error {
@@ -213,7 +217,9 @@ func syncDirectory(path string) (err error) {
 		return fmt.Errorf("failed to open storage directory: %w", err)
 	}
 	defer func() {
-		if closeErr := dir.Close(); err == nil && closeErr != nil {
+		closeErr := dir.Close()
+		shouldReturnCloseErr := err == nil && closeErr != nil
+		if shouldReturnCloseErr {
 			err = fmt.Errorf("failed to close storage directory: %w", closeErr)
 		}
 	}()
@@ -746,12 +752,14 @@ func (j *JSONStorage) pruneBackups() error {
 	})
 
 	for _, backup := range backups[:len(backups)-maxBackups] {
-		if err := os.Remove(backup.path); err != nil && !os.IsNotExist(err) {
-			return fmt.Errorf("failed to remove old backup %s: %w", backup.path, err)
+		removeErr := os.Remove(backup.path)
+		if removeErr != nil && !os.IsNotExist(removeErr) {
+			return fmt.Errorf("failed to remove old backup %s: %w", backup.path, removeErr)
 		}
 		executionBackup := j.executionBackupPath(backup.path)
-		if err := os.Remove(executionBackup); err != nil && !os.IsNotExist(err) {
-			return fmt.Errorf("failed to remove old execution backup %s: %w", executionBackup, err)
+		removeErr = os.Remove(executionBackup)
+		if removeErr != nil && !os.IsNotExist(removeErr) {
+			return fmt.Errorf("failed to remove old execution backup %s: %w", executionBackup, removeErr)
 		}
 	}
 
@@ -823,7 +831,9 @@ func (j *JSONStorage) withFileLock(fn func() error) (err error) {
 		return fmt.Errorf("failed to open storage lock: %w", err)
 	}
 	defer func() {
-		if closeErr := lockFile.Close(); err == nil && closeErr != nil {
+		closeErr := lockFile.Close()
+		shouldReturnCloseErr := err == nil && closeErr != nil
+		if shouldReturnCloseErr {
 			err = fmt.Errorf("failed to close storage lock: %w", closeErr)
 		}
 	}()

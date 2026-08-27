@@ -41,7 +41,9 @@ func copyManagedFile(source, destination string) (err error) {
 }
 
 func closeWithError(current error, file *os.File) error {
-	if closeErr := file.Close(); current == nil && closeErr != nil {
+	closeErr := file.Close()
+	shouldReturnCloseErr := current == nil && closeErr != nil
+	if shouldReturnCloseErr {
 		return closeErr
 	}
 	return current

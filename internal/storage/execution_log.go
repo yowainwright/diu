@@ -21,7 +21,9 @@ func appendExecutionRecords(path string, records []core.ExecutionRecord) (err er
 		return fmt.Errorf("failed to open execution log: %w", err)
 	}
 	defer func() {
-		if closeErr := file.Close(); err == nil && closeErr != nil {
+		closeErr := file.Close()
+		shouldReturnCloseErr := err == nil && closeErr != nil
+		if shouldReturnCloseErr {
 			err = fmt.Errorf("failed to close execution log: %w", closeErr)
 		}
 	}()

@@ -147,7 +147,8 @@ func (m *GoMonitor) ParseCommand(cmd string, args []string) (*core.ExecutionReco
 func (m *GoMonitor) extractGoPackages(args []string) []string {
 	var packages []string
 	for _, arg := range args {
-		if arg == "." || arg == "./..." || arg == "..." {
+		switch arg {
+		case ".", "./...", "...":
 			continue
 		}
 		if strings.HasPrefix(arg, "-") {

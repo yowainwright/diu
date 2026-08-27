@@ -156,8 +156,8 @@ func statusRow(out *dx.Out, label string, tone dx.Tone, value string) []string {
 }
 
 func stateTone(value string) dx.Tone {
-	isHealthy := value == "running" || value == "ready" || value == "none"
-	if isHealthy {
+	switch value {
+	case "running", "ready", "none":
 		return dx.Success
 	}
 	if strings.HasPrefix(value, "unreadable") {

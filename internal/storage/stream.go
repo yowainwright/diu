@@ -141,7 +141,9 @@ func scanJSONStorage(path string, visitor jsonStorageVisitor) (err error) {
 		return err
 	}
 	defer func() {
-		if closeErr := file.Close(); err == nil && closeErr != nil {
+		closeErr := file.Close()
+		shouldReturnCloseErr := err == nil && closeErr != nil
+		if shouldReturnCloseErr {
 			err = fmt.Errorf("failed to close storage file: %w", closeErr)
 		}
 	}()
@@ -447,7 +449,9 @@ func readExecutionLogFormat(path string) (format string, found bool, err error) 
 		return "", false, err
 	}
 	defer func() {
-		if closeErr := file.Close(); err == nil && closeErr != nil {
+		closeErr := file.Close()
+		shouldReturnCloseErr := err == nil && closeErr != nil
+		if shouldReturnCloseErr {
 			err = fmt.Errorf("failed to close storage file: %w", closeErr)
 		}
 	}()
@@ -494,7 +498,9 @@ func scanNDJSONExecutionsWithTail(
 		return err
 	}
 	defer func() {
-		if closeErr := file.Close(); err == nil && closeErr != nil {
+		closeErr := file.Close()
+		shouldReturnCloseErr := err == nil && closeErr != nil
+		if shouldReturnCloseErr {
 			err = fmt.Errorf("failed to close execution log: %w", closeErr)
 		}
 	}()

@@ -13,7 +13,7 @@ permissions:
   contents: read
 
 env:
-  GOLANGCI_LINT_VERSION: 'v2.4.0'
+  GOLANGCI_LINT_VERSION: 'v2.13.1'
   GORELEASER_VERSION: 'v2.12.0'
   GOVULNCHECK_VERSION: 'v1.6.0'
 
@@ -45,7 +45,8 @@ jobs:
       - name: Run linters
         run: |
           LINT_PACKAGE="github.com/golangci/golangci-lint/v2/cmd/golangci-lint@${GOLANGCI_LINT_VERSION}"
-          go run "$LINT_PACKAGE" run ./...
+          go run "$LINT_PACKAGE" custom
+          ./bin/legibility-golangci-lint run ./...
 
       - name: Run race tests
         run: go test -v -race ./...

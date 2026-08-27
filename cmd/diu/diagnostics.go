@@ -149,7 +149,8 @@ func diagnosticAPIExposure(enabled bool, host string) string {
 	if !enabled {
 		return "disabled"
 	}
-	if host == "127.0.0.1" || host == "localhost" || host == "::1" {
+	switch host {
+	case "127.0.0.1", "localhost", "::1":
 		return "loopback"
 	}
 	return "network"

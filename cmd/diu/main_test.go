@@ -558,7 +558,8 @@ func TestPackageAndFormattingHelpers(t *testing.T) {
 		t.Fatalf("sortPackages placed %q first, want high", packages[0].Name)
 	}
 
-	if pkg, err := packageBySelection(packages, 0, "2"); err != nil || pkg.Name != "low" {
+	pkg, err := packageBySelection(packages, 0, "2")
+	if err != nil || pkg.Name != "low" {
 		t.Fatalf("packageBySelection = %#v, %v; want low", pkg, err)
 	}
 	if _, err := packageBySelection(packages, 0, "abc"); err == nil {
@@ -1529,7 +1530,8 @@ func TestExecutableBinDirPublicHelpersUseDefaultDeps(t *testing.T) {
 	if got := uvToolBinDir(); got != "/opt/uv/bin" {
 		t.Fatalf("uvToolBinDir = %s", got)
 	}
-	if got, err := firstExistingCommand("python", "python3"); err != nil || got != "python3" {
+	got, err := firstExistingCommand("python", "python3")
+	if err != nil || got != "python3" {
 		t.Fatalf("firstExistingCommand = %s, %v; want python3, nil", got, err)
 	}
 }

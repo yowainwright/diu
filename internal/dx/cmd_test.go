@@ -158,7 +158,9 @@ func TestFlagSetReturnsParsedValues(t *testing.T) {
 	if gotTool != "go" || gotLimit != 5 || !gotEnabled {
 		t.Fatalf("values = %q, %d, %v", gotTool, gotLimit, gotEnabled)
 	}
-	if flag := command.Flag("limit"); flag == nil || flag.Value.String() != "5" {
+	flag := command.Flag("limit")
+	hasLimitFlag := flag != nil && flag.Value.String() == "5"
+	if !hasLimitFlag {
 		t.Fatalf("limit flag = %#v", flag)
 	}
 }

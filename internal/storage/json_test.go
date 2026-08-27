@@ -78,6 +78,30 @@ func TestJSONStorage(t *testing.T) {
 	}
 }
 
+func TestJSONStorageSupportsNDJSONManifestPath(t *testing.T) {
+	manifestPath := filepath.Join(t.TempDir(), "custom.ndjson")
+	config := &core.Config{
+		Storage: core.StorageConfig{JSONFile: manifestPath},
+	}
+	store, err := NewJSONStorage(config)
+	if err != nil {
+		t.Fatalf("NewJSONStorage failed: %v", err)
+	}
+	defer closeStorage(t, store)
+	if store.executionPath == store.filepath {
+		t.Fatalf("execution log path collided with manifest path: %s", store.executionPath)
+	}
+	if got, want := store.executionPath, filepath.Join(filepath.Dir(manifestPath), "custom.executions.ndjson"); got != want {
+		t.Fatalf("execution log path = %s, want %s", got, want)
+	}
+
+	addExecution(t, store, &core.ExecutionRecord{Tool: core.ToolNPM, Timestamp: time.Now()})
+	executions, err := store.GetExecutions(QueryOptions{})
+	if err != nil || len(executions) != 1 {
+		t.Fatalf("executions = %d, %v", len(executions), err)
+	}
+}
+
 func TestNewJSONStorageRejectsEmptyPath(t *testing.T) {
 	config := &core.Config{Storage: core.StorageConfig{JSONFile: " "}}
 	if _, err := NewJSONStorage(config); !errors.Is(err, ErrEmptyPath) {

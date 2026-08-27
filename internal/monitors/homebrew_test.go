@@ -236,7 +236,8 @@ func TestHomebrewParseCommand(t *testing.T) {
 
 			// Check metadata
 			for key, expectedVal := range tt.expected.metadata {
-				if val, exists := record.Metadata[key]; !exists || val != expectedVal {
+				val, exists := record.Metadata[key]
+				if !exists || val != expectedVal {
 					t.Errorf("Expected metadata %s=%v, got %v",
 						key, expectedVal, val)
 				}

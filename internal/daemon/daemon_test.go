@@ -403,7 +403,8 @@ func updateMockPackage(t *testing.T, store *mockStorage, pkg *core.PackageInfo) 
 
 func removeFileForTest(t *testing.T, path string) {
 	t.Helper()
-	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+	err := os.Remove(path)
+	if err != nil && !os.IsNotExist(err) {
 		t.Fatalf("Remove failed: %v", err)
 	}
 }
@@ -482,7 +483,8 @@ func TestDaemonStartStop(t *testing.T) {
 	if err == nil && info.Mode().Perm() != core.PrivateFileMode {
 		t.Errorf("PID file mode: got %v, want %v", info.Mode().Perm(), core.PrivateFileMode)
 	}
-	if locked, err := pidFileLocked(cfg.Daemon.PIDFile, os.Getpid()); err != nil || !locked {
+	locked, err := pidFileLocked(cfg.Daemon.PIDFile, os.Getpid())
+	if err != nil || !locked {
 		t.Fatalf("PID file lock = %v, %v", locked, err)
 	}
 
@@ -1126,7 +1128,8 @@ func TestDaemonSocketListenerReportsInvalidPaths(t *testing.T) {
 			t.Fatalf("NewDaemon failed: %v", err)
 		}
 		defer closeStorageForTest(t, d.storage)
-		if err := d.startSocketListener(); err == nil || !strings.Contains(err.Error(), "remove stale socket") {
+		err = d.startSocketListener()
+		if err == nil || !strings.Contains(err.Error(), "remove stale socket") {
 			t.Fatalf("startSocketListener error = %v", err)
 		}
 	})
@@ -1148,7 +1151,8 @@ func TestDaemonSocketListenerReportsInvalidPaths(t *testing.T) {
 			t.Fatalf("NewDaemon failed: %v", err)
 		}
 		defer closeStorageForTest(t, d.storage)
-		if err := d.startSocketListener(); err == nil || !strings.Contains(err.Error(), "create socket directory") {
+		err = d.startSocketListener()
+		if err == nil || !strings.Contains(err.Error(), "create socket directory") {
 			t.Fatalf("startSocketListener error = %v", err)
 		}
 	})

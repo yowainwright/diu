@@ -100,7 +100,9 @@ func TestRunnerReportsCommandStartFailure(t *testing.T) {
 	if !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("Run error does not expose os.ErrNotExist: %v", err)
 	}
-	if code, ok := dx.ExitCode(err); !ok || code != -1 {
+	code, ok := dx.ExitCode(err)
+	hasExitCode := ok && code == -1
+	if !hasExitCode {
 		t.Fatalf("ExitCode = %d, %v", code, ok)
 	}
 }

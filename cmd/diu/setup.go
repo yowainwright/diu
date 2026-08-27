@@ -441,7 +441,9 @@ func writePrivateFile(path string, data []byte) (err error) {
 		return err
 	}
 	defer func() {
-		if closeErr := file.Close(); err == nil && closeErr != nil {
+		closeErr := file.Close()
+		shouldReturnCloseErr := err == nil && closeErr != nil
+		if shouldReturnCloseErr {
 			err = closeErr
 		}
 	}()
@@ -556,7 +558,8 @@ func (s *packageScanner) prepareGoSignature(pkg *core.PackageInfo) {
 	if pkg.Tool != core.ToolGoBinary || pkg.ModifiedAt != 0 || pkg.Path == "" {
 		return
 	}
-	if err := populateGoBinarySignature(pkg); err != nil && s.activity != nil {
+	err := populateGoBinarySignature(pkg)
+	if err != nil && s.activity != nil {
 		s.activity.Notice(dx.Warning, err.Error())
 	}
 }
@@ -565,7 +568,8 @@ func (s *packageScanner) prepareGoFingerprint(pkg *core.PackageInfo) {
 	if pkg.Tool != core.ToolGoBinary || pkg.Fingerprint != "" || pkg.Path == "" {
 		return
 	}
-	if err := populateGoBinaryFingerprint(pkg); err != nil && s.activity != nil {
+	err := populateGoBinaryFingerprint(pkg)
+	if err != nil && s.activity != nil {
 		s.activity.Notice(dx.Warning, err.Error())
 	}
 }

@@ -2,6 +2,7 @@ package monitors
 
 import (
 	"context"
+	"slices"
 	"testing"
 
 	"github.com/yowainwright/diu/internal/core"
@@ -17,10 +18,11 @@ func TestPNPMParseCommand(t *testing.T) {
 	if record.Tool != core.ToolPNPM {
 		t.Fatalf("Tool = %s, want %s", record.Tool, core.ToolPNPM)
 	}
-	if got, want := record.PackagesAffected, []string{"typescript", "@scope/tool"}; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
-		t.Fatalf("PackagesAffected = %#v, want %#v", got, want)
+	wantPackages := []string{"typescript", "@scope/tool"}
+	if !slices.Equal(record.PackagesAffected, wantPackages) {
+		t.Fatalf("PackagesAffected = %#v, want %#v", record.PackagesAffected, wantPackages)
 	}
-	if record.Metadata["action"] != "install" || record.Metadata["global"] != true {
+	if record.Metadata["action"] != "install" || !record.Metadata["global"].(bool) {
 		t.Fatalf("Unexpected metadata: %#v", record.Metadata)
 	}
 }

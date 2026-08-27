@@ -184,7 +184,8 @@ func (m *NPMMonitor) extractPackagesFromNPMArgs(args []string) []string {
 		// Skip flags
 		if strings.HasPrefix(arg, "-") {
 			// Some flags take values
-			if arg == "--registry" || arg == "--scope" || arg == "--tag" {
+			switch arg {
+			case "--registry", "--scope", "--tag":
 				skipNext = true
 			}
 			continue

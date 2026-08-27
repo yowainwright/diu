@@ -1417,8 +1417,10 @@ func TestDaemonStatusWithMockRunning(t *testing.T) {
 		t.Fatalf("Failed to write PID file: %v", err)
 	}
 	defer func() {
-		if err := os.Remove(pidFile); err != nil && !os.IsNotExist(err) {
-			t.Logf("Failed to remove PID file: %v", err)
+		removeErr := os.Remove(pidFile)
+		shouldLogRemoveErr := removeErr != nil && !os.IsNotExist(removeErr)
+		if shouldLogRemoveErr {
+			t.Logf("Failed to remove PID file: %v", removeErr)
 		}
 	}()
 

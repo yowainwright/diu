@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/yowainwright/diu/internal/core"
@@ -19,8 +20,9 @@ func TestPipParseCommand(t *testing.T) {
 	if record.Tool != core.ToolPip {
 		t.Fatalf("Tool = %s, want %s", record.Tool, core.ToolPip)
 	}
-	if got, want := record.PackagesAffected, []string{"requests", "rich"}; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
-		t.Fatalf("PackagesAffected = %#v, want %#v", got, want)
+	wantPackages := []string{"requests", "rich"}
+	if !slices.Equal(record.PackagesAffected, wantPackages) {
+		t.Fatalf("PackagesAffected = %#v, want %#v", record.PackagesAffected, wantPackages)
 	}
 	if record.Metadata["action"] != "install" {
 		t.Fatalf("Unexpected metadata: %#v", record.Metadata)

@@ -82,7 +82,8 @@ func (m *ProcessMonitor) findOriginalBinary() (string, error) {
 		}
 
 		candidate := filepath.Join(path, filepath.Base(m.binaryPath))
-		if info, err := safefs.Stat(candidate); err == nil && !info.IsDir() {
+		info, err := safefs.Stat(candidate)
+		if err == nil && !info.IsDir() {
 			if info.Mode()&core.ExecutableModeMask != 0 {
 				validatedPath, err := validateExecutablePath(candidate)
 				if err != nil {
@@ -152,7 +153,9 @@ func writeOwnerExecutableFile(path string, data []byte) (err error) {
 		return err
 	}
 	defer func() {
-		if closeErr := file.Close(); err == nil && closeErr != nil {
+		closeErr := file.Close()
+		shouldReturnCloseErr := err == nil && closeErr != nil
+		if shouldReturnCloseErr {
 			err = closeErr
 		}
 	}()
@@ -292,7 +295,9 @@ func appendShellConfigLines(path string, lines ...string) (err error) {
 		return err
 	}
 	defer func() {
-		if closeErr := file.Close(); err == nil && closeErr != nil {
+		closeErr := file.Close()
+		shouldReturnCloseErr := err == nil && closeErr != nil
+		if shouldReturnCloseErr {
 			err = closeErr
 		}
 	}()

@@ -148,7 +148,9 @@ func TestLoadConfigHonorsPartialWatchPathsOverride(t *testing.T) {
 	if len(watchPaths) != 1 {
 		t.Fatalf("Expected one watch_paths key, got %#v", watchPaths)
 	}
-	if paths := watchPaths[ToolNPM]; len(paths) != 1 || paths[0] != "/custom/npm" {
+	paths := watchPaths[ToolNPM]
+	hasCustomNPMPath := len(paths) == 1 && paths[0] == "/custom/npm"
+	if !hasCustomNPMPath {
 		t.Errorf("Expected custom npm watch path, got %#v", paths)
 	}
 	if _, ok := watchPaths[ToolHomebrew]; ok {

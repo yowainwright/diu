@@ -673,7 +673,8 @@ func (d *Daemon) readSocketRequest(conn net.Conn) (json.RawMessage, error) {
 
 func (d *Daemon) handleSocketControlMessage(conn net.Conn, raw json.RawMessage) bool {
 	var control socketControlRequest
-	if err := json.Unmarshal(raw, &control); err == nil && control.Type != "" {
+	err := json.Unmarshal(raw, &control)
+	if err == nil && control.Type != "" {
 		d.handleSocketControl(conn, control)
 		return true
 	}
@@ -745,7 +746,8 @@ func (d *Daemon) startHTTPServer() error {
 	go func() {
 		defer d.wg.Done()
 		d.logger.Printf("HTTP API server listening on %s", actualAddr)
-		if err := d.httpServer.Serve(listener); err != nil && err != http.ErrServerClosed {
+		err := d.httpServer.Serve(listener)
+		if err != nil && err != http.ErrServerClosed {
 			d.logger.Printf("HTTP server error: %v", err)
 		}
 	}()

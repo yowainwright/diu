@@ -68,7 +68,8 @@ func (m *HomebrewMonitor) detectCellarPaths() []string {
 	}
 
 	for _, path := range candidates {
-		if info, err := safefs.Stat(path); err == nil && info.IsDir() {
+		info, err := safefs.Stat(path)
+		if err == nil && info.IsDir() {
 			paths = append(paths, path)
 		}
 	}
@@ -94,7 +95,8 @@ func (m *HomebrewMonitor) detectCaskroom() string {
 	}
 
 	for _, path := range candidates {
-		if info, err := safefs.Stat(path); err == nil && info.IsDir() {
+		info, err := safefs.Stat(path)
+		if err == nil && info.IsDir() {
 			return path
 		}
 	}
@@ -103,7 +105,8 @@ func (m *HomebrewMonitor) detectCaskroom() string {
 		if output, err := exec.Command(homebrewCommandName, homebrewPrefixFlag).Output(); err == nil {
 			prefix := strings.TrimSpace(string(output))
 			caskroom := filepath.Join(prefix, "Caskroom")
-			if info, err := safefs.Stat(caskroom); err == nil && info.IsDir() {
+			info, err := safefs.Stat(caskroom)
+			if err == nil && info.IsDir() {
 				return caskroom
 			}
 		}

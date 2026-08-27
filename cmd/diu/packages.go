@@ -550,7 +550,9 @@ func removeUninstalledPackageState(pkg *core.PackageInfo) error {
 		if wrapperName := wrapperNameForPackage(pkg); wrapperName != "" {
 			wrapperPath, pathErr := executableWrapperPath(config.Monitoring.Process.WrapperDir, wrapperName)
 			if pathErr == nil {
-				if removeErr := os.Remove(wrapperPath); removeErr != nil && !os.IsNotExist(removeErr) {
+				removeErr := os.Remove(wrapperPath)
+				shouldReturnRemoveErr := removeErr != nil && !os.IsNotExist(removeErr)
+				if shouldReturnRemoveErr {
 					return fmt.Errorf("failed to remove wrapper %s: %w", wrapperPath, removeErr)
 				}
 			}

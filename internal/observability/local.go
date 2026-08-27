@@ -198,8 +198,10 @@ func rotateLog(path string) error {
 
 func rotateCurrentLog(path string) error {
 	previousPath := filepath.Join(filepath.Dir(path), previousLogFileName)
-	if err := os.Remove(previousPath); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("failed to remove previous local log: %w", err)
+	removeErr := os.Remove(previousPath)
+	shouldReturnRemoveErr := removeErr != nil && !os.IsNotExist(removeErr)
+	if shouldReturnRemoveErr {
+		return fmt.Errorf("failed to remove previous local log: %w", removeErr)
 	}
 	if err := os.Rename(path, previousPath); err != nil {
 		return fmt.Errorf("failed to rotate local log: %w", err)

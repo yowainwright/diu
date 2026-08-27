@@ -486,7 +486,9 @@ func writeOwnerExecutableFile(path string, data []byte) (err error) {
 		return fmt.Errorf("failed to create executable file: %w", err)
 	}
 	defer func() {
-		if closeErr := file.Close(); err == nil && closeErr != nil {
+		closeErr := file.Close()
+		shouldReturnCloseErr := err == nil && closeErr != nil
+		if shouldReturnCloseErr {
 			err = fmt.Errorf("failed to close executable file: %w", closeErr)
 		}
 	}()

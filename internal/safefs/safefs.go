@@ -16,7 +16,9 @@ func SHA256(path string) (digest string, err error) {
 		return "", err
 	}
 	defer func() {
-		if closeErr := file.Close(); err == nil && closeErr != nil {
+		closeErr := file.Close()
+		shouldReturnCloseErr := err == nil && closeErr != nil
+		if shouldReturnCloseErr {
 			err = closeErr
 		}
 	}()
@@ -34,7 +36,9 @@ func Stat(path string) (info os.FileInfo, err error) {
 		return nil, err
 	}
 	defer func() {
-		if closeErr := root.Close(); err == nil && closeErr != nil {
+		closeErr := root.Close()
+		shouldReturnCloseErr := err == nil && closeErr != nil
+		if shouldReturnCloseErr {
 			err = fmt.Errorf("failed to close root: %w", closeErr)
 		}
 	}()
@@ -48,7 +52,9 @@ func Lstat(path string) (info os.FileInfo, err error) {
 		return nil, err
 	}
 	defer func() {
-		if closeErr := root.Close(); err == nil && closeErr != nil {
+		closeErr := root.Close()
+		shouldReturnCloseErr := err == nil && closeErr != nil
+		if shouldReturnCloseErr {
 			err = fmt.Errorf("failed to close root: %w", closeErr)
 		}
 	}()
@@ -62,7 +68,9 @@ func ReadFile(path string) (data []byte, err error) {
 		return nil, err
 	}
 	defer func() {
-		if closeErr := root.Close(); err == nil && closeErr != nil {
+		closeErr := root.Close()
+		shouldReturnCloseErr := err == nil && closeErr != nil
+		if shouldReturnCloseErr {
 			err = fmt.Errorf("failed to close root: %w", closeErr)
 		}
 	}()

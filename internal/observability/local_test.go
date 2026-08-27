@@ -164,7 +164,8 @@ func TestRotatingWriterRotatesWhenWriteExceedsRemainingSpace(t *testing.T) {
 	}
 	assertLogContains(t, path, "after rotation")
 	previousPath := filepath.Join(dataDir, previousLogFileName)
-	if info, err := os.Stat(previousPath); err != nil || info.Size() != maxLocalLogBytes {
+	info, err := os.Stat(previousPath)
+	if err != nil || info.Size() != maxLocalLogBytes {
 		t.Fatalf("previous log = %v, %v", info, err)
 	}
 }
@@ -183,7 +184,8 @@ func TestOversizedLogWriteIsBounded(t *testing.T) {
 	if err := writer.Close(); err != nil {
 		t.Fatalf("Close failed: %v", err)
 	}
-	if info, err := os.Stat(path); err != nil || info.Size() != maxLocalLogBytes {
+	info, err := os.Stat(path)
+	if err != nil || info.Size() != maxLocalLogBytes {
 		t.Fatalf("bounded log = %v, %v", info, err)
 	}
 }

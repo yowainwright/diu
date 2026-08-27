@@ -276,7 +276,8 @@ func TestNPMParseCommand(t *testing.T) {
 			}
 
 			for key, expectedVal := range tt.metadata {
-				if val, exists := record.Metadata[key]; !exists || val != expectedVal {
+				val, exists := record.Metadata[key]
+				if !exists || val != expectedVal {
 					t.Errorf("Expected metadata %s=%v, got %v", key, expectedVal, val)
 				}
 			}
