@@ -27,7 +27,8 @@ func TestRunnerRejectsEmptyCommandName(t *testing.T) {
 	defer cancel()
 
 	err := runner.Run(ctx, "   ")
-	if err == nil || !strings.Contains(err.Error(), "cannot be empty") {
+	rejectedEmptyName := err != nil && strings.Contains(err.Error(), "cannot be empty")
+	if !rejectedEmptyName {
 		t.Fatalf("Run error = %v", err)
 	}
 }
@@ -78,7 +79,8 @@ func TestRunnerPreservesExitCode(t *testing.T) {
 
 	err := runner.Run(ctx, "false")
 	code, ok := dx.ExitCode(err)
-	if !ok || code != 1 {
+	gotExitCode := ok && code == 1
+	if !gotExitCode {
 		t.Fatalf("ExitCode = %d, %v for %v", code, ok, err)
 	}
 }
@@ -90,19 +92,41 @@ func TestRunnerReportsCommandStartFailure(t *testing.T) {
 	name := filepath.Join(t.TempDir(), "missing")
 
 	err := runner.Run(ctx, name)
+	commandErr := assertCommandStartFailure(t, err)
+	assertCommandStartError(t, commandErr, name)
+	assertCommandStartExitCode(t, err)
+}
+
+func assertCommandStartFailure(t *testing.T, err error) *dx.CommandError {
+	t.Helper()
+
 	var commandErr *dx.CommandError
 	if !errors.As(err, &commandErr) {
 		t.Fatalf("Run error = %T, want CommandError", err)
 	}
-	if commandErr.Code != -1 || !strings.Contains(commandErr.Error(), name) {
+	return commandErr
+}
+
+func assertCommandStartError(t *testing.T, commandErr *dx.CommandError, name string) {
+	t.Helper()
+
+	if commandErr.Code != -1 {
 		t.Fatalf("CommandError = %#v", commandErr)
 	}
+	if !strings.Contains(commandErr.Error(), name) {
+		t.Fatalf("CommandError = %#v", commandErr)
+	}
+}
+
+func assertCommandStartExitCode(t *testing.T, err error) {
+	t.Helper()
+
 	if !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("Run error does not expose os.ErrNotExist: %v", err)
 	}
 	code, ok := dx.ExitCode(err)
-	hasExitCode := ok && code == -1
-	if !hasExitCode {
+	gotExitCode := ok && code == -1
+	if !gotExitCode {
 		t.Fatalf("ExitCode = %d, %v", code, ok)
 	}
 }

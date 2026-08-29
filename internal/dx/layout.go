@@ -5,8 +5,6 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
-
-	"github.com/yowainwright/diu/internal/fn"
 )
 
 const ansiReset = "\x1b[0m"
@@ -70,11 +68,15 @@ func Progress(current, total, width int) string {
 	percent := progressPercent(current, total)
 	filled := percent * width / 100
 	bar := strings.Repeat("#", filled) + strings.Repeat("-", width-filled)
-	return "[" + bar + "] " + progressLabel(percent)
+	progress := "[" + bar + "] " + progressLabel(percent)
+	return progress
 }
 
 func tableWidths(headers []string, rows [][]string) []int {
-	widths := fn.Map(headers, VisibleWidth)
+	widths := make([]int, len(headers))
+	for index, header := range headers {
+		widths[index] = VisibleWidth(header)
+	}
 	for _, row := range rows {
 		growWidths(widths, row)
 	}
@@ -91,13 +93,17 @@ func growWidths(widths []int, row []string) {
 }
 
 func progressPercent(current, total int) int {
-	if total <= 0 || current <= 0 {
+	hasTotal := total > 0
+	hasProgress := current > 0
+	canCalculate := hasTotal && hasProgress
+	if !canCalculate {
 		return 0
 	}
 	if current >= total {
 		return 100
 	}
-	return current * 100 / total
+	percent := current * 100 / total
+	return percent
 }
 
 func progressLabel(percent int) string {
@@ -110,7 +116,7 @@ func visiblePrefix(text string, width int, suffix string) string {
 	hasANSI := false
 	for index := 0; index < len(text) && visible < width; {
 		next, tokenWidth, isANSI := nextToken(text, index)
-		if tokenWidth > 0 && visible+tokenWidth > width {
+		if tokenOverflows(tokenWidth, visible, width) {
 			break
 		}
 		result.WriteString(text[index:next])
@@ -119,10 +125,21 @@ func visiblePrefix(text string, width int, suffix string) string {
 		index = next
 	}
 	result.WriteString(suffix)
+	appendANSIReset(&result, hasANSI)
+	return result.String()
+}
+
+func tokenOverflows(tokenWidth, visible, width int) bool {
+	hasVisibleToken := tokenWidth > 0
+	exceedsWidth := visible+tokenWidth > width
+	overflows := hasVisibleToken && exceedsWidth
+	return overflows
+}
+
+func appendANSIReset(result *strings.Builder, hasANSI bool) {
 	if hasANSI {
 		result.WriteString(ansiReset)
 	}
-	return result.String()
 }
 
 func nextToken(text string, index int) (int, int, bool) {
@@ -134,13 +151,7 @@ func nextToken(text string, index int) (int, int, bool) {
 }
 
 func runeWidth(r rune) int {
-	if r < 0x20 || r >= 0x7f && r < 0xa0 {
-		return 0
-	}
-	if unicode.Is(unicode.Mn, r) || unicode.Is(unicode.Me, r) {
-		return 0
-	}
-	if r == '\u200d' || r >= '\ufe00' && r <= '\ufe0f' {
+	if isZeroWidthRune(r) {
 		return 0
 	}
 	if isWideRune(r) {
@@ -149,25 +160,80 @@ func runeWidth(r rune) int {
 	return 1
 }
 
+func isZeroWidthRune(r rune) bool {
+	if isControlRune(r) {
+		return true
+	}
+	if isMarkRune(r) {
+		return true
+	}
+	return isJoinerOrVariationSelector(r)
+}
+
+func isControlRune(r rune) bool {
+	isC0Control := r < 0x20
+	isC1Control := r >= 0x7f && r < 0xa0
+	isControl := isC0Control || isC1Control
+	return isControl
+}
+
+func isMarkRune(r rune) bool {
+	isNonspacingMark := unicode.Is(unicode.Mn, r)
+	isEnclosingMark := unicode.Is(unicode.Me, r)
+	isMark := isNonspacingMark || isEnclosingMark
+	return isMark
+}
+
+func isJoinerOrVariationSelector(r rune) bool {
+	isJoiner := r == '\u200d'
+	isVariationSelector := r >= '\ufe00' && r <= '\ufe0f'
+	zeroWidth := isJoiner || isVariationSelector
+	return zeroWidth
+}
+
 func isWideRune(r rune) bool {
-	return r >= 0x1100 && r <= 0x115f ||
-		r >= 0x2329 && r <= 0x232a ||
-		r >= 0x2e80 && r <= 0xa4cf ||
-		r >= 0xac00 && r <= 0xd7a3 ||
-		r >= 0xf900 && r <= 0xfaff ||
-		r >= 0xfe10 && r <= 0xfe6f ||
-		r >= 0xff00 && r <= 0xff60 ||
-		r >= 0xffe0 && r <= 0xffe6 ||
-		r >= 0x1f300 && r <= 0x1faff ||
-		r >= 0x20000 && r <= 0x3fffd
+	for _, interval := range wideRuneIntervals {
+		aboveStart := r >= interval.start
+		belowEnd := r <= interval.end
+		inInterval := aboveStart && belowEnd
+		if inInterval {
+			return true
+		}
+	}
+	return false
+}
+
+type runeInterval struct {
+	start rune
+	end   rune
+}
+
+var wideRuneIntervals = [...]runeInterval{
+	{start: 0x1100, end: 0x115f},
+	{start: 0x2329, end: 0x232a},
+	{start: 0x2e80, end: 0xa4cf},
+	{start: 0xac00, end: 0xd7a3},
+	{start: 0xf900, end: 0xfaff},
+	{start: 0xfe10, end: 0xfe6f},
+	{start: 0xff00, end: 0xff60},
+	{start: 0xffe0, end: 0xffe6},
+	{start: 0x1f300, end: 0x1faff},
+	{start: 0x20000, end: 0x3fffd},
 }
 
 func ansiSequenceEnd(text string, index int) (int, bool) {
-	if index+1 >= len(text) || text[index] != '\x1b' || text[index+1] != '[' {
+	missingPrefix := index+1 >= len(text)
+	hasEscape := !missingPrefix && text[index] == '\x1b'
+	hasBracket := !missingPrefix && text[index+1] == '['
+	hasANSIPrefix := !missingPrefix && hasEscape && hasBracket
+	if !hasANSIPrefix {
 		return index, false
 	}
 	for cursor := index + 2; cursor < len(text); cursor++ {
-		if text[cursor] >= 0x40 && text[cursor] <= 0x7e {
+		aboveControlStart := text[cursor] >= 0x40
+		belowControlEnd := text[cursor] <= 0x7e
+		endsSequence := aboveControlStart && belowControlEnd
+		if endsSequence {
 			return cursor + 1, true
 		}
 	}

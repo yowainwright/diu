@@ -118,30 +118,29 @@ func flagBool(cmd *command, name string) bool {
 // parseDuration parses duration strings like "24h", "7d", "30d", "1w", "1mo"
 func parseDuration(s string) (time.Duration, error) {
 	if strings.HasSuffix(s, "d") {
-		days, err := strconv.Atoi(strings.TrimSuffix(s, "d"))
-		if err != nil {
-			return 0, err
-		}
-		return time.Duration(days) * 24 * time.Hour, nil
+		return parseDurationUnit(s, "d", 24*time.Hour)
 	}
 
 	if strings.HasSuffix(s, "w") {
-		weeks, err := strconv.Atoi(strings.TrimSuffix(s, "w"))
-		if err != nil {
-			return 0, err
-		}
-		return time.Duration(weeks) * 7 * 24 * time.Hour, nil
+		week := 7 * 24 * time.Hour
+		return parseDurationUnit(s, "w", week)
 	}
 
 	if strings.HasSuffix(s, "mo") {
-		months, err := strconv.Atoi(strings.TrimSuffix(s, "mo"))
-		if err != nil {
-			return 0, err
-		}
-		return time.Duration(months) * 30 * 24 * time.Hour, nil
+		month := 30 * 24 * time.Hour
+		return parseDurationUnit(s, "mo", month)
 	}
 
 	return time.ParseDuration(s)
+}
+
+func parseDurationUnit(s, suffix string, unit time.Duration) (time.Duration, error) {
+	count, err := strconv.Atoi(strings.TrimSuffix(s, suffix))
+	if err != nil {
+		return 0, err
+	}
+	duration := time.Duration(count) * unit
+	return duration, nil
 }
 
 // formatLastUsed formats a timestamp for display
@@ -207,8 +206,12 @@ func npmPackageFromPath(path string) string {
 	if len(segments) == 0 {
 		return ""
 	}
-	if strings.HasPrefix(segments[0], "@") && len(segments) > 1 {
-		return segments[0] + "/" + segments[1]
+	hasScope := strings.HasPrefix(segments[0], "@")
+	hasName := len(segments) > 1
+	isScopedPackage := hasScope && hasName
+	if isScopedPackage {
+		scopedPackage := segments[0] + "/" + segments[1]
+		return scopedPackage
 	}
 	return segments[0]
 }
@@ -316,11 +319,11 @@ func firstExistingCommand(names ...string) (string, error) {
 func firstExistingCommandWithDeps(deps executablePathDeps, names ...string) (string, error) {
 	var lastErr error
 	for _, name := range names {
-		if _, err := deps.lookPath(name); err == nil {
+		_, err := deps.lookPath(name)
+		if err == nil {
 			return name, nil
-		} else {
-			lastErr = err
 		}
+		lastErr = err
 	}
 	return "", lastErr
 }
@@ -353,6 +356,13 @@ func goBinaryDirWithDeps(config *core.Config, deps executablePathDeps) string {
 
 // validatePackageManagerName validates a package manager package name
 func validatePackageManagerName(name string) error {
+	if err := validatePackageNameShape(name); err != nil {
+		return err
+	}
+	return validatePackageNameCharacters(name)
+}
+
+func validatePackageNameShape(name string) error {
 	if strings.TrimSpace(name) == "" {
 		return fmt.Errorf("package name cannot be empty")
 	}
@@ -362,24 +372,21 @@ func validatePackageManagerName(name string) error {
 	if strings.HasPrefix(name, "-") {
 		return fmt.Errorf("package name cannot start with a flag prefix: %s", name)
 	}
-	if strings.HasPrefix(name, "/") || strings.HasSuffix(name, "/") {
+	absoluteOrIncomplete := strings.HasPrefix(name, "/") || strings.HasSuffix(name, "/")
+	if absoluteOrIncomplete {
 		return fmt.Errorf("package name cannot be an absolute or incomplete path: %s", name)
 	}
-	if strings.Contains(name, "..") || strings.Contains(name, "//") {
+	unsafePath := strings.Contains(name, "..") || strings.Contains(name, "//")
+	if unsafePath {
 		return fmt.Errorf("package name contains an unsafe path segment: %s", name)
 	}
+	return nil
+}
 
+func validatePackageNameCharacters(name string) error {
 	hasAlnum := false
 	for _, char := range name {
-		if char >= 'a' && char <= 'z' {
-			hasAlnum = true
-			continue
-		}
-		if char >= 'A' && char <= 'Z' {
-			hasAlnum = true
-			continue
-		}
-		if char >= '0' && char <= '9' {
+		if packageNameAlphaNumeric(char) {
 			hasAlnum = true
 			continue
 		}
@@ -394,47 +401,79 @@ func validatePackageManagerName(name string) error {
 	return nil
 }
 
+func packageNameAlphaNumeric(char rune) bool {
+	isLower := char >= 'a' && char <= 'z'
+	isUpper := char >= 'A' && char <= 'Z'
+	isDigit := char >= '0' && char <= '9'
+	isAlnum := isLower || isUpper || isDigit
+	return isAlnum
+}
+
 // validateRemovableExecutablePath validates a path for removal as an executable
 func validateRemovableExecutablePath(path string) (string, error) {
-	if strings.TrimSpace(path) == "" {
-		return "", fmt.Errorf("executable path cannot be empty")
+	if err := rejectEmptyExecutablePath(path); err != nil {
+		return "", err
 	}
+	if err := rejectParentPathSegments(path); err != nil {
+		return "", err
+	}
+	cleanPath, err := cleanAbsoluteExecutablePath(path)
+	if err != nil {
+		return "", err
+	}
+	if err := validateRemovableExecutableFile(cleanPath); err != nil {
+		return "", err
+	}
+	return cleanPath, nil
+}
+
+func validateRemovableExecutableFile(cleanPath string) error {
+	info, err := os.Stat(cleanPath)
+	if err != nil {
+		return fmt.Errorf("failed to inspect executable %s: %w", cleanPath, err)
+	}
+	if info.IsDir() {
+		return fmt.Errorf("refusing to remove directory: %s", cleanPath)
+	}
+	if info.Mode()&core.ExecutableModeMask == 0 {
+		return fmt.Errorf("refusing to remove non-executable file: %s", cleanPath)
+	}
+	return nil
+}
+
+func rejectEmptyExecutablePath(path string) error {
+	if strings.TrimSpace(path) == "" {
+		return fmt.Errorf("executable path cannot be empty")
+	}
+	return nil
+}
+
+func rejectParentPathSegments(path string) error {
 	for _, segment := range strings.Split(filepath.ToSlash(path), "/") {
 		if segment == ".." {
-			return "", fmt.Errorf("executable path contains an unsafe path segment: %s", path)
+			return fmt.Errorf("executable path contains an unsafe path segment: %s", path)
 		}
 	}
+	return nil
+}
 
+func cleanAbsoluteExecutablePath(path string) (string, error) {
+	if err := rejectEmptyExecutablePath(path); err != nil {
+		return "", err
+	}
 	cleanPath := filepath.Clean(path)
 	if !filepath.IsAbs(cleanPath) {
 		return "", fmt.Errorf("executable path must be absolute: %s", path)
 	}
-
-	info, err := os.Stat(cleanPath)
-	if err != nil {
-		return "", fmt.Errorf("failed to inspect executable %s: %w", cleanPath, err)
-	}
-	if info.IsDir() {
-		return "", fmt.Errorf("refusing to remove directory: %s", cleanPath)
-	}
-	if info.Mode()&core.ExecutableModeMask == 0 {
-		return "", fmt.Errorf("refusing to remove non-executable file: %s", cleanPath)
-	}
-
 	return cleanPath, nil
 }
 
 // validateExecutablePath validates a path as an executable
 func validateExecutablePath(path string) (string, error) {
-	if strings.TrimSpace(path) == "" {
-		return "", fmt.Errorf("executable path cannot be empty")
+	cleanPath, err := cleanAbsoluteExecutablePath(path)
+	if err != nil {
+		return "", err
 	}
-
-	cleanPath := filepath.Clean(path)
-	if !filepath.IsAbs(cleanPath) {
-		return "", fmt.Errorf("executable path must be absolute: %s", path)
-	}
-
 	info, err := safefs.Stat(cleanPath)
 	if err != nil {
 		return "", fmt.Errorf("failed to inspect executable %s: %w", cleanPath, err)
@@ -462,8 +501,8 @@ func executableWrapperPath(wrapperDir, name string) (string, error) {
 	if strings.TrimSpace(wrapperDir) == "" {
 		return "", fmt.Errorf("wrapper directory cannot be empty")
 	}
-	if shouldSkipExecutableWrapper(name) || filepath.Base(name) != name {
-		return "", fmt.Errorf("invalid wrapper name: %s", name)
+	if err := validateWrapperName(name); err != nil {
+		return "", err
 	}
 
 	cleanDir := filepath.Clean(wrapperDir)
@@ -472,11 +511,28 @@ func executableWrapperPath(wrapperDir, name string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("failed to validate wrapper path: %w", err)
 	}
-	if relativePath == "." || strings.HasPrefix(relativePath, "..") {
+	if wrapperEscapesDirectory(relativePath) {
 		return "", fmt.Errorf("wrapper path escapes wrapper directory: %s", wrapperPath)
 	}
 
 	return wrapperPath, nil
+}
+
+func validateWrapperName(name string) error {
+	if shouldSkipExecutableWrapper(name) {
+		return fmt.Errorf("invalid wrapper name: %s", name)
+	}
+	if filepath.Base(name) != name {
+		return fmt.Errorf("invalid wrapper name: %s", name)
+	}
+	return nil
+}
+
+func wrapperEscapesDirectory(relativePath string) bool {
+	if relativePath == "." {
+		return true
+	}
+	return strings.HasPrefix(relativePath, "..")
 }
 
 // writeOwnerExecutableFile writes data to a file with executable permissions
@@ -486,11 +542,7 @@ func writeOwnerExecutableFile(path string, data []byte) (err error) {
 		return fmt.Errorf("failed to create executable file: %w", err)
 	}
 	defer func() {
-		closeErr := file.Close()
-		shouldReturnCloseErr := err == nil && closeErr != nil
-		if shouldReturnCloseErr {
-			err = fmt.Errorf("failed to close executable file: %w", closeErr)
-		}
+		err = safefs.CloseWithError(err, file, "failed to close executable file")
 	}()
 
 	if _, err := file.Write(data); err != nil {
@@ -504,25 +556,40 @@ func writeOwnerExecutableFile(path string, data []byte) (err error) {
 
 // newMonitor creates a monitor for the given tool
 func newMonitor(tool string) (monitors.Monitor, error) {
-	switch core.NormalizeToolName(tool) {
+	normalizedTool := core.NormalizeToolName(tool)
+	switch normalizedTool {
 	case core.ToolHomebrew:
 		return monitors.NewHomebrewMonitor(), nil
+	case core.ToolNPM, core.ToolPNPM, core.ToolBun:
+		return newJavaScriptMonitor(normalizedTool)
+	case core.ToolGo:
+		return monitors.NewGoMonitor(), nil
+	case core.ToolPip, core.ToolUV, core.ToolPoetry:
+		return newPythonMonitor(normalizedTool)
+	default:
+		return nil, fmt.Errorf("unsupported tool: %s", tool)
+	}
+}
+
+func newJavaScriptMonitor(tool string) (monitors.Monitor, error) {
+	switch tool {
 	case core.ToolNPM:
 		return monitors.NewNPMMonitor(), nil
 	case core.ToolPNPM:
 		return monitors.NewPNPMMonitor(), nil
-	case core.ToolBun:
+	default:
 		return monitors.NewBunMonitor(), nil
-	case core.ToolGo:
-		return monitors.NewGoMonitor(), nil
+	}
+}
+
+func newPythonMonitor(tool string) (monitors.Monitor, error) {
+	switch tool {
 	case core.ToolPip:
 		return monitors.NewPipMonitor(), nil
 	case core.ToolUV:
 		return monitors.NewUVMonitor(), nil
-	case core.ToolPoetry:
-		return monitors.NewPoetryMonitor(), nil
 	default:
-		return nil, fmt.Errorf("unsupported tool: %s", tool)
+		return monitors.NewPoetryMonitor(), nil
 	}
 }
 
@@ -698,61 +765,74 @@ func removeGoBinaryPath(binaryPath string) error {
 // uninstallPlan returns the command plan for uninstalling a package
 func uninstallPlan(pkg *core.PackageInfo) ([]string, error) {
 	switch pkg.Tool {
-	case core.ToolHomebrew:
-		if err := validatePackageManagerName(pkg.Name); err != nil {
-			return nil, err
-		}
-		return []string{homebrewCommandName, uninstallSubcommand, pkg.Name}, nil
-	case homebrewCaskTool:
-		if err := validatePackageManagerName(pkg.Name); err != nil {
-			return nil, err
-		}
-		return []string{homebrewCommandName, uninstallSubcommand, homebrewCaskFlag, pkg.Name}, nil
-	case core.ToolNPM:
-		if err := validatePackageManagerName(pkg.Name); err != nil {
-			return nil, err
-		}
-		return []string{npmCommandName, uninstallSubcommand, npmGlobalFlag, pkg.Name}, nil
-	case core.ToolPNPM:
-		if err := validatePackageManagerName(pkg.Name); err != nil {
-			return nil, err
-		}
-		return []string{pnpmCommandName, removeSubcommand, npmGlobalFlag, pkg.Name}, nil
-	case core.ToolBun:
-		if err := validatePackageManagerName(pkg.Name); err != nil {
-			return nil, err
-		}
-		return []string{bunCommandName, removeSubcommand, npmGlobalFlag, pkg.Name}, nil
+	case core.ToolHomebrew, homebrewCaskTool:
+		return homebrewUninstallPlan(pkg)
+	case core.ToolNPM, core.ToolPNPM, core.ToolBun:
+		return javascriptUninstallPlan(pkg)
 	case core.ToolPip:
-		if err := validatePackageManagerName(pkg.Name); err != nil {
-			return nil, err
-		}
-		commandName, err := pipCommandForUninstall()
-		if err != nil {
-			return nil, fmt.Errorf("pip not found: %w", err)
-		}
-		return []string{commandName, uninstallSubcommand, pipYesFlag, pkg.Name}, nil
+		return pipUninstallPlan(pkg)
 	case core.ToolUV:
-		if err := validatePackageManagerName(pkg.Name); err != nil {
-			return nil, err
-		}
-		return []string{uvCommandName, "tool", uninstallSubcommand, pkg.Name}, nil
+		return namedPackageUninstallPlan(pkg, uvCommandName, "tool", uninstallSubcommand)
 	case core.ToolGo, core.ToolGoBinary:
-		if pkg.Path == "" {
-			return nil, fmt.Errorf("go package %s has no executable path to remove", pkg.Name)
-		}
-		return []string{removeFilePlan}, nil
+		return goBinaryUninstallPlan(pkg)
 	default:
 		return nil, fmt.Errorf("uninstall is not supported for %s packages", pkg.Tool)
 	}
 }
 
+func homebrewUninstallPlan(pkg *core.PackageInfo) ([]string, error) {
+	if pkg.Tool == homebrewCaskTool {
+		return namedPackageUninstallPlan(pkg, homebrewCommandName, uninstallSubcommand, homebrewCaskFlag)
+	}
+	return namedPackageUninstallPlan(pkg, homebrewCommandName, uninstallSubcommand)
+}
+
+func javascriptUninstallPlan(pkg *core.PackageInfo) ([]string, error) {
+	switch pkg.Tool {
+	case core.ToolNPM:
+		return namedPackageUninstallPlan(pkg, npmCommandName, uninstallSubcommand, npmGlobalFlag)
+	case core.ToolPNPM:
+		return namedPackageUninstallPlan(pkg, pnpmCommandName, removeSubcommand, npmGlobalFlag)
+	default:
+		return namedPackageUninstallPlan(pkg, bunCommandName, removeSubcommand, npmGlobalFlag)
+	}
+}
+
+func namedPackageUninstallPlan(pkg *core.PackageInfo, commandName string, args ...string) ([]string, error) {
+	if err := validatePackageManagerName(pkg.Name); err != nil {
+		return nil, err
+	}
+	plan := append([]string{commandName}, args...)
+	return append(plan, pkg.Name), nil
+}
+
+func pipUninstallPlan(pkg *core.PackageInfo) ([]string, error) {
+	if err := validatePackageManagerName(pkg.Name); err != nil {
+		return nil, err
+	}
+	commandName, err := pipCommandForUninstall()
+	if err != nil {
+		return nil, fmt.Errorf("pip not found: %w", err)
+	}
+	return []string{commandName, uninstallSubcommand, pipYesFlag, pkg.Name}, nil
+}
+
+func goBinaryUninstallPlan(pkg *core.PackageInfo) ([]string, error) {
+	if pkg.Path == "" {
+		return nil, fmt.Errorf("go package %s has no executable path to remove", pkg.Name)
+	}
+	return []string{removeFilePlan}, nil
+}
+
 // printableUninstallPlan returns a human-readable uninstall plan
 func printableUninstallPlan(pkg *core.PackageInfo, plan []string) []string {
-	if len(plan) == 1 && plan[0] == removeFilePlan {
-		return []string{"rm", pkg.Path}
+	if len(plan) != 1 {
+		return plan
 	}
-	return plan
+	if plan[0] != removeFilePlan {
+		return plan
+	}
+	return []string{"rm", pkg.Path}
 }
 
 // packageMatchesSearch returns true if the package matches the search query

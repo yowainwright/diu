@@ -10,17 +10,30 @@ import (
 	"strings"
 )
 
+// CloseWithError closes closer and folds any close error into current,
+// preferring the earlier error when both are present. context, if non-empty,
+// wraps a close error to identify what failed to close.
+func CloseWithError(current error, closer io.Closer, context string) error {
+	closeErr := closer.Close()
+	if current != nil {
+		return current
+	}
+	if closeErr == nil {
+		return current
+	}
+	if context == "" {
+		return closeErr
+	}
+	return fmt.Errorf("%s: %w", context, closeErr)
+}
+
 func SHA256(path string) (digest string, err error) {
 	file, err := OpenFile(path, os.O_RDONLY, 0)
 	if err != nil {
 		return "", err
 	}
 	defer func() {
-		closeErr := file.Close()
-		shouldReturnCloseErr := err == nil && closeErr != nil
-		if shouldReturnCloseErr {
-			err = closeErr
-		}
+		err = CloseWithError(err, file, "")
 	}()
 
 	hash := sha256.New()
@@ -36,11 +49,7 @@ func Stat(path string) (info os.FileInfo, err error) {
 		return nil, err
 	}
 	defer func() {
-		closeErr := root.Close()
-		shouldReturnCloseErr := err == nil && closeErr != nil
-		if shouldReturnCloseErr {
-			err = fmt.Errorf("failed to close root: %w", closeErr)
-		}
+		err = CloseWithError(err, root, "failed to close root")
 	}()
 
 	return root.Stat(name)
@@ -52,11 +61,7 @@ func Lstat(path string) (info os.FileInfo, err error) {
 		return nil, err
 	}
 	defer func() {
-		closeErr := root.Close()
-		shouldReturnCloseErr := err == nil && closeErr != nil
-		if shouldReturnCloseErr {
-			err = fmt.Errorf("failed to close root: %w", closeErr)
-		}
+		err = CloseWithError(err, root, "failed to close root")
 	}()
 
 	return root.Lstat(name)
@@ -68,11 +73,7 @@ func ReadFile(path string) (data []byte, err error) {
 		return nil, err
 	}
 	defer func() {
-		closeErr := root.Close()
-		shouldReturnCloseErr := err == nil && closeErr != nil
-		if shouldReturnCloseErr {
-			err = fmt.Errorf("failed to close root: %w", closeErr)
-		}
+		err = CloseWithError(err, root, "failed to close root")
 	}()
 
 	return root.ReadFile(name)

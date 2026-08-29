@@ -53,8 +53,16 @@ func TestQueryExecutionsEmpty(t *testing.T) {
 
 func TestQueryExecutionsWithData(t *testing.T) {
 	config := setupTestHomeConfig(t)
-	store := openTestStore(t, config)
-	addTestExecution(t, store, &core.ExecutionRecord{
+	addQueryExecutionForTest(t, config)
+	output := runQueryCommandForTest(t, "--tool", "homebrew")
+	assertOutputContains(t, output, "Execution History")
+	assertOutputContains(t, output, "brew install jq")
+}
+
+func addQueryExecutionForTest(t *testing.T, config *core.Config) {
+	t.Helper()
+
+	addStoredExecutionForTest(t, config, &core.ExecutionRecord{
 		Tool:      core.ToolHomebrew,
 		Command:   "brew install jq",
 		Args:      []string{"install", "jq"},
@@ -62,71 +70,87 @@ func TestQueryExecutionsWithData(t *testing.T) {
 		Duration:  1500 * time.Millisecond,
 		ExitCode:  0,
 	})
-	closeTestStore(t, store)
+}
 
-	output := captureStdout(t, func() {
-		if err := queryExecutions(queryCommandForTest(t, "--tool", "homebrew"), nil); err != nil {
+func addStoredExecutionForTest(t *testing.T, config *core.Config, record *core.ExecutionRecord) {
+	t.Helper()
+
+	store := openTestStore(t, config)
+	addTestExecution(t, store, record)
+	closeTestStore(t, store)
+}
+
+func runQueryCommandForTest(t *testing.T, args ...string) string {
+	t.Helper()
+
+	return captureStdout(t, func() {
+		if err := queryExecutions(queryCommandForTest(t, args...), nil); err != nil {
 			t.Fatalf("queryExecutions failed: %v", err)
 		}
 	})
+}
 
-	if !strings.Contains(output, "Execution History") {
-		t.Fatalf("Expected 'Execution History', got: %q", output)
-	}
-	if !strings.Contains(output, "brew install jq") {
-		t.Fatalf("Expected command in output, got: %q", output)
+func assertOutputContains(t *testing.T, output, value string) {
+	t.Helper()
+
+	if !strings.Contains(output, value) {
+		t.Fatalf("Expected %q in output, got: %q", value, output)
 	}
 }
 
 func TestQueryExecutionsJSON(t *testing.T) {
 	config := setupTestHomeConfig(t)
-	store := openTestStore(t, config)
-	addTestExecution(t, store, &core.ExecutionRecord{
-		Tool:      core.ToolNPM,
-		Command:   "npm install eslint",
-		Args:      []string{"install", "eslint"},
+	record := queryExecutionRecord(core.ToolNPM, "npm install eslint", []string{"install", "eslint"})
+	addStoredExecutionForTest(t, config, record)
+
+	output := runQueryCommandForTest(t, "--format", "json")
+	records := decodeExecutionOutput(t, output)
+	assertFirstExecutionCommand(t, records, "npm install eslint")
+}
+
+func TestQueryExecutionsCSV(t *testing.T) {
+	config := setupTestHomeConfig(t)
+	record := queryExecutionRecord(core.ToolHomebrew, "brew upgrade,all", []string{"upgrade"})
+	addStoredExecutionForTest(t, config, record)
+
+	output := runQueryCommandForTest(t, "--format", "csv")
+	assertCSVQueryOutput(t, output)
+}
+
+func queryExecutionRecord(tool, command string, args []string) *core.ExecutionRecord {
+	return &core.ExecutionRecord{
+		Tool:      tool,
+		Command:   command,
+		Args:      args,
 		Timestamp: time.Now(),
 		Duration:  2000 * time.Millisecond,
 		ExitCode:  0,
-	})
-	closeTestStore(t, store)
+	}
+}
 
-	output := captureStdout(t, func() {
-		if err := queryExecutions(queryCommandForTest(t, "--format", "json"), nil); err != nil {
-			t.Fatalf("queryExecutions JSON failed: %v", err)
-		}
-	})
+func decodeExecutionOutput(t *testing.T, output string) []core.ExecutionRecord {
+	t.Helper()
 
 	var records []core.ExecutionRecord
 	if err := json.Unmarshal([]byte(output), &records); err != nil {
 		t.Fatalf("Failed to decode JSON output %q: %v", output, err)
 	}
+	return records
+}
+
+func assertFirstExecutionCommand(t *testing.T, records []core.ExecutionRecord, command string) {
+	t.Helper()
+
 	if len(records) == 0 {
 		t.Fatal("Expected at least one record in JSON output")
 	}
-	if records[0].Command != "npm install eslint" {
-		t.Fatalf("Expected 'npm install eslint', got: %s", records[0].Command)
+	if records[0].Command != command {
+		t.Fatalf("Expected %q, got: %s", command, records[0].Command)
 	}
 }
 
-func TestQueryExecutionsCSV(t *testing.T) {
-	config := setupTestHomeConfig(t)
-	store := openTestStore(t, config)
-	addTestExecution(t, store, &core.ExecutionRecord{
-		Tool:      core.ToolHomebrew,
-		Command:   "brew upgrade,all",
-		Args:      []string{"upgrade"},
-		Timestamp: time.Now(),
-		Duration:  3000 * time.Millisecond,
-		ExitCode:  0,
-	})
-	closeTestStore(t, store)
-
-	output := captureStdout(t, func() {
-		if err := queryExecutions(queryCommandForTest(t, "--format", "csv"), nil); err != nil {
-			t.Fatalf("queryExecutions CSV failed: %v", err)
-		}
-	})
+func assertCSVQueryOutput(t *testing.T, output string) {
+	t.Helper()
 
 	lines := strings.Split(strings.TrimSpace(output), "\n")
 	if len(lines) < 2 {
@@ -164,10 +188,17 @@ func TestQueryExecutionsCSVWriterError(t *testing.T) {
 
 func TestQueryExecutionsWithTimeFilter(t *testing.T) {
 	config := setupTestHomeConfig(t)
-	store := openTestStore(t, config)
+	addTimeFilteredExecutions(t, config)
 
-	// Add old execution (2 days ago)
-	addTestExecution(t, store, &core.ExecutionRecord{
+	output := runQueryCommandForTest(t, "--last", "24h")
+	assertOutputOmits(t, output, "npm install old")
+	assertOutputContains(t, output, "npm install recent")
+}
+
+func addTimeFilteredExecutions(t *testing.T, config *core.Config) {
+	t.Helper()
+
+	addStoredExecutionForTest(t, config, &core.ExecutionRecord{
 		Tool:      core.ToolNPM,
 		Command:   "npm install old",
 		Args:      []string{"install", "old"},
@@ -175,9 +206,7 @@ func TestQueryExecutionsWithTimeFilter(t *testing.T) {
 		Duration:  1000 * time.Millisecond,
 		ExitCode:  0,
 	})
-
-	// Add recent execution
-	addTestExecution(t, store, &core.ExecutionRecord{
+	addStoredExecutionForTest(t, config, &core.ExecutionRecord{
 		Tool:      core.ToolNPM,
 		Command:   "npm install recent",
 		Args:      []string{"install", "recent"},
@@ -185,19 +214,13 @@ func TestQueryExecutionsWithTimeFilter(t *testing.T) {
 		Duration:  1000 * time.Millisecond,
 		ExitCode:  0,
 	})
-	closeTestStore(t, store)
+}
 
-	output := captureStdout(t, func() {
-		if err := queryExecutions(queryCommandForTest(t, "--last", "24h"), nil); err != nil {
-			t.Fatalf("queryExecutions with time filter failed: %v", err)
-		}
-	})
+func assertOutputOmits(t *testing.T, output, value string) {
+	t.Helper()
 
-	if strings.Contains(output, "npm install old") {
-		t.Fatal("Old execution should be filtered out")
-	}
-	if !strings.Contains(output, "npm install recent") {
-		t.Fatal("Recent execution should be included")
+	if strings.Contains(output, value) {
+		t.Fatalf("Expected %q to be omitted, got: %q", value, output)
 	}
 }
 
@@ -224,8 +247,28 @@ func TestShowStatsEmpty(t *testing.T) {
 
 func TestShowStatsWithData(t *testing.T) {
 	config := setupTestHomeConfig(t)
+	addStatsExecutions(t, config)
+
+	output := captureStdout(t, func() {
+		if err := showStats(statsCommandForTest(t), nil); err != nil {
+			t.Fatalf("showStats failed: %v", err)
+		}
+	})
+
+	assertStatsOutputHasData(t, output)
+}
+
+func addStatsExecutions(t *testing.T, config *core.Config) {
+	t.Helper()
+
 	store := openTestStore(t, config)
-	addTestExecution(t, store, &core.ExecutionRecord{
+	addTestExecution(t, store, statsNPMExecution())
+	addTestExecution(t, store, statsHomebrewExecution())
+	closeTestStore(t, store)
+}
+
+func statsNPMExecution() *core.ExecutionRecord {
+	return &core.ExecutionRecord{
 		Tool:             core.ToolNPM,
 		Command:          "npm install eslint",
 		Args:             []string{"install", "eslint"},
@@ -233,23 +276,25 @@ func TestShowStatsWithData(t *testing.T) {
 		Duration:         1500 * time.Millisecond,
 		ExitCode:         0,
 		PackagesAffected: []string{"eslint"},
-	})
-	addTestExecution(t, store, &core.ExecutionRecord{
+	}
+}
+
+func statsHomebrewExecution() *core.ExecutionRecord {
+	timestamp := time.Now().Add(-1 * time.Hour)
+	duration := 2000 * time.Millisecond
+	return &core.ExecutionRecord{
 		Tool:             core.ToolHomebrew,
 		Command:          "brew install jq",
 		Args:             []string{"install", "jq"},
-		Timestamp:        time.Now().Add(-1 * time.Hour),
-		Duration:         2000 * time.Millisecond,
+		Timestamp:        timestamp,
+		Duration:         duration,
 		ExitCode:         0,
 		PackagesAffected: []string{"jq"},
-	})
-	closeTestStore(t, store)
+	}
+}
 
-	output := captureStdout(t, func() {
-		if err := showStats(statsCommandForTest(t), nil); err != nil {
-			t.Fatalf("showStats failed: %v", err)
-		}
-	})
+func assertStatsOutputHasData(t *testing.T, output string) {
+	t.Helper()
 
 	if !strings.Contains(output, "Total executions: 2") {
 		t.Fatalf("Expected 'Total executions: 2', got: %q", output)
@@ -283,10 +328,11 @@ func TestShowStatsDaily(t *testing.T) {
 func TestShowStatsWeekly(t *testing.T) {
 	config := setupTestHomeConfig(t)
 	store := openTestStore(t, config)
+	timestamp := time.Now().Add(-2 * 24 * time.Hour)
 	addTestExecution(t, store, &core.ExecutionRecord{
 		Tool:      core.ToolNPM,
 		Command:   "npm install test",
-		Timestamp: time.Now().Add(-2 * 24 * time.Hour),
+		Timestamp: timestamp,
 	})
 	closeTestStore(t, store)
 
@@ -321,8 +367,7 @@ func TestListPackagesEmpty(t *testing.T) {
 
 func TestListPackagesWithData(t *testing.T) {
 	config := setupTestHomeConfig(t)
-	store := openTestStore(t, config)
-	updateTestPackage(t, store, &core.PackageInfo{
+	addListedPackage(t, config, &core.PackageInfo{
 		Name:       "jq",
 		Tool:       core.ToolHomebrew,
 		Version:    "1.7",
@@ -330,7 +375,6 @@ func TestListPackagesWithData(t *testing.T) {
 		LastUsed:   time.Now(),
 		Path:       "/usr/local/bin/jq",
 	})
-	closeTestStore(t, store)
 
 	output := captureStdout(t, func() {
 		if err := listPackages(packagesCommandForTest(t), nil); err != nil {
@@ -346,8 +390,30 @@ func TestListPackagesWithData(t *testing.T) {
 	}
 }
 
+func addListedPackage(t *testing.T, config *core.Config, pkg *core.PackageInfo) {
+	t.Helper()
+
+	store := openTestStore(t, config)
+	updateTestPackage(t, store, pkg)
+	closeTestStore(t, store)
+}
+
 func TestListPackagesWithToolFilter(t *testing.T) {
 	config := setupTestHomeConfig(t)
+	addFilteredPackages(t, config)
+
+	output := captureStdout(t, func() {
+		if err := listPackages(packagesCommandForTest(t, "--tool", "homebrew"), nil); err != nil {
+			t.Fatalf("listPackages with tool filter failed: %v", err)
+		}
+	})
+
+	assertFilteredPackageOutput(t, output)
+}
+
+func addFilteredPackages(t *testing.T, config *core.Config) {
+	t.Helper()
+
 	store := openTestStore(t, config)
 	updateTestPackage(t, store, &core.PackageInfo{
 		Name:       "jq",
@@ -362,12 +428,10 @@ func TestListPackagesWithToolFilter(t *testing.T) {
 		LastUsed:   time.Now(),
 	})
 	closeTestStore(t, store)
+}
 
-	output := captureStdout(t, func() {
-		if err := listPackages(packagesCommandForTest(t, "--tool", "homebrew"), nil); err != nil {
-			t.Fatalf("listPackages with tool filter failed: %v", err)
-		}
-	})
+func assertFilteredPackageOutput(t *testing.T, output string) {
+	t.Helper()
 
 	if !strings.Contains(output, "jq") {
 		t.Fatalf("Expected 'jq' for homebrew filter, got: %q", output)
@@ -379,31 +443,52 @@ func TestListPackagesWithToolFilter(t *testing.T) {
 
 func TestListPackagesUnusedFilter(t *testing.T) {
 	config := setupTestHomeConfig(t)
-	store := openTestStore(t, config)
-	updateTestPackage(t, store, &core.PackageInfo{
-		Name:       "old",
-		Tool:       core.ToolHomebrew,
-		UsageCount: 1,
-		LastUsed:   time.Now().Add(-100 * 24 * time.Hour),
-	})
-	updateTestPackage(t, store, &core.PackageInfo{
-		Name:       "recent",
-		Tool:       core.ToolHomebrew,
-		UsageCount: 5,
-		LastUsed:   time.Now(),
-	})
-	closeTestStore(t, store)
+	addUnusedFilterPackages(t, config)
 
 	output := captureStdout(t, func() {
 		if err := listPackages(packagesCommandForTest(t, "--unused", "30d"), nil); err != nil {
 			t.Fatalf("listPackages with unused filter failed: %v", err)
 		}
 	})
+	assertUnusedFilterOutput(t, output)
+}
+
+func addUnusedFilterPackages(t *testing.T, config *core.Config) {
+	t.Helper()
+
+	addListedPackage(t, config, oldHomebrewPackage())
+	addListedPackage(t, config, recentHomebrewPackage())
+}
+
+func oldHomebrewPackage() *core.PackageInfo {
+	lastUsed := time.Now().Add(-100 * 24 * time.Hour)
+	return &core.PackageInfo{
+		Name:       "old",
+		Tool:       core.ToolHomebrew,
+		UsageCount: 1,
+		LastUsed:   lastUsed,
+	}
+}
+
+func recentHomebrewPackage() *core.PackageInfo {
+	return &core.PackageInfo{
+		Name:       "recent",
+		Tool:       core.ToolHomebrew,
+		UsageCount: 5,
+		LastUsed:   time.Now(),
+	}
+}
+
+func assertUnusedFilterOutput(t *testing.T, output string) {
+	t.Helper()
 
 	if strings.Contains(output, "recent") {
 		t.Fatalf("Recent package should not be in unused list, got: %q", output)
 	}
-	if !strings.Contains(output, "No unused packages found") && !strings.Contains(output, "old") {
+	hasEmptyMessage := strings.Contains(output, "No unused packages found")
+	hasOldPackage := strings.Contains(output, "old")
+	hasExpectedOutput := hasEmptyMessage || hasOldPackage
+	if !hasExpectedOutput {
 		t.Fatalf("Expected old package in unused list or no unused message, got: %q", output)
 	}
 }
@@ -449,26 +534,18 @@ func TestListPackagesUnusedFilterNoMatches(t *testing.T) {
 
 func TestCheckPackagesWithSearch(t *testing.T) {
 	config := setupTestHomeConfig(t)
-	store := openTestStore(t, config)
-	updateTestPackage(t, store, &core.PackageInfo{
-		Name:       "jq",
-		Tool:       core.ToolHomebrew,
-		UsageCount: 5,
-		LastUsed:   time.Now(),
-	})
-	updateTestPackage(t, store, &core.PackageInfo{
-		Name:       "eslint",
-		Tool:       core.ToolNPM,
-		UsageCount: 3,
-		LastUsed:   time.Now(),
-	})
-	closeTestStore(t, store)
+	addFilteredPackages(t, config)
 
 	output := captureStdout(t, func() {
 		if err := checkPackages(checkCommandForTest(t, "--search", "jq", "--format", "json"), nil); err != nil {
 			t.Fatalf("checkPackages with search failed: %v", err)
 		}
 	})
+	assertPackageSearchOutput(t, output)
+}
+
+func assertPackageSearchOutput(t *testing.T, output string) {
+	t.Helper()
 
 	var packages []core.PackageInfo
 	if err := json.Unmarshal([]byte(output), &packages); err != nil {
@@ -694,7 +771,9 @@ func TestUninstallProjectRemovesSupportedShellEntries(t *testing.T) {
 
 func TestShellHomeDirs(t *testing.T) {
 	distinct := shellHomeDirs("/active-home", "/legacy-home")
-	if len(distinct) != 2 || distinct[1] != "/legacy-home" {
+	hasTwoHomes := len(distinct) == 2
+	hasLegacyHome := hasTwoHomes && distinct[1] == "/legacy-home"
+	if !hasLegacyHome {
 		t.Fatalf("Distinct homes = %v", distinct)
 	}
 	duplicate := shellHomeDirs("/active-home", "/active-home")
@@ -877,24 +956,7 @@ func assertShellFixtures(t *testing.T, files []shellConfigFixture) {
 }
 
 func TestSetupProjectReturnsSaveError(t *testing.T) {
-	homeDir := t.TempDir()
-	t.Setenv("HOME", homeDir)
-
-	config := core.DefaultConfig()
-	config.Monitoring.EnabledTools = []string{}
-	config.Monitoring.Filesystem.WatchPaths = map[string][]string{}
-	config.Monitoring.Process.AutoInstallWrappers = false
-
-	configPath := filepath.Join(homeDir, ".config", "diu", "config.json")
-	if err := config.SaveTo(configPath); err != nil {
-		t.Fatalf("Failed to save test config: %v", err)
-	}
-	if err := os.Chmod(configPath, 0400); err != nil {
-		t.Fatalf("Failed to make config read-only: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = os.Chmod(configPath, core.PrivateFileMode)
-	})
+	prepareReadOnlySetupConfig(t)
 
 	err := setupProject(&command{}, nil)
 	if err == nil {
@@ -905,27 +967,41 @@ func TestSetupProjectReturnsSaveError(t *testing.T) {
 	}
 }
 
+func prepareReadOnlySetupConfig(t *testing.T) {
+	t.Helper()
+
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+	configPath := filepath.Join(homeDir, ".config", "diu", "config.json")
+	saveWrapperlessConfig(t, configPath)
+	makeConfigReadOnly(t, configPath)
+}
+
+func saveWrapperlessConfig(t *testing.T, path string) {
+	t.Helper()
+
+	config := core.DefaultConfig()
+	config.Monitoring.EnabledTools = []string{}
+	config.Monitoring.Filesystem.WatchPaths = map[string][]string{}
+	config.Monitoring.Process.AutoInstallWrappers = false
+	if err := config.SaveTo(path); err != nil {
+		t.Fatalf("Failed to save test config: %v", err)
+	}
+}
+
+func makeConfigReadOnly(t *testing.T, path string) {
+	t.Helper()
+
+	if err := os.Chmod(path, 0400); err != nil {
+		t.Fatalf("Failed to make config read-only: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chmod(path, core.PrivateFileMode)
+	})
+}
+
 func TestScanPackages(t *testing.T) {
-	config := setupTestHomeConfig(t)
-	t.Setenv("PATH", t.TempDir())
-
-	// Create a fake binary directory
-	binDir := filepath.Join(t.TempDir(), "bin")
-	if err := os.MkdirAll(binDir, core.OwnerDirectoryMode); err != nil {
-		t.Fatalf("Failed to create bin dir: %v", err)
-	}
-
-	// Create a fake executable
-	writeExecutableForTest(t, filepath.Join(binDir, "jq"), "#!/bin/bash\nexit 0\n")
-
-	config.Monitoring.Filesystem.WatchPaths = map[string][]string{
-		core.ToolHomebrew: {binDir},
-	}
-	config.Monitoring.EnabledTools = []string{core.ToolHomebrew}
-	config.Tools.Go.GoBin = filepath.Join(t.TempDir(), "missing")
-	if err := config.Save(); err != nil {
-		t.Fatalf("Failed to save config: %v", err)
-	}
+	prepareScanPackagesConfig(t)
 
 	output := captureStderr(t, func() {
 		if err := scanPackages(&command{}, nil); err != nil {
@@ -935,6 +1011,38 @@ func TestScanPackages(t *testing.T) {
 
 	if !strings.Contains(output, "packages scanned") {
 		t.Fatalf("Expected 'packages scanned' message, got: %q", output)
+	}
+}
+
+func prepareScanPackagesConfig(t *testing.T) {
+	t.Helper()
+
+	config := setupTestHomeConfig(t)
+	t.Setenv("PATH", t.TempDir())
+	binDir := filepath.Join(t.TempDir(), "bin")
+	createBinDir(t, binDir)
+	writeExecutableForTest(t, filepath.Join(binDir, "jq"), "#!/bin/bash\nexit 0\n")
+	saveScanPackagesConfig(t, config, binDir)
+}
+
+func createBinDir(t *testing.T, binDir string) {
+	t.Helper()
+
+	if err := os.MkdirAll(binDir, core.OwnerDirectoryMode); err != nil {
+		t.Fatalf("Failed to create bin dir: %v", err)
+	}
+}
+
+func saveScanPackagesConfig(t *testing.T, config *core.Config, binDir string) {
+	t.Helper()
+
+	config.Monitoring.Filesystem.WatchPaths = map[string][]string{
+		core.ToolHomebrew: {binDir},
+	}
+	config.Monitoring.EnabledTools = []string{core.ToolHomebrew}
+	config.Tools.Go.GoBin = filepath.Join(t.TempDir(), "missing")
+	if err := config.Save(); err != nil {
+		t.Fatalf("Failed to save config: %v", err)
 	}
 }
 
@@ -962,37 +1070,7 @@ func TestBackup(t *testing.T) {
 }
 
 func TestCleanup(t *testing.T) {
-	setupTestHomeConfig(t)
-	config, _ := core.LoadConfig("")
-
-	// Set retention to 1 day for this test
-	config.Storage.RetentionDays = 1
-	if err := config.Save(); err != nil {
-		t.Fatalf("config.Save() failed: %v", err)
-	}
-
-	store, _ := storage.NewJSONStorage(config)
-
-	// Add old execution (2 days ago - should be removed)
-	if err := store.AddExecution(&core.ExecutionRecord{
-		Tool:      core.ToolNPM,
-		Command:   "npm install old",
-		Timestamp: time.Now().Add(-48 * time.Hour),
-	}); err != nil {
-		t.Fatalf("AddExecution failed: %v", err)
-	}
-
-	// Add recent execution (should be kept)
-	if err := store.AddExecution(&core.ExecutionRecord{
-		Tool:      core.ToolNPM,
-		Command:   "npm install current",
-		Timestamp: time.Now(),
-	}); err != nil {
-		t.Fatalf("AddExecution failed: %v", err)
-	}
-	if err := store.Close(); err != nil {
-		t.Fatalf("store.Close() failed: %v", err)
-	}
+	config := prepareCleanupConfig(t)
 
 	output := captureStderr(t, func() {
 		if err := cleanup(&command{}, nil); err != nil {
@@ -1003,9 +1081,50 @@ func TestCleanup(t *testing.T) {
 	if !strings.Contains(output, "Cleanup completed") {
 		t.Fatalf("Expected 'Cleanup completed', got: %q", output)
 	}
+	assertCleanupKeptRecentExecution(t, config)
+}
 
-	// Verify old execution was removed
-	store, _ = storage.NewJSONStorage(config)
+func prepareCleanupConfig(t *testing.T) *core.Config {
+	t.Helper()
+
+	setupTestHomeConfig(t)
+	config, _ := core.LoadConfig("")
+	config.Storage.RetentionDays = 1
+	if err := config.Save(); err != nil {
+		t.Fatalf("config.Save() failed: %v", err)
+	}
+	addCleanupExecutions(t, config)
+	return config
+}
+
+func addCleanupExecutions(t *testing.T, config *core.Config) {
+	t.Helper()
+
+	store, _ := storage.NewJSONStorage(config)
+	addCleanupExecution(t, store, "npm install old", time.Now().Add(-48*time.Hour))
+	addCleanupExecution(t, store, "npm install current", time.Now())
+	if err := store.Close(); err != nil {
+		t.Fatalf("store.Close() failed: %v", err)
+	}
+}
+
+func addCleanupExecution(t *testing.T, store storage.Storage, command string, timestamp time.Time) {
+	t.Helper()
+
+	err := store.AddExecution(&core.ExecutionRecord{
+		Tool:      core.ToolNPM,
+		Command:   command,
+		Timestamp: timestamp,
+	})
+	if err != nil {
+		t.Fatalf("AddExecution failed: %v", err)
+	}
+}
+
+func assertCleanupKeptRecentExecution(t *testing.T, config *core.Config) {
+	t.Helper()
+
+	store, _ := storage.NewJSONStorage(config)
 	defer func() {
 		if err := store.Close(); err != nil {
 			t.Logf("store.Close() failed: %v", err)
@@ -1067,49 +1186,63 @@ func TestGetConfigAllKeys(t *testing.T) {
 func TestSetConfigAllKeys(t *testing.T) {
 	setupTestHomeConfig(t)
 
-	tests := []struct {
-		key   string
-		value string
-	}{
-		{"storage.retention_days", "7"},
-		{"storage.max_executions", "500"},
-		{"storage.max_storage_bytes", "1073741824"},
-		{"storage.max_backups", "5"},
-		{"daemon.pid_file", "/tmp/diu.pid"},
-		{"daemon.socket_path", "/tmp/diu.sock"},
-		{"api.enabled", "false"},
-		{"api.port", "9090"},
-		{"monitoring.enabled_tools", "homebrew,npm"},
-	}
-
-	for _, tt := range tests {
+	for _, tt := range setConfigCases {
 		t.Run(tt.key+"="+tt.value, func(t *testing.T) {
-			// Set the value
-			output := captureStderr(t, func() {
-				if err := setConfig(&command{}, []string{tt.key, tt.value}); err != nil {
-					t.Fatalf("setConfig(%s, %s) failed: %v", tt.key, tt.value, err)
-				}
-			})
-			if !strings.Contains(output, "Configuration updated") {
-				t.Fatalf("Expected 'Configuration updated', got: %q", output)
-			}
-
-			// Verify it was set by getting it back
-			getOutput := captureStdout(t, func() {
-				if err := getConfig(&command{}, []string{tt.key}); err != nil {
-					t.Fatalf("getConfig(%s) failed: %v", tt.key, err)
-				}
-			})
-			// For monitoring.enabled_tools, the output has comma-space separator
-			var expectedOutput = tt.value
-			if tt.key == "monitoring.enabled_tools" {
-				expectedOutput = strings.ReplaceAll(tt.value, ",", ", ")
-			}
-			if strings.TrimSpace(getOutput) != expectedOutput {
-				t.Fatalf("getConfig(%s) = %q, want %q", tt.key, strings.TrimSpace(getOutput), expectedOutput)
-			}
+			assertSetConfigCase(t, tt)
 		})
 	}
+}
+
+type setConfigCase struct {
+	key   string
+	value string
+}
+
+var setConfigCases = []setConfigCase{
+	{"storage.retention_days", "7"},
+	{"storage.max_executions", "500"},
+	{"storage.max_storage_bytes", "1073741824"},
+	{"storage.max_backups", "5"},
+	{"daemon.pid_file", "/tmp/diu.pid"},
+	{"daemon.socket_path", "/tmp/diu.sock"},
+	{"api.enabled", "false"},
+	{"api.port", "9090"},
+	{"monitoring.enabled_tools", "homebrew,npm"},
+}
+
+func assertSetConfigCase(t *testing.T, test setConfigCase) {
+	t.Helper()
+
+	output := captureStderr(t, func() {
+		if err := setConfig(&command{}, []string{test.key, test.value}); err != nil {
+			t.Fatalf("setConfig(%s, %s) failed: %v", test.key, test.value, err)
+		}
+	})
+	if !strings.Contains(output, "Configuration updated") {
+		t.Fatalf("Expected 'Configuration updated', got: %q", output)
+	}
+	assertConfigValue(t, test)
+}
+
+func assertConfigValue(t *testing.T, test setConfigCase) {
+	t.Helper()
+
+	getOutput := captureStdout(t, func() {
+		if err := getConfig(&command{}, []string{test.key}); err != nil {
+			t.Fatalf("getConfig(%s) failed: %v", test.key, err)
+		}
+	})
+	expectedOutput := expectedConfigOutput(test)
+	if strings.TrimSpace(getOutput) != expectedOutput {
+		t.Fatalf("getConfig(%s) = %q, want %q", test.key, strings.TrimSpace(getOutput), expectedOutput)
+	}
+}
+
+func expectedConfigOutput(test setConfigCase) string {
+	if test.key == "monitoring.enabled_tools" {
+		return strings.ReplaceAll(test.value, ",", ", ")
+	}
+	return test.value
 }
 
 // =============================================================================
@@ -1138,11 +1271,15 @@ func TestFormatLastUsed(t *testing.T) {
 
 func TestValidateExecutablePath(t *testing.T) {
 	tempDir := t.TempDir()
+	assertValidExecutablePath(t, tempDir)
+	assertInvalidExecutablePaths(t, tempDir)
+}
 
-	// Test valid executable
+func assertValidExecutablePath(t *testing.T, tempDir string) {
+	t.Helper()
+
 	execPath := filepath.Join(tempDir, "tool")
 	writeExecutableForTest(t, execPath, "#!/bin/bash\necho test\n")
-
 	validated, err := validateExecutablePath(execPath)
 	if err != nil {
 		t.Fatalf("validateExecutablePath(%s) failed: %v", execPath, err)
@@ -1150,38 +1287,31 @@ func TestValidateExecutablePath(t *testing.T) {
 	if validated != execPath {
 		t.Fatalf("validateExecutablePath() = %s, want %s", validated, execPath)
 	}
+}
 
-	// Test empty path
-	if _, err := validateExecutablePath(""); err == nil {
-		t.Fatal("Expected error for empty path")
-	}
+func assertInvalidExecutablePaths(t *testing.T, tempDir string) {
+	t.Helper()
 
-	// Test non-absolute path
-	if _, err := validateExecutablePath("relative/tool"); err == nil {
-		t.Fatal("Expected error for relative path")
-	}
-
-	// Test directory
+	assertValidateExecutablePathFails(t, "")
+	assertValidateExecutablePathFails(t, "relative/tool")
 	dirPath := filepath.Join(tempDir, "dir")
 	if err := os.MkdirAll(dirPath, 0o755); err != nil {
 		t.Fatalf("Failed to create directory: %v", err)
 	}
-	if _, err := validateExecutablePath(dirPath); err == nil {
-		t.Fatal("Expected error for directory")
-	}
-
-	// Test non-executable file
+	assertValidateExecutablePathFails(t, dirPath)
 	nonExec := filepath.Join(tempDir, "notes.txt")
 	if err := os.WriteFile(nonExec, []byte("not executable"), 0o644); err != nil {
 		t.Fatalf("Failed to create non-executable file: %v", err)
 	}
-	if _, err := validateExecutablePath(nonExec); err == nil {
-		t.Fatal("Expected error for non-executable file")
-	}
+	assertValidateExecutablePathFails(t, nonExec)
+	assertValidateExecutablePathFails(t, "/nonexistent/path/to/tool")
+}
 
-	// Test non-existent file
-	if _, err := validateExecutablePath("/nonexistent/path/to/tool"); err == nil {
-		t.Fatal("Expected error for non-existent file")
+func assertValidateExecutablePathFails(t *testing.T, path string) {
+	t.Helper()
+
+	if _, err := validateExecutablePath(path); err == nil {
+		t.Fatalf("Expected error for %q", path)
 	}
 }
 
@@ -1327,7 +1457,8 @@ func TestStartDaemonForegroundReportsInvalidStorage(t *testing.T) {
 	defer restore()
 
 	err := startDaemonWithConfig(config)
-	if err == nil || !strings.Contains(err.Error(), "failed to create daemon") {
+	hasCreateDaemonError := err != nil && strings.Contains(err.Error(), "failed to create daemon")
+	if !hasCreateDaemonError {
 		t.Fatalf("startDaemonWithConfig error = %v", err)
 	}
 }
@@ -1335,6 +1466,18 @@ func TestStartDaemonForegroundReportsInvalidStorage(t *testing.T) {
 func TestCommandsReportInvalidConfig(t *testing.T) {
 	t.Setenv("DIU_ACTIVITY", "never")
 	t.Setenv("DIU_COLOR", "never")
+	writeInvalidConfigForCommands(t)
+
+	for _, test := range invalidConfigCommandCases {
+		t.Run(test.name, func(t *testing.T) {
+			assertCommandReportsInvalidConfig(t, test)
+		})
+	}
+}
+
+func writeInvalidConfigForCommands(t *testing.T) {
+	t.Helper()
+
 	homeDir := t.TempDir()
 	t.Setenv("HOME", homeDir)
 	configDir := filepath.Join(homeDir, ".config", "diu")
@@ -1344,37 +1487,41 @@ func TestCommandsReportInvalidConfig(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(configDir, "config.json"), []byte("{"), core.PrivateFileMode); err != nil {
 		t.Fatalf("WriteFile failed: %v", err)
 	}
+}
 
-	tests := []struct {
-		name string
-		run  func() error
-	}{
-		{name: "daemon start", run: func() error { return startDaemon(&command{}, nil) }},
-		{name: "daemon stop", run: func() error { return stopDaemon(&command{}, nil) }},
-		{name: "daemon restart", run: func() error { return restartDaemon(&command{}, nil) }},
-		{name: "daemon status", run: func() error { return daemonStatus(&command{}, nil) }},
-		{name: "query", run: func() error { return queryExecutions(queryCommandForTest(t), nil) }},
-		{name: "stats", run: func() error { return showStats(statsCommandForTest(t), nil) }},
-		{name: "packages", run: func() error { return listPackages(packagesCommandForTest(t), nil) }},
-		{name: "check", run: func() error { return checkPackages(checkCommandForTest(t), nil) }},
-		{name: "manage", run: func() error { return managePackages(manageCommandForTest(t), nil) }},
-		{name: "config get", run: func() error { return getConfig(&command{}, []string{"api.port"}) }},
-		{name: "config set", run: func() error { return setConfig(&command{}, []string{"api.port", "8081"}) }},
-		{name: "config list", run: func() error { return listConfig(&command{}, nil) }},
-		{name: "setup", run: func() error { return setupProject(&command{}, nil) }},
-		{name: "uninstall", run: func() error { return uninstallProject(&command{}, nil) }},
-		{name: "scan", run: func() error { return scanPackages(&command{}, nil) }},
-		{name: "cleanup", run: func() error { return cleanup(&command{}, nil) }},
-		{name: "backup", run: func() error { return backup(&command{}, nil) }},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			var err error
-			captureStderr(t, func() { err = test.run() })
-			if err == nil || !strings.Contains(err.Error(), "failed to load config") {
-				t.Fatalf("command error = %v", err)
-			}
-		})
+type invalidConfigCommandCase struct {
+	name string
+	run  func(*testing.T) error
+}
+
+var invalidConfigCommandCases = []invalidConfigCommandCase{
+	{name: "daemon start", run: func(t *testing.T) error { return startDaemon(&command{}, nil) }},
+	{name: "daemon stop", run: func(t *testing.T) error { return stopDaemon(&command{}, nil) }},
+	{name: "daemon restart", run: func(t *testing.T) error { return restartDaemon(&command{}, nil) }},
+	{name: "daemon status", run: func(t *testing.T) error { return daemonStatus(&command{}, nil) }},
+	{name: "query", run: func(t *testing.T) error { return queryExecutions(queryCommandForTest(t), nil) }},
+	{name: "stats", run: func(t *testing.T) error { return showStats(statsCommandForTest(t), nil) }},
+	{name: "packages", run: func(t *testing.T) error { return listPackages(packagesCommandForTest(t), nil) }},
+	{name: "check", run: func(t *testing.T) error { return checkPackages(checkCommandForTest(t), nil) }},
+	{name: "manage", run: func(t *testing.T) error { return managePackages(manageCommandForTest(t), nil) }},
+	{name: "config get", run: func(t *testing.T) error { return getConfig(&command{}, []string{"api.port"}) }},
+	{name: "config set", run: func(t *testing.T) error { return setConfig(&command{}, []string{"api.port", "8081"}) }},
+	{name: "config list", run: func(t *testing.T) error { return listConfig(&command{}, nil) }},
+	{name: "setup", run: func(t *testing.T) error { return setupProject(&command{}, nil) }},
+	{name: "uninstall", run: func(t *testing.T) error { return uninstallProject(&command{}, nil) }},
+	{name: "scan", run: func(t *testing.T) error { return scanPackages(&command{}, nil) }},
+	{name: "cleanup", run: func(t *testing.T) error { return cleanup(&command{}, nil) }},
+	{name: "backup", run: func(t *testing.T) error { return backup(&command{}, nil) }},
+}
+
+func assertCommandReportsInvalidConfig(t *testing.T, test invalidConfigCommandCase) {
+	t.Helper()
+
+	var err error
+	captureStderr(t, func() { err = test.run(t) })
+	hasConfigError := err != nil && strings.Contains(err.Error(), "failed to load config")
+	if !hasConfigError {
+		t.Fatalf("command error = %v", err)
 	}
 }
 
@@ -1400,14 +1547,25 @@ func TestStopDaemonNotRunning(t *testing.T) {
 
 func TestDaemonStatusWithMockRunning(t *testing.T) {
 	setupTestHomeConfig(t)
-
-	// Create a mock checker that simulates daemon running
 	mock := MockDaemonChecker{isRunning: true}
-
 	restore := SetDaemonChecker(mock)
 	defer restore()
+	writeDaemonStatusPIDFile(t)
 
-	// Also need to set up a PID file for the status to read
+	output := captureStdout(t, func() {
+		if err := daemonStatus(&command{}, nil); err != nil {
+			t.Fatalf("daemonStatus failed: %v", err)
+		}
+	})
+
+	if !strings.Contains(output, "DIU daemon is running") {
+		t.Fatalf("Expected 'is running' message, got: %q", output)
+	}
+}
+
+func writeDaemonStatusPIDFile(t *testing.T) {
+	t.Helper()
+
 	config, _ := core.LoadConfig("")
 	pidFile := config.Daemon.PIDFile
 	if err := os.MkdirAll(filepath.Dir(pidFile), 0o755); err != nil {
@@ -1423,16 +1581,6 @@ func TestDaemonStatusWithMockRunning(t *testing.T) {
 			t.Logf("Failed to remove PID file: %v", removeErr)
 		}
 	}()
-
-	output := captureStdout(t, func() {
-		if err := daemonStatus(&command{}, nil); err != nil {
-			t.Fatalf("daemonStatus failed: %v", err)
-		}
-	})
-
-	if !strings.Contains(output, "DIU daemon is running") {
-		t.Fatalf("Expected 'is running' message, got: %q", output)
-	}
 }
 
 // =============================================================================
@@ -1440,23 +1588,20 @@ func TestDaemonStatusWithMockRunning(t *testing.T) {
 // =============================================================================
 
 func TestCoreVersion(t *testing.T) {
-	// Verify coreVersion returns either the build version or the core package version
 	version := coreVersion()
 	if version == "" {
 		t.Fatal("coreVersion returned empty")
 	}
-	// Should be either the build version or the default core version.
-	expectedVersions := []string{core.Version, version}
-	found := false
-	for _, v := range expectedVersions {
-		if version == v {
-			found = true
-			break
-		}
-	}
-	if !found && version != "dev" {
+	if !isAllowedCoreVersion(version) {
 		t.Fatalf("coreVersion returned unexpected value: %q", version)
 	}
+}
+
+func isAllowedCoreVersion(version string) bool {
+	if version == core.Version {
+		return true
+	}
+	return version == "dev"
 }
 
 func TestVersionStringConsistency(t *testing.T) {
@@ -1686,12 +1831,7 @@ func TestStopDaemonWithConfigInvalidPID(t *testing.T) {
 	restoreStop := stubDaemonStopRequest(requestErr)
 	defer restoreStop()
 
-	if err := config.EnsureDirectories(); err != nil {
-		t.Fatalf("failed to ensure directories: %v", err)
-	}
-	if err := os.WriteFile(config.Daemon.PIDFile, []byte("not-a-pid"), core.PrivateFileMode); err != nil {
-		t.Fatalf("failed to write PID file: %v", err)
-	}
+	writeInvalidDaemonPIDFile(t, config)
 
 	err := stopDaemonWithConfig(config)
 	if err == nil {
@@ -1702,6 +1842,17 @@ func TestStopDaemonWithConfigInvalidPID(t *testing.T) {
 	}
 }
 
+func writeInvalidDaemonPIDFile(t *testing.T, config *core.Config) {
+	t.Helper()
+
+	if err := config.EnsureDirectories(); err != nil {
+		t.Fatalf("failed to ensure directories: %v", err)
+	}
+	if err := os.WriteFile(config.Daemon.PIDFile, []byte("not-a-pid"), core.PrivateFileMode); err != nil {
+		t.Fatalf("failed to write PID file: %v", err)
+	}
+}
+
 func TestStopDaemonWithConfigSignalError(t *testing.T) {
 	config := setupTestHomeConfig(t)
 	restore := SetDaemonChecker(MockDaemonChecker{isRunning: true})
@@ -1709,13 +1860,7 @@ func TestStopDaemonWithConfigSignalError(t *testing.T) {
 	requestErr := errors.New("socket unavailable")
 	restoreStop := stubDaemonStopRequest(requestErr)
 	defer restoreStop()
-
-	if err := config.EnsureDirectories(); err != nil {
-		t.Fatalf("failed to ensure directories: %v", err)
-	}
-	if err := os.WriteFile(config.Daemon.PIDFile, []byte("999999999"), core.PrivateFileMode); err != nil {
-		t.Fatalf("failed to write PID file: %v", err)
-	}
+	writeDaemonPIDFile(t, config, "999999999")
 
 	err := stopDaemonWithConfig(config)
 	if err == nil {
@@ -1723,6 +1868,17 @@ func TestStopDaemonWithConfigSignalError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "failed to stop daemon") {
 		t.Fatalf("expected signal error, got %v", err)
+	}
+}
+
+func writeDaemonPIDFile(t *testing.T, config *core.Config, pid string) {
+	t.Helper()
+
+	if err := config.EnsureDirectories(); err != nil {
+		t.Fatalf("failed to ensure directories: %v", err)
+	}
+	if err := os.WriteFile(config.Daemon.PIDFile, []byte(pid), core.PrivateFileMode); err != nil {
+		t.Fatalf("failed to write PID file: %v", err)
 	}
 }
 
@@ -1858,50 +2014,72 @@ func TestPackageBrowserQuitsCleanly(t *testing.T) {
 	var output string
 	withStdin(t, "q\n", func() {
 		output = captureStderr(t, func() {
-			runErr = runPackageBrowser(false)
+			allowUninstall := false
+			runErr = runPackageBrowser(allowUninstall)
 		})
 	})
 	if runErr != nil {
 		t.Fatalf("runPackageBrowser failed: %v", runErr)
 	}
-	if !strings.Contains(output, "DIU Packages") || !strings.Contains(output, "q quit") {
+	hasTitle := strings.Contains(output, "DIU Packages")
+	hasQuitAction := strings.Contains(output, "q quit")
+	hasBrowserOutput := hasTitle && hasQuitAction
+	if !hasBrowserOutput {
 		t.Fatalf("browser output = %q", output)
 	}
 }
 
 func TestPackageBrowserNavigatesSearchesAndShowsDetails(t *testing.T) {
 	t.Setenv("DIU_COLOR", "never")
+	addBrowserNavigationPackages(t)
+
+	input := "n\np\n/\ntarget\n1\nq\n"
+	allowUninstall := false
+	output := runPackageBrowserForTest(t, input, allowUninstall)
+	for _, text := range []string{"Search: target", "target-package", "Version: 1.2.3", "Path: /opt/target"} {
+		if !strings.Contains(output, text) {
+			t.Fatalf("browser output = %q, want %q", output, text)
+		}
+	}
+}
+
+func addBrowserNavigationPackages(t *testing.T) {
+	t.Helper()
+
 	config := setupTestHomeConfig(t)
 	store := openTestStore(t, config)
 	for index := 0; index < defaultPageSize; index++ {
 		name := fmt.Sprintf("package-%02d", index)
 		updateTestPackage(t, store, &core.PackageInfo{Name: name, Tool: core.ToolNPM})
 	}
-	updateTestPackage(t, store, &core.PackageInfo{
+	updateTestPackage(t, store, browserTargetPackage())
+	closeTestStore(t, store)
+}
+
+func browserTargetPackage() *core.PackageInfo {
+	return &core.PackageInfo{
 		Name:       "target-package",
 		Tool:       core.ToolNPM,
 		Version:    "1.2.3",
 		Path:       "/opt/target",
 		UsageCount: 4,
-	})
-	closeTestStore(t, store)
+	}
+}
 
-	input := "n\np\n/\ntarget\n1\nq\n"
+func runPackageBrowserForTest(t *testing.T, input string, allowUninstall bool) string {
+	t.Helper()
+
 	var runErr error
 	var output string
 	withStdin(t, input, func() {
 		output = captureStderr(t, func() {
-			runErr = runPackageBrowser(false)
+			runErr = runPackageBrowser(allowUninstall)
 		})
 	})
 	if runErr != nil {
 		t.Fatalf("runPackageBrowser failed: %v", runErr)
 	}
-	for _, text := range []string{"Search: target", "target-package", "Version: 1.2.3", "Path: /opt/target"} {
-		if !strings.Contains(output, text) {
-			t.Fatalf("browser output = %q, want %q", output, text)
-		}
-	}
+	return output
 }
 
 func TestPackageBrowserUninstallsConfirmedPackage(t *testing.T) {
@@ -1912,21 +2090,18 @@ func TestPackageBrowserUninstallsConfirmedPackage(t *testing.T) {
 	updateTestPackage(t, store, &core.PackageInfo{Name: "typescript", Tool: core.ToolNPM})
 	closeTestStore(t, store)
 
-	var runErr error
-	var output string
-	withStdin(t, "u\n1\ntypescript\nq\n", func() {
-		output = captureStderr(t, func() {
-			runErr = runPackageBrowser(true)
-		})
-	})
-	if runErr != nil {
-		t.Fatalf("runPackageBrowser failed: %v", runErr)
-	}
+	allowUninstall := true
+	output := runPackageBrowserForTest(t, "u\n1\ntypescript\nq\n", allowUninstall)
 	if !strings.Contains(output, "[ok] typescript uninstalled") {
 		t.Fatalf("browser output = %q", output)
 	}
+	assertNoNPMPackagesTracked(t, config)
+}
 
-	store = openTestStore(t, config)
+func assertNoNPMPackagesTracked(t *testing.T, config *core.Config) {
+	t.Helper()
+
+	store := openTestStore(t, config)
 	defer closeTestStore(t, store)
 	packages, err := store.GetPackages(core.ToolNPM)
 	if err != nil {
@@ -1949,7 +2124,8 @@ func TestPackageBrowserReportsInvalidSelectionsAndCancellation(t *testing.T) {
 	var output string
 	withStdin(t, input, func() {
 		output = captureStderr(t, func() {
-			runErr = runPackageBrowser(true)
+			allowUninstall := true
+			runErr = runPackageBrowser(allowUninstall)
 		})
 	})
 	if runErr != nil {
@@ -1964,7 +2140,9 @@ func TestPackageBrowserReportsInvalidSelectionsAndCancellation(t *testing.T) {
 
 func TestUninstallByNameNotFound(t *testing.T) {
 	setupTestHomeConfig(t)
-	err := uninstallByName("nonexistent", "", true, false)
+	assumeYes := true
+	dryRun := false
+	err := uninstallByName("nonexistent", "", assumeYes, dryRun)
 	if err == nil {
 		t.Fatal("expected not-found error")
 	}
@@ -1975,7 +2153,9 @@ func TestUninstallByNameNotFound(t *testing.T) {
 
 func TestUninstallByNameRequiresYes(t *testing.T) {
 	setupTestHomeConfig(t)
-	err := uninstallByName("anything", "", false, false)
+	assumeYes := false
+	dryRun := false
+	err := uninstallByName("anything", "", assumeYes, dryRun)
 	if err == nil {
 		t.Fatal("expected --yes required error")
 	}
@@ -1991,7 +2171,9 @@ func TestUninstallByNameMultipleMatches(t *testing.T) {
 	updateTestPackage(t, store, &core.PackageInfo{Name: "lodash", Tool: core.ToolNPM})
 	closeTestStore(t, store)
 
-	err := uninstallByName("lodash", "", true, false)
+	assumeYes := true
+	dryRun := false
+	err := uninstallByName("lodash", "", assumeYes, dryRun)
 	if err == nil {
 		t.Fatal("expected multiple-matches error")
 	}
@@ -2007,7 +2189,9 @@ func TestUninstallByNameDryRun(t *testing.T) {
 	closeTestStore(t, store)
 
 	out := captureStdout(t, func() {
-		if err := uninstallByName("typescript", "", false, true); err != nil {
+		assumeYes := false
+		dryRun := true
+		if err := uninstallByName("typescript", "", assumeYes, dryRun); err != nil {
 			t.Fatalf("dry-run uninstall failed: %v", err)
 		}
 	})
@@ -2026,7 +2210,9 @@ func TestUninstallByNameDryRunPipUsesResolvedCommand(t *testing.T) {
 	closeTestStore(t, store)
 
 	out := captureStdout(t, func() {
-		if err := uninstallByName("ruff", "", false, true); err != nil {
+		assumeYes := false
+		dryRun := true
+		if err := uninstallByName("ruff", "", assumeYes, dryRun); err != nil {
 			t.Fatalf("dry-run uninstall failed: %v", err)
 		}
 	})
@@ -2043,7 +2229,9 @@ func TestUninstallByNameAssumeYesExecutes(t *testing.T) {
 	closeTestStore(t, store)
 
 	out := captureStderr(t, func() {
-		if err := uninstallByName("typescript", "", true, false); err != nil {
+		assumeYes := true
+		dryRun := false
+		if err := uninstallByName("typescript", "", assumeYes, dryRun); err != nil {
 			t.Fatalf("uninstall failed: %v", err)
 		}
 	})

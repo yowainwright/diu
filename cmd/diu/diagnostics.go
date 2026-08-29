@@ -176,8 +176,11 @@ func inspectDiagnosticStorage(path string) (diagnosticStorage, error) {
 
 func inspectDiagnosticFallback(dataDir string) (diagnosticFallback, error) {
 	last, detected, err := observability.ReadFallbackContention(dataDir)
-	if err != nil || !detected {
+	if err != nil {
 		return diagnosticFallback{}, err
+	}
+	if !detected {
+		return diagnosticFallback{}, nil
 	}
 	return diagnosticFallback{
 		ContentionDetected: true,
@@ -227,11 +230,14 @@ func writeDiagnosticOutput(config *core.Config, requestedPath string, report dia
 
 func removeIncompleteDiagnosticOutput(path string, writeErr error) error {
 	removeErr := os.Remove(path)
-	if removeErr != nil && !os.IsNotExist(removeErr) {
-		message := fmt.Errorf("failed to remove incomplete diagnostic report: %w", removeErr)
-		return errors.Join(writeErr, message)
+	if removeErr == nil {
+		return writeErr
 	}
-	return writeErr
+	if os.IsNotExist(removeErr) {
+		return writeErr
+	}
+	message := fmt.Errorf("failed to remove incomplete diagnostic report: %w", removeErr)
+	return errors.Join(writeErr, message)
 }
 
 func validateDiagnosticOutputPath(config *core.Config, requestedPath string) (string, error) {

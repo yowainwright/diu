@@ -103,7 +103,10 @@ func (o *Out) Stdin() io.Reader {
 }
 
 func (o *Out) CanPrompt() bool {
-	if os.Getenv("CI") != "" || os.Getenv("TERM") == "dumb" {
+	outsideCI := os.Getenv("CI") == ""
+	standardTerminal := os.Getenv("TERM") != "dumb"
+	canPromptInEnv := outsideCI && standardTerminal
+	if !canPromptInEnv {
 		return false
 	}
 	return IsTerminal(o.stdin) && IsTerminal(o.stderr)
@@ -114,14 +117,18 @@ func (o *Out) CanAnimate() bool {
 }
 
 func Paint(w io.Writer, tone Tone, text string) string {
-	if tone == Plain || !colorEnabled(w) {
+	plainTone := tone == Plain
+	useColor := colorEnabled(w)
+	returnPlain := plainTone || !useColor
+	if returnPlain {
 		return text
 	}
 	code := toneCode(tone)
 	if code == "" {
 		return text
 	}
-	return "\x1b[" + code + "m" + text + "\x1b[0m"
+	styled := "\x1b[" + code + "m" + text + "\x1b[0m"
+	return styled
 }
 
 func IsTerminal(value any) bool {
@@ -137,11 +144,18 @@ func IsTerminal(value any) bool {
 		return false
 	}
 	nullInfo, err := os.Stat(os.DevNull)
-	return err != nil || !os.SameFile(info, nullInfo)
+	if err != nil {
+		return true
+	}
+	isDevNull := os.SameFile(info, nullInfo)
+	return !isDevNull
 }
 
 func colorEnabled(w io.Writer) bool {
-	if os.Getenv("NO_COLOR") != "" || os.Getenv("TERM") == "dumb" {
+	colorAllowed := os.Getenv("NO_COLOR") == ""
+	standardTerminal := os.Getenv("TERM") != "dumb"
+	useColorInEnv := colorAllowed && standardTerminal
+	if !useColorInEnv {
 		return false
 	}
 	switch strings.ToLower(strings.TrimSpace(os.Getenv("DIU_COLOR"))) {
@@ -150,7 +164,9 @@ func colorEnabled(w io.Writer) bool {
 	case "never":
 		return false
 	}
-	return os.Getenv("CI") == "" && IsTerminal(w)
+	isCI := os.Getenv("CI") != ""
+	canUseColor := !isCI && IsTerminal(w)
+	return canUseColor
 }
 
 func animationEnabled(w io.Writer) bool {
@@ -163,7 +179,9 @@ func animationEnabled(w io.Writer) bool {
 	case "never":
 		return false
 	}
-	return os.Getenv("CI") == "" && IsTerminal(w)
+	isCI := os.Getenv("CI") != ""
+	canAnimate := !isCI && IsTerminal(w)
+	return canAnimate
 }
 
 func toneCode(tone Tone) string {

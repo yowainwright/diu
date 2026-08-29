@@ -11,6 +11,7 @@ type Monitor interface {
 	Initialize(config *core.Config) error
 	Start(ctx context.Context, eventChan chan<- *core.ExecutionRecord) error
 	Stop() error
+	//nolint:legibility // Existing monitor API uses this method name across implementations.
 	GetInstalledPackages() ([]*core.PackageInfo, error)
 	ParseCommand(cmd string, args []string) (*core.ExecutionRecord, error)
 }
@@ -63,7 +64,7 @@ func (r *MonitorRegistry) Get(name string) (Monitor, bool) {
 	return monitor, exists
 }
 
-func (r *MonitorRegistry) GetAll() []Monitor {
+func (r *MonitorRegistry) All() []Monitor {
 	var monitors []Monitor
 	for _, m := range r.monitors {
 		monitors = append(monitors, m)
@@ -106,11 +107,17 @@ func EnrichExecutionRecord(monitor Monitor, record *core.ExecutionRecord) {
 	if err != nil {
 		return
 	}
+	enrichPackages(record, parsed)
+	enrichMetadata(record, parsed)
+}
 
+func enrichPackages(record, parsed *core.ExecutionRecord) {
 	if len(record.PackagesAffected) == 0 {
 		record.PackagesAffected = parsed.PackagesAffected
 	}
+}
 
+func enrichMetadata(record, parsed *core.ExecutionRecord) {
 	if len(parsed.Metadata) == 0 {
 		return
 	}

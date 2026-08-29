@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/yowainwright/diu/internal/core"
-	"github.com/yowainwright/diu/internal/fn"
 	"github.com/yowainwright/diu/internal/safefs"
 )
 
@@ -50,12 +49,8 @@ func MarkFallbackContention(dataDir string) error {
 }
 
 func ensurePrivateMarker(path string) error {
-	info, err := safefs.Lstat(path)
-	if err == nil && !info.Mode().IsRegular() {
-		return fmt.Errorf("fallback contention marker is not a regular file: %s", path)
-	}
-	if err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("failed to inspect fallback contention marker: %w", err)
+	if err := validatePrivateMarker(path); err != nil {
+		return err
 	}
 	file, err := safefs.OpenFile(path, os.O_CREATE|os.O_WRONLY, core.PrivateFileMode)
 	if err != nil {
@@ -64,6 +59,24 @@ func ensurePrivateMarker(path string) error {
 	chmodErr := file.Chmod(core.PrivateFileMode)
 	closeErr := file.Close()
 	return errors.Join(chmodErr, closeErr)
+}
+
+func validatePrivateMarker(path string) error {
+	info, err := safefs.Lstat(path)
+	if err == nil {
+		return validateMarkerFileMode(path, info)
+	}
+	if !os.IsNotExist(err) {
+		return fmt.Errorf("failed to inspect fallback contention marker: %w", err)
+	}
+	return nil
+}
+
+func validateMarkerFileMode(path string, info os.FileInfo) error {
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("fallback contention marker is not a regular file: %s", path)
+	}
+	return nil
 }
 
 func ReadFallbackContention(dataDir string) (time.Time, bool, error) {
@@ -274,7 +287,10 @@ func joinLogTails(previous, current []byte) []byte {
 	if len(previous) == 0 {
 		return current
 	}
-	if len(current) == 0 || previous[len(previous)-1] == '\n' {
+	currentEmpty := len(current) == 0
+	previousComplete := previous[len(previous)-1] == '\n'
+	canAppend := currentEmpty || previousComplete
+	if canAppend {
 		return append(previous, current...)
 	}
 	withNewline := append(previous, '\n')
@@ -299,9 +315,11 @@ func trimPartialLine(data []byte) []byte {
 
 func RedactLines(lines []string, replacements map[string]string) []string {
 	keys := replacementKeys(replacements)
-	return fn.Map(lines, func(line string) string {
-		return redact(line, keys, replacements)
-	})
+	redacted := make([]string, len(lines))
+	for index, line := range lines {
+		redacted[index] = redact(line, keys, replacements)
+	}
+	return redacted
 }
 
 func RedactText(value string, replacements map[string]string) string {
@@ -309,9 +327,12 @@ func RedactText(value string, replacements map[string]string) string {
 }
 
 func replacementKeys(replacements map[string]string) []string {
-	keys := fn.Filter(fn.SortedKeys(replacements), func(key string) bool {
-		return key != ""
-	})
+	keys := make([]string, 0, len(replacements))
+	for key := range replacements {
+		if key != "" {
+			keys = append(keys, key)
+		}
+	}
 	slices.SortStableFunc(keys, func(a, b string) int {
 		return len(b) - len(a)
 	})

@@ -12,16 +12,38 @@ func TestTagScriptPublishesSVUNextVersion(t *testing.T) {
 	foreignIndex := newForeignGitIndex(t)
 	t.Setenv("GIT_INDEX_FILE", foreignIndex)
 	repo, origin := newReleaseRepo(t)
-	logPath := filepath.Join(t.TempDir(), "release.log")
+	run := newTagScriptRun(t, repo, origin)
 
-	output, err := runTagScript(t, repo, origin, logPath, "y\n")
+	output, err := runTagScript(t, run)
 	if err != nil {
 		t.Fatalf("tag script failed: %v\n%s", err, output)
 	}
+	assertRemoteTagExists(t, origin, "v0.2.0")
+	assertReleasePreviewLog(t, run.logPath)
+}
 
-	if !remoteTagExists(origin, "v0.2.0") {
-		t.Fatal("expected v0.2.0 to be pushed")
+func newTagScriptRun(t *testing.T, repo, origin string) tagScriptRun {
+	t.Helper()
+
+	return tagScriptRun{
+		repo:    repo,
+		origin:  origin,
+		logPath: filepath.Join(t.TempDir(), "release.log"),
+		input:   "y\n",
 	}
+}
+
+func assertRemoteTagExists(t *testing.T, origin, tag string) {
+	t.Helper()
+
+	if !remoteTagExists(origin, tag) {
+		t.Fatalf("expected %s to be pushed", tag)
+	}
+}
+
+func assertReleasePreviewLog(t *testing.T, logPath string) {
+	t.Helper()
+
 	if got := readFile(t, logPath); got != "run release-preview\n" {
 		t.Fatalf("release preview calls = %q", got)
 	}
@@ -48,8 +70,16 @@ func TestTagScriptRefusesDirtyWorktree(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	output, err := runTagScript(t, repo, origin, filepath.Join(t.TempDir(), "release.log"), "y\n")
-	if err == nil || !strings.Contains(output, "dirty worktree") {
+	logPath := filepath.Join(t.TempDir(), "release.log")
+	run := tagScriptRun{
+		repo:    repo,
+		origin:  origin,
+		logPath: logPath,
+		input:   "y\n",
+	}
+	output, err := runTagScript(t, run)
+	hasDirtyWorktreeError := err != nil && strings.Contains(output, "dirty worktree")
+	if !hasDirtyWorktreeError {
 		t.Fatalf("expected dirty worktree error, got %v\n%s", err, output)
 	}
 }
@@ -58,8 +88,16 @@ func TestTagScriptStopsWhenPreviewFails(t *testing.T) {
 	repo, origin := newReleaseRepo(t)
 	logPath := filepath.Join(t.TempDir(), "release.log")
 
-	output, err := runTagScript(t, repo, origin, logPath, "y\n", "PREVIEW_EXIT=23")
-	if err == nil || !strings.Contains(output, "release validation failed") {
+	run := tagScriptRun{
+		repo:     repo,
+		origin:   origin,
+		logPath:  logPath,
+		input:    "y\n",
+		extraEnv: []string{"PREVIEW_EXIT=23"},
+	}
+	output, err := runTagScript(t, run)
+	hasValidationError := err != nil && strings.Contains(output, "release validation failed")
+	if !hasValidationError {
 		t.Fatalf("expected validation error, got %v\n%s", err, output)
 	}
 	if remoteTagExists(origin, "v0.2.0") {
@@ -71,8 +109,15 @@ func TestTagScriptCancelsWithoutCreatingTag(t *testing.T) {
 	repo, origin := newReleaseRepo(t)
 	logPath := filepath.Join(t.TempDir(), "release.log")
 
-	output, err := runTagScript(t, repo, origin, logPath, "n\n")
-	if err != nil || !strings.Contains(output, "cancelled") {
+	run := tagScriptRun{
+		repo:    repo,
+		origin:  origin,
+		logPath: logPath,
+		input:   "n\n",
+	}
+	output, err := runTagScript(t, run)
+	cancelled := err == nil && strings.Contains(output, "cancelled")
+	if !cancelled {
 		t.Fatalf("expected cancellation, got %v\n%s", err, output)
 	}
 	if remoteTagExists(origin, "v0.2.0") {
@@ -84,8 +129,16 @@ func TestTagScriptRejectsInvalidSVUVersion(t *testing.T) {
 	repo, origin := newReleaseRepo(t)
 	logPath := filepath.Join(t.TempDir(), "release.log")
 
-	output, err := runTagScript(t, repo, origin, logPath, "y\n", "SVU_VERSION=latest")
-	if err == nil || !strings.Contains(output, "invalid semantic version") {
+	run := tagScriptRun{
+		repo:     repo,
+		origin:   origin,
+		logPath:  logPath,
+		input:    "y\n",
+		extraEnv: []string{"SVU_VERSION=latest"},
+	}
+	output, err := runTagScript(t, run)
+	hasVersionError := err != nil && strings.Contains(output, "invalid semantic version")
+	if !hasVersionError {
 		t.Fatalf("expected semantic version error, got %v\n%s", err, output)
 	}
 }
@@ -108,33 +161,35 @@ func newReleaseRepo(t *testing.T) (string, string) {
 	return repo, origin
 }
 
-func runTagScript(
-	t *testing.T,
-	repo string,
-	origin string,
-	logPath string,
-	input string,
-	extraEnv ...string,
-) (string, error) {
+type tagScriptRun struct {
+	repo     string
+	origin   string
+	logPath  string
+	input    string
+	extraEnv []string
+}
+
+func runTagScript(t *testing.T, run tagScriptRun) (string, error) {
 	t.Helper()
 
 	fakeBin := t.TempDir()
 	writeReleaseTools(t, fakeBin)
 	cmd := exec.Command("/bin/sh", filepath.Join(projectRoot(t), "ops", "scripts", "tag.sh"))
-	cmd.Dir = repo
-	cmd.Stdin = strings.NewReader(input)
-	cmd.Env = append(isolatedGitEnv(), releaseEnv(fakeBin, origin, logPath, extraEnv...)...)
+	cmd.Dir = run.repo
+	cmd.Stdin = strings.NewReader(run.input)
+	cmd.Env = append(isolatedGitEnv(), releaseEnv(fakeBin, run)...)
 	output, err := cmd.CombinedOutput()
 	return string(output), err
 }
 
-func releaseEnv(fakeBin, origin, logPath string, extraEnv ...string) []string {
+func releaseEnv(fakeBin string, run tagScriptRun) []string {
+	path := "PATH=" + fakeBin + string(os.PathListSeparator) + os.Getenv("PATH")
 	env := []string{
-		"PATH=" + fakeBin + string(os.PathListSeparator) + os.Getenv("PATH"),
-		"RELEASE_LOG=" + logPath,
-		"RELEASE_ORIGIN=" + origin,
+		path,
+		"RELEASE_LOG=" + run.logPath,
+		"RELEASE_ORIGIN=" + run.origin,
 	}
-	return append(env, extraEnv...)
+	return append(env, run.extraEnv...)
 }
 
 func writeReleaseFixture(t *testing.T, path, content string) {

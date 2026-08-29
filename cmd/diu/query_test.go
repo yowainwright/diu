@@ -32,7 +32,8 @@ func TestSummarizeExecutionsFallback(t *testing.T) {
 	totalMatches := summary.Total == 3
 	homebrewMatches := summary.ToolCounts[core.ToolHomebrew] == 2
 	npmMatches := summary.ToolCounts[core.ToolNPM] == 1
-	if !totalMatches || !homebrewMatches || !npmMatches {
+	summaryMatches := totalMatches && homebrewMatches && npmMatches
+	if !summaryMatches {
 		t.Fatalf("summary = %#v", summary)
 	}
 }

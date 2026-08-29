@@ -101,9 +101,16 @@ func fallbackContentionStatus(dataDir string) string {
 
 func displayLocalPath(path string) string {
 	homeDir, err := os.UserHomeDir()
-	if err != nil || homeDir == "" {
+	if err != nil {
 		return path
 	}
+	if homeDir == "" {
+		return path
+	}
+	return pathRelativeToHome(path, homeDir)
+}
+
+func pathRelativeToHome(path, homeDir string) string {
 	cleanPath := filepath.Clean(path)
 	cleanHome := filepath.Clean(homeDir)
 	if cleanPath == cleanHome {
@@ -111,7 +118,9 @@ func displayLocalPath(path string) string {
 	}
 	homePrefix := cleanHome + string(filepath.Separator)
 	if strings.HasPrefix(cleanPath, homePrefix) {
-		return "~" + string(filepath.Separator) + strings.TrimPrefix(cleanPath, homePrefix)
+		relativePath := strings.TrimPrefix(cleanPath, homePrefix)
+		displayPath := "~" + string(filepath.Separator) + relativePath
+		return displayPath
 	}
 	return path
 }

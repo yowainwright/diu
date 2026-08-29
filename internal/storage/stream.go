@@ -11,9 +11,9 @@ import (
 	"iter"
 	"os"
 	"slices"
+	"time"
 
 	"github.com/yowainwright/diu/internal/core"
-	"github.com/yowainwright/diu/internal/fn"
 	"github.com/yowainwright/diu/internal/safefs"
 )
 
@@ -46,7 +46,8 @@ var errStopStorageScan = errors.New("stop storage scan")
 
 func InspectJSONFile(path string) (JSONInspection, error) {
 	info, err := inspectJSONFile(path)
-	if err != nil || info == nil {
+	cannotInspect := err != nil || info == nil
+	if cannotInspect {
 		return JSONInspection{}, err
 	}
 
@@ -55,14 +56,25 @@ func InspectJSONFile(path string) (JSONInspection, error) {
 	if err := scanJSONStorage(path, visitor); err != nil {
 		return inspection, err
 	}
-	usesLog, err := storageUsesExecutionLog(path)
-	if err != nil || !usesLog {
-		return inspection, err
-	}
-	if err := inspectExecutionLog(path, &inspection, visitor.execution); err != nil {
+	if err := inspectExecutionLogIfUsed(path, &inspection, visitor.execution); err != nil {
 		return inspection, err
 	}
 	return inspection, nil
+}
+
+func inspectExecutionLogIfUsed(
+	path string,
+	inspection *JSONInspection,
+	visit func(core.ExecutionRecord) error,
+) error {
+	usesLog, err := storageUsesExecutionLog(path)
+	if err != nil {
+		return err
+	}
+	if !usesLog {
+		return nil
+	}
+	return inspectExecutionLog(path, inspection, visit)
 }
 
 func inspectExecutionLog(
@@ -78,10 +90,10 @@ func inspectExecutionLog(
 		return err
 	}
 	if logInfo == nil {
-		return fmt.Errorf("%w: %s", ErrExecutionLogNotFound, logPath)
+		return nil
 	}
 	inspection.SizeBytes += logInfo.Size()
-	return scanNDJSONExecutions(logPath, visit)
+	return scanReadableNDJSONExecutions(logPath, visit)
 }
 
 func inspectJSONFile(path string) (os.FileInfo, error) {
@@ -123,13 +135,10 @@ func inspectionVisitor(inspection *JSONInspection) jsonStorageVisitor {
 }
 
 func updateLatestExecution(inspection *JSONInspection, record core.ExecutionRecord) {
-	missingLatest := inspection.LatestExecution == nil
-	newer := false
-	if !missingLatest {
-		newer = record.Timestamp.After(inspection.LatestExecution.Timestamp)
-	}
-	if !missingLatest && !newer {
-		return
+	if inspection.LatestExecution != nil {
+		if !record.Timestamp.After(inspection.LatestExecution.Timestamp) {
+			return
+		}
 	}
 	latest := copyExecutionValue(record)
 	inspection.LatestExecution = &latest
@@ -141,11 +150,7 @@ func scanJSONStorage(path string, visitor jsonStorageVisitor) (err error) {
 		return err
 	}
 	defer func() {
-		closeErr := file.Close()
-		shouldReturnCloseErr := err == nil && closeErr != nil
-		if shouldReturnCloseErr {
-			err = fmt.Errorf("failed to close storage file: %w", closeErr)
-		}
+		err = safefs.CloseWithError(err, file, "failed to close storage file")
 	}()
 
 	decoder := json.NewDecoder(file)
@@ -258,6 +263,13 @@ func scanExecutions(decoder *json.Decoder, visit func(core.ExecutionRecord) erro
 	if !present {
 		return nil
 	}
+	if err := scanExecutionRecords(decoder, visit); err != nil {
+		return err
+	}
+	return expectJSONDelimiter(decoder, ']')
+}
+
+func scanExecutionRecords(decoder *json.Decoder, visit func(core.ExecutionRecord) error) error {
 	for decoder.More() {
 		var record core.ExecutionRecord
 		if err := decoder.Decode(&record); err != nil {
@@ -267,7 +279,7 @@ func scanExecutions(decoder *json.Decoder, visit func(core.ExecutionRecord) erro
 			return err
 		}
 	}
-	return expectJSONDelimiter(decoder, ']')
+	return nil
 }
 
 func scanPackages(decoder *json.Decoder, visit func(string, string, core.PackageInfo) error) error {
@@ -281,6 +293,13 @@ func scanPackages(decoder *json.Decoder, visit func(string, string, core.Package
 	if !present {
 		return nil
 	}
+	if err := scanPackageTools(decoder, visit); err != nil {
+		return err
+	}
+	return expectJSONDelimiter(decoder, '}')
+}
+
+func scanPackageTools(decoder *json.Decoder, visit func(string, string, core.PackageInfo) error) error {
 	for decoder.More() {
 		tool, err := nextJSONField(decoder)
 		if err != nil {
@@ -290,7 +309,7 @@ func scanPackages(decoder *json.Decoder, visit func(string, string, core.Package
 			return err
 		}
 	}
-	return expectJSONDelimiter(decoder, '}')
+	return nil
 }
 
 func scanToolPackages(decoder *json.Decoder, tool string, visit func(string, string, core.PackageInfo) error) error {
@@ -302,19 +321,26 @@ func scanToolPackages(decoder *json.Decoder, tool string, visit func(string, str
 		return nil
 	}
 	for decoder.More() {
-		name, err := nextJSONField(decoder)
-		if err != nil {
-			return err
-		}
-		var pkg core.PackageInfo
-		if err := decoder.Decode(&pkg); err != nil {
-			return fmt.Errorf("failed to decode package %s/%s: %w", tool, name, err)
-		}
-		if err := visit(tool, name, pkg); err != nil {
+		if err := scanToolPackage(decoder, tool, visit); err != nil {
 			return err
 		}
 	}
 	return expectJSONDelimiter(decoder, '}')
+}
+
+func scanToolPackage(decoder *json.Decoder, tool string, visit func(string, string, core.PackageInfo) error) error {
+	name, err := nextJSONField(decoder)
+	if err != nil {
+		return err
+	}
+	var pkg core.PackageInfo
+	if err := decoder.Decode(&pkg); err != nil {
+		return fmt.Errorf("failed to decode package %s/%s: %w", tool, name, err)
+	}
+	if err := visit(tool, name, pkg); err != nil {
+		return err
+	}
+	return nil
 }
 
 func scanMetadata(decoder *json.Decoder, visit func(core.StorageMetadata)) error {
@@ -431,8 +457,11 @@ func ensureStorageEOF(decoder *json.Decoder) error {
 
 func storageUsesExecutionLog(path string) (bool, error) {
 	format, found, err := readExecutionLogFormat(path)
-	if err != nil || !found {
+	if err != nil {
 		return false, err
+	}
+	if !found {
+		return false, nil
 	}
 	if format == "" {
 		return false, nil
@@ -449,29 +478,24 @@ func readExecutionLogFormat(path string) (format string, found bool, err error) 
 		return "", false, err
 	}
 	defer func() {
-		closeErr := file.Close()
-		shouldReturnCloseErr := err == nil && closeErr != nil
-		if shouldReturnCloseErr {
-			err = fmt.Errorf("failed to close storage file: %w", closeErr)
-		}
+		err = safefs.CloseWithError(err, file, "failed to close storage file")
 	}()
 	decoder := json.NewDecoder(file)
 	if err := expectJSONDelimiter(decoder, '{'); err != nil {
 		return "", false, fmt.Errorf("failed to decode storage object: %w", err)
 	}
+	return decodeExecutionLogFormat(decoder)
+}
+
+func decodeExecutionLogFormat(decoder *json.Decoder) (format string, found bool, err error) {
 	for decoder.More() {
 		field, err := nextJSONField(decoder)
 		if err != nil {
 			return "", false, err
 		}
 		if field == "execution_log_format" {
-			if err := decoder.Decode(&format); err != nil {
-				return "", false, fmt.Errorf("failed to decode execution log format: %w", err)
-			}
-			return format, true, nil
-		}
-		if field == "executions" {
-			return "", false, nil
+			format, err := decodeExecutionLogFormatValue(decoder)
+			return format, true, err
 		}
 		if err := skipJSONValue(decoder); err != nil {
 			return "", false, err
@@ -480,12 +504,22 @@ func readExecutionLogFormat(path string) (format string, found bool, err error) 
 	return "", false, nil
 }
 
+func decodeExecutionLogFormatValue(decoder *json.Decoder) (string, error) {
+	var format string
+	if err := decoder.Decode(&format); err != nil {
+		return "", fmt.Errorf("failed to decode execution log format: %w", err)
+	}
+	return format, nil
+}
+
 func scanNDJSONExecutions(path string, visit func(core.ExecutionRecord) error) (err error) {
-	return scanNDJSONExecutionsWithTail(path, visit, false)
+	tolerateTail := false
+	return scanNDJSONExecutionsWithTail(path, visit, tolerateTail)
 }
 
 func scanReadableNDJSONExecutions(path string, visit func(core.ExecutionRecord) error) (err error) {
-	return scanNDJSONExecutionsWithTail(path, visit, true)
+	tolerateTail := true
+	return scanNDJSONExecutionsWithTail(path, visit, tolerateTail)
 }
 
 func scanNDJSONExecutionsWithTail(
@@ -498,13 +532,13 @@ func scanNDJSONExecutionsWithTail(
 		return err
 	}
 	defer func() {
-		closeErr := file.Close()
-		shouldReturnCloseErr := err == nil && closeErr != nil
-		if shouldReturnCloseErr {
-			err = fmt.Errorf("failed to close execution log: %w", closeErr)
-		}
+		err = safefs.CloseWithError(err, file, "failed to close execution log")
 	}()
 	reader := bufio.NewReader(file)
+	return scanNDJSONReader(reader, allowPartialTail, visit)
+}
+
+func scanNDJSONReader(reader *bufio.Reader, allowPartialTail bool, visit func(core.ExecutionRecord) error) error {
 	for {
 		line, readErr := reader.ReadBytes('\n')
 		if len(line) > 0 {
@@ -528,24 +562,57 @@ func scanNDJSONExecutionLine(
 	allowPartialTail bool,
 	visit func(core.ExecutionRecord) error,
 ) error {
+	if shouldIgnorePartialTail(complete, allowPartialTail) {
+		return nil
+	}
 	line = bytes.TrimSpace(line)
 	if len(line) == 0 {
 		return nil
 	}
-	if !complete {
-		if allowPartialTail {
-			return nil
-		}
-		return fmt.Errorf("failed to decode execution log: %w", io.ErrUnexpectedEOF)
+	if err := rejectIncompleteNDJSONLine(complete, allowPartialTail); err != nil {
+		return err
 	}
-	var record core.ExecutionRecord
-	if err := json.Unmarshal(line, &record); err != nil {
-		return fmt.Errorf("failed to decode execution log: %w", err)
+	return decodeAndVisitNDJSONExecution(line, visit)
+}
+
+func shouldIgnorePartialTail(complete bool, allowPartialTail bool) bool {
+	if complete {
+		return false
 	}
+	return allowPartialTail
+}
+
+func decodeAndVisitNDJSONExecution(line []byte, visit func(core.ExecutionRecord) error) error {
+	record, err := decodeNDJSONExecution(line)
+	if err != nil {
+		return err
+	}
+	return visitExecutionRecord(record, visit)
+}
+
+func visitExecutionRecord(record core.ExecutionRecord, visit func(core.ExecutionRecord) error) error {
 	if visit == nil {
 		return nil
 	}
 	return visit(record)
+}
+
+func rejectIncompleteNDJSONLine(complete bool, allowPartialTail bool) error {
+	if complete {
+		return nil
+	}
+	if allowPartialTail {
+		return nil
+	}
+	return fmt.Errorf("failed to decode execution log: %w", io.ErrUnexpectedEOF)
+}
+
+func decodeNDJSONExecution(line []byte) (core.ExecutionRecord, error) {
+	var record core.ExecutionRecord
+	if err := json.Unmarshal(line, &record); err != nil {
+		return core.ExecutionRecord{}, fmt.Errorf("failed to decode execution log: %w", err)
+	}
+	return record, nil
 }
 
 func (j *JSONStorage) scanExecutionRecords(visit func(core.ExecutionRecord) error) error {
@@ -577,9 +644,13 @@ func (j *JSONStorage) executionSeq() iter.Seq2[core.ExecutionRecord, error] {
 			}
 			return nil
 		})
-		if err != nil && !errors.Is(err, errStopStorageScan) {
-			yield(core.ExecutionRecord{}, err)
+		if err == nil {
+			return
 		}
+		if errors.Is(err, errStopStorageScan) {
+			return
+		}
+		yield(core.ExecutionRecord{}, err)
 	}
 }
 
@@ -597,7 +668,7 @@ func (j *JSONStorage) calculateExecutionStatistics() (core.StorageStatistics, er
 		item := compactExecution{timestamp: record.Timestamp, tool: record.Tool}
 		updateCompactedStatistics(&statistics, dayCount, item)
 	}
-	statistics.MostActiveDay = fn.MaxValueKey(dayCount)
+	statistics.MostActiveDay = mostActiveDay(dayCount)
 	return statistics, nil
 }
 
@@ -641,7 +712,7 @@ func (j *JSONStorage) GetPackage(tool, name string) (*core.PackageInfo, error) {
 	var visitor jsonStorageVisitor
 	visitor.packageInfo = visit
 	err := scanJSONStorage(j.filepath, visitor)
-	if err != nil && !errors.Is(err, errStopStorageScan) {
+	if shouldReturnPackageScanError(err) {
 		return nil, err
 	}
 	if found == nil {
@@ -652,13 +723,23 @@ func (j *JSONStorage) GetPackage(tool, name string) (*core.PackageInfo, error) {
 
 func findPackageVisitor(tool, name string, found **core.PackageInfo) func(string, string, core.PackageInfo) error {
 	return func(packageTool, packageName string, pkg core.PackageInfo) error {
-		if packageTool != tool || packageName != name {
+		if packageTool != tool {
+			return nil
+		}
+		if packageName != name {
 			return nil
 		}
 		copy := copyPackageValue(pkg)
 		*found = &copy
 		return errStopStorageScan
 	}
+}
+
+func shouldReturnPackageScanError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return !errors.Is(err, errStopStorageScan)
 }
 
 func (j *JSONStorage) GetPackages(tool string) ([]*core.PackageInfo, error) {
@@ -675,7 +756,8 @@ func (j *JSONStorage) GetPackages(tool string) ([]*core.PackageInfo, error) {
 
 func collectPackagesVisitor(tool string, packages *[]*core.PackageInfo) func(string, string, core.PackageInfo) error {
 	return func(packageTool, _ string, pkg core.PackageInfo) error {
-		if tool != "" && packageTool != tool {
+		filterMismatch := tool != "" && packageTool != tool
+		if filterMismatch {
 			return nil
 		}
 		copy := copyPackageValue(pkg)
@@ -684,7 +766,7 @@ func collectPackagesVisitor(tool string, packages *[]*core.PackageInfo) func(str
 	}
 }
 
-func (j *JSONStorage) GetAllPackages() (map[string]map[string]*core.PackageInfo, error) {
+func (j *JSONStorage) AllPackages() (map[string]map[string]*core.PackageInfo, error) {
 	j.mu.RLock()
 	defer j.mu.RUnlock()
 
@@ -707,7 +789,7 @@ func collectAllPackagesVisitor(packages map[string]map[string]*core.PackageInfo)
 	}
 }
 
-func (j *JSONStorage) GetStatistics() (*core.StorageStatistics, error) {
+func (j *JSONStorage) Statistics() (*core.StorageStatistics, error) {
 	j.mu.RLock()
 	defer j.mu.RUnlock()
 
@@ -791,23 +873,58 @@ func (c *executionCollector) results() []*core.ExecutionRecord {
 	})
 	offset := min(max(c.opts.Offset, 0), len(results))
 	results = results[offset:]
-	if c.opts.Limit > 0 && len(results) > c.opts.Limit {
-		results = results[:c.opts.Limit]
+	return limitExecutionResults(results, c.opts.Limit)
+}
+
+func limitExecutionResults(results []*core.ExecutionRecord, limit int) []*core.ExecutionRecord {
+	if limit <= 0 {
+		return results
 	}
-	return results
+	if len(results) <= limit {
+		return results
+	}
+	return results[:limit]
 }
 
 func executionMatches(record core.ExecutionRecord, opts QueryOptions) bool {
-	if opts.Tool != "" && record.Tool != opts.Tool {
+	if !executionToolMatches(record, opts.Tool) {
 		return false
 	}
-	if opts.Package != "" && !slices.Contains(record.PackagesAffected, opts.Package) {
+	if !executionPackageMatches(record, opts.Package) {
 		return false
 	}
-	if opts.Since != nil && record.Timestamp.Before(*opts.Since) {
+	if !executionSinceMatches(record, opts.Since) {
 		return false
 	}
-	return opts.Until == nil || !record.Timestamp.After(*opts.Until)
+	return executionUntilMatches(record, opts.Until)
+}
+
+func executionToolMatches(record core.ExecutionRecord, tool string) bool {
+	if tool == "" {
+		return true
+	}
+	return record.Tool == tool
+}
+
+func executionPackageMatches(record core.ExecutionRecord, pkg string) bool {
+	if pkg == "" {
+		return true
+	}
+	return slices.Contains(record.PackagesAffected, pkg)
+}
+
+func executionSinceMatches(record core.ExecutionRecord, since *time.Time) bool {
+	if since == nil {
+		return true
+	}
+	return !record.Timestamp.Before(*since)
+}
+
+func executionUntilMatches(record core.ExecutionRecord, until *time.Time) bool {
+	if until == nil {
+		return true
+	}
+	return !record.Timestamp.After(*until)
 }
 
 type executionMinHeap []*core.ExecutionRecord

@@ -26,11 +26,55 @@ func TestGetExecutionsStreamsLegacyStorageBeforeMigration(t *testing.T) {
 	store, config := newCompactionTestStorage(t)
 	writeCompactionFixture(t, config.Storage.JSONFile, 7)
 	executions, err := store.GetExecutions(QueryOptions{})
-	if err != nil || len(executions) != 7 {
+	assertExecutionCount(t, executions, err, 7)
+	usesLog, err := storageUsesExecutionLog(config.Storage.JSONFile)
+	assertLegacyStorageFormat(t, usesLog, err)
+}
+
+func TestPrepareDoesNotCompactForRetentionOnly(t *testing.T) {
+	store := newRetentionPrepareStorage(t)
+	defer closeStorage(t, store)
+	record := &core.ExecutionRecord{Tool: core.ToolNPM, Timestamp: time.Now().AddDate(0, 0, -2)}
+	addExecution(t, store, record)
+	if err := store.Prepare(); err != nil {
+		t.Fatalf("Prepare failed: %v", err)
+	}
+	executions, err := store.GetExecutions(QueryOptions{})
+	assertExecutionCount(t, executions, err, 1)
+}
+
+func newRetentionPrepareStorage(t *testing.T) *JSONStorage {
+	t.Helper()
+	config := core.DefaultConfig()
+	config.Storage.JSONFile = filepath.Join(t.TempDir(), "executions.json")
+	config.Storage.RetentionDays = 1
+	config.Storage.MaxExecutions = 0
+	config.Storage.MaxStorageBytes = 0
+	store, err := NewJSONStorage(config)
+	if err != nil {
+		t.Fatalf("NewJSONStorage failed: %v", err)
+	}
+	return store
+}
+
+func assertExecutionCount(t *testing.T, executions []*core.ExecutionRecord, err error, want int) {
+	t.Helper()
+
+	if err != nil {
 		t.Fatalf("legacy executions = %d, %v", len(executions), err)
 	}
-	usesLog, err := storageUsesExecutionLog(config.Storage.JSONFile)
-	if err != nil || usesLog {
+	if len(executions) != want {
+		t.Fatalf("legacy executions = %d, %v", len(executions), err)
+	}
+}
+
+func assertLegacyStorageFormat(t *testing.T, usesLog bool, err error) {
+	t.Helper()
+
+	if err != nil {
+		t.Fatalf("legacy format detection = %v, %v", usesLog, err)
+	}
+	if usesLog {
 		t.Fatalf("legacy format detection = %v, %v", usesLog, err)
 	}
 }
@@ -104,7 +148,16 @@ func TestWriteCompactedStorageCleansUpAfterRenameFailure(t *testing.T) {
 	pattern := "." + filepath.Base(targetDirectory) + ".compact-*"
 	temporaryPattern := filepath.Join(filepath.Dir(targetDirectory), pattern)
 	temporaryFiles, err := filepath.Glob(temporaryPattern)
-	if err != nil || len(temporaryFiles) != 0 {
+	assertNoTemporaryFiles(t, temporaryFiles, err)
+}
+
+func assertNoTemporaryFiles(t *testing.T, temporaryFiles []string, err error) {
+	t.Helper()
+
+	if err != nil {
+		t.Fatalf("temporary compaction files = %#v, %v", temporaryFiles, err)
+	}
+	if len(temporaryFiles) != 0 {
 		t.Fatalf("temporary compaction files = %#v, %v", temporaryFiles, err)
 	}
 }
@@ -140,6 +193,12 @@ func newCompactionTestStorage(t *testing.T) (*JSONStorage, *core.Config) {
 
 func writeCompactionFixture(t *testing.T, path string, count int) {
 	t.Helper()
+	executions := compactionExecutions(count)
+	data := compactionFixtureData(executions)
+	writeCompactionFixtureData(t, path, data)
+}
+
+func compactionExecutions(count int) []core.ExecutionRecord {
 	now := time.Now().Add(-time.Duration(count) * time.Minute)
 	executions := make([]core.ExecutionRecord, 0, count)
 	for index := 0; index < count; index++ {
@@ -151,7 +210,12 @@ func writeCompactionFixture(t *testing.T, path string, count int) {
 		}
 		executions = append(executions, record)
 	}
-	data := compactionFixtureData(executions)
+	return executions
+}
+
+func writeCompactionFixtureData(t *testing.T, path string, data core.StorageData) {
+	t.Helper()
+
 	encoded, err := json.MarshalIndent(data, "", "  ")
 	if err != nil {
 		t.Fatalf("MarshalIndent failed: %v", err)
@@ -191,7 +255,10 @@ func assertCompactedStorage(t *testing.T, store *JSONStorage, config *core.Confi
 	if err != nil {
 		t.Fatalf("GetExecutions failed: %v", err)
 	}
-	if len(executions) == 0 || len(executions) > config.Storage.MaxExecutions {
+	if len(executions) == 0 {
+		t.Fatalf("compacted execution count = %d", len(executions))
+	}
+	if len(executions) > config.Storage.MaxExecutions {
 		t.Fatalf("compacted execution count = %d", len(executions))
 	}
 	if executions[0].ID != executionFixtureID(99) {
@@ -202,13 +269,41 @@ func assertCompactedStorage(t *testing.T, store *JSONStorage, config *core.Confi
 
 func assertCompactedState(t *testing.T, store *JSONStorage, executionCount int) {
 	t.Helper()
+	assertCompactedPackage(t, store)
+	assertCompactedStatistics(t, store, executionCount)
+	assertCompactedManifest(t, store)
+}
+
+func assertCompactedPackage(t *testing.T, store *JSONStorage) {
+	t.Helper()
+
 	if _, err := store.GetPackage(core.ToolHomebrew, "jq"); err != nil {
 		t.Fatalf("package inventory was not preserved: %v", err)
 	}
-	statistics, err := store.GetStatistics()
-	if err != nil || statistics.TotalExecutions != executionCount {
+}
+
+func assertCompactedStatistics(t *testing.T, store *JSONStorage, executionCount int) {
+	t.Helper()
+
+	statistics, err := store.Statistics()
+	if err != nil {
 		t.Fatalf("compacted statistics = %#v, %v", statistics, err)
 	}
+	if statistics.TotalExecutions != executionCount {
+		t.Fatalf("compacted statistics = %#v, %v", statistics, err)
+	}
+}
+
+func assertCompactedManifest(t *testing.T, store *JSONStorage) {
+	t.Helper()
+
+	stored := readCompactedManifest(t, store)
+	assertCompactedManifestState(t, stored)
+}
+
+func readCompactedManifest(t *testing.T, store *JSONStorage) core.StorageData {
+	t.Helper()
+
 	data, err := os.ReadFile(store.filepath)
 	if err != nil {
 		t.Fatalf("ReadFile failed: %v", err)
@@ -217,6 +312,12 @@ func assertCompactedState(t *testing.T, store *JSONStorage, executionCount int) 
 	if err := json.Unmarshal(data, &stored); err != nil {
 		t.Fatalf("Unmarshal failed: %v", err)
 	}
+	return stored
+}
+
+func assertCompactedManifestState(t *testing.T, stored core.StorageData) {
+	t.Helper()
+
 	if stored.PackageTombstones[core.ToolNPM]["old"] != 42 {
 		t.Fatalf("package tombstones = %#v", stored.PackageTombstones)
 	}

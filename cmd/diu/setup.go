@@ -72,6 +72,82 @@ const (
 	fallbackRecordRetryDelay   = 10 * time.Millisecond
 )
 
+const executableWrapperScriptTemplate = `#!/bin/bash
+%s
+DIU_SOCKET="%s"
+DIU_BINARY="%s"
+ORIGINAL_BINARY="%s"
+DIU_TOOL="%s"
+DIU_PACKAGE="%s"
+DIU_EXECUTABLE="%s"
+START_TIME=$(date +%%s)
+
+"$ORIGINAL_BINARY" "$@"
+EXIT_CODE=$?
+
+END_TIME=$(date +%%s)
+DURATION=$(( (END_TIME - START_TIME) * 1000 ))
+
+json_escape() {
+    local value="$1"
+    value="${value//\\/\\\\}"
+    value="${value//\"/\\\"}"
+    value="${value//$'\n'/\\n}"
+    value="${value//$'\r'/\\r}"
+    value="${value//$'\t'/\\t}"
+    printf '%%s' "$value"
+}
+
+args_json="["
+first=true
+for arg in "$@"; do
+    if [ "$first" = true ]; then
+        first=false
+    else
+        args_json="$args_json,"
+    fi
+    args_json="$args_json\"$(json_escape "$arg")\""
+done
+args_json="$args_json]"
+
+payload=$(cat <<EOF
+{
+        "tool": "$DIU_TOOL",
+        "command": "$(json_escape "$DIU_EXECUTABLE $*")",
+        "args": $args_json,
+        "exit_code": $EXIT_CODE,
+        "duration_ms": $DURATION,
+        "timestamp": "$(date -u +%%Y-%%m-%%dT%%H:%%M:%%SZ)",
+        "working_dir": "$(json_escape "$(pwd)")",
+        "user": "$(json_escape "$(whoami)")",
+        "packages_affected": ["$(json_escape "$DIU_PACKAGE")"],
+        "metadata": {
+            "executable": "$(json_escape "$DIU_EXECUTABLE")",
+            "original_path": "$(json_escape "$ORIGINAL_BINARY")"
+        }
+}
+EOF
+)
+
+{
+    sent=false
+    if [ -S "$DIU_SOCKET" ] && command -v nc >/dev/null 2>&1; then
+        if printf '%%s\n' "$payload" | nc -w 1 -U "$DIU_SOCKET" 2>/dev/null; then
+            sent=true
+        fi
+    fi
+
+    if [ "$sent" != true ]; then
+        DIU_RECORD_BINARY="$(command -v "$DIU_BINARY" 2>/dev/null || true)"
+        if [ -n "$DIU_RECORD_BINARY" ] && [ -x "$DIU_RECORD_BINARY" ]; then
+            printf '%%s\n' "$payload" | "$DIU_RECORD_BINARY" record >/dev/null 2>&1
+        fi
+    fi
+} &>/dev/null &
+
+exit $EXIT_CODE
+`
+
 func newInventoryScan() *inventoryScan {
 	return &inventoryScan{
 		seen:      make(map[string]map[string]struct{}),
@@ -97,24 +173,21 @@ func (s *inventoryScan) add(pkg *core.PackageInfo) {
 func setupProject(cmd *command, args []string) error {
 	activity := cliOutput().StartActivity("Setting up DIU")
 	defer activity.Stop()
-	config, err := core.LoadConfig("")
-	if err != nil {
-		return fmt.Errorf("failed to load config: %w", err)
-	}
 
-	if err := config.EnsureDirectories(); err != nil {
+	if err := runSetupProject(activity); err != nil {
 		return err
 	}
-	if err := config.Save(); err != nil {
-		return fmt.Errorf("failed to save config: %w", err)
-	}
+	activity.Success("DIU setup completed")
+	return nil
+}
 
-	store, err := storage.NewJSONStorage(config)
+func runSetupProject(activity *dx.Activity) error {
+	config, err := loadSetupConfig()
 	if err != nil {
-		return fmt.Errorf("failed to initialize storage: %w", err)
+		return err
 	}
-	if err := store.Close(); err != nil {
-		return fmt.Errorf("failed to close storage: %w", err)
+	if err := initializeSetupStorage(config); err != nil {
+		return err
 	}
 
 	warn := func(message string) { activity.Notice(dx.Warning, message) }
@@ -124,8 +197,31 @@ func setupProject(cmd *command, args []string) error {
 	if err := installExecutableWrappers(config); err != nil {
 		return err
 	}
+	return nil
+}
 
-	activity.Success("DIU setup completed")
+func loadSetupConfig() (*core.Config, error) {
+	config, err := core.LoadConfig("")
+	if err != nil {
+		return nil, fmt.Errorf("failed to load config: %w", err)
+	}
+	if err := config.EnsureDirectories(); err != nil {
+		return nil, err
+	}
+	if err := config.Save(); err != nil {
+		return nil, fmt.Errorf("failed to save config: %w", err)
+	}
+	return config, nil
+}
+
+func initializeSetupStorage(config *core.Config) error {
+	store, err := storage.NewJSONStorage(config)
+	if err != nil {
+		return fmt.Errorf("failed to initialize storage: %w", err)
+	}
+	if err := store.Close(); err != nil {
+		return fmt.Errorf("failed to close storage: %w", err)
+	}
 	return nil
 }
 
@@ -330,7 +426,10 @@ func removeGeneratedWrapper(wrapperDir string, entry os.DirEntry) error {
 
 func isGeneratedWrapper(content string) bool {
 	commonFields := []string{`DIU_BINARY="diu"`, "DIU_SOCKET=", "DIU_TOOL="}
-	if !strings.HasPrefix(content, "#!/bin/bash\n") || !containsAll(content, commonFields) {
+	if !strings.HasPrefix(content, "#!/bin/bash\n") {
+		return false
+	}
+	if !containsAll(content, commonFields) {
 		return false
 	}
 	currentPrefix := "#!/bin/bash\n" + core.GeneratedWrapperMarker + "\n"
@@ -421,16 +520,26 @@ func removeShellPathBlock(content, line string) string {
 }
 
 func shellBlockStart(content string, index int) int {
-	if index > 0 && content[index-1] == '\n' {
+	if index <= 0 {
+		return index
+	}
+	if content[index-1] == '\n' {
 		return index - 1
 	}
 	return index
 }
 
 func joinShellConfig(prefix, suffix string) string {
-	needsNewline := prefix != "" && suffix != "" && !strings.HasSuffix(prefix, "\n") && !strings.HasPrefix(suffix, "\n")
+	hasPrefix := prefix != ""
+	hasSuffix := suffix != ""
+	prefixEndsLine := strings.HasSuffix(prefix, "\n")
+	suffixStartsLine := strings.HasPrefix(suffix, "\n")
+	hasBothParts := hasPrefix && hasSuffix
+	alreadySeparated := prefixEndsLine || suffixStartsLine
+	needsNewline := hasBothParts && !alreadySeparated
 	if needsNewline {
-		return prefix + "\n" + suffix
+		joined := prefix + "\n" + suffix
+		return joined
 	}
 	return prefix + suffix
 }
@@ -441,11 +550,7 @@ func writePrivateFile(path string, data []byte) (err error) {
 		return err
 	}
 	defer func() {
-		closeErr := file.Close()
-		shouldReturnCloseErr := err == nil && closeErr != nil
-		if shouldReturnCloseErr {
-			err = closeErr
-		}
+		err = safefs.CloseWithError(err, file, "")
 	}()
 	_, err = file.Write(data)
 	return err
@@ -473,7 +578,7 @@ func scanPackages(cmd *command, args []string) error {
 }
 
 func newPackageScanner(config *core.Config, store storage.Storage, activity *dx.Activity) (*packageScanner, error) {
-	existing, err := store.GetAllPackages()
+	existing, err := store.AllPackages()
 	if err != nil {
 		return nil, fmt.Errorf("failed to read package inventory: %w", err)
 	}
@@ -555,21 +660,39 @@ func (s *packageScanner) addPackage(pkg *core.PackageInfo) {
 }
 
 func (s *packageScanner) prepareGoSignature(pkg *core.PackageInfo) {
-	if pkg.Tool != core.ToolGoBinary || pkg.ModifiedAt != 0 || pkg.Path == "" {
+	isGoBinary := pkg.Tool == core.ToolGoBinary
+	needsSignature := pkg.ModifiedAt == 0
+	hasPath := pkg.Path != ""
+	shouldPrepare := isGoBinary && needsSignature && hasPath
+	if !shouldPrepare {
 		return
 	}
 	err := populateGoBinarySignature(pkg)
-	if err != nil && s.activity != nil {
+	if err == nil {
+		return
+	}
+	if s.activity != nil {
 		s.activity.Notice(dx.Warning, err.Error())
 	}
 }
 
 func (s *packageScanner) prepareGoFingerprint(pkg *core.PackageInfo) {
-	if pkg.Tool != core.ToolGoBinary || pkg.Fingerprint != "" || pkg.Path == "" {
+	isGoBinary := pkg.Tool == core.ToolGoBinary
+	needsFingerprint := pkg.Fingerprint == ""
+	hasPath := pkg.Path != ""
+	shouldPrepare := isGoBinary && needsFingerprint && hasPath
+	if !shouldPrepare {
 		return
 	}
 	err := populateGoBinaryFingerprint(pkg)
-	if err != nil && s.activity != nil {
+	s.noticePackageScanError(err)
+}
+
+func (s *packageScanner) noticePackageScanError(err error) {
+	if err == nil {
+		return
+	}
+	if s.activity != nil {
 		s.activity.Notice(dx.Warning, err.Error())
 	}
 }
@@ -591,7 +714,10 @@ func populateGoBinarySignature(pkg *core.PackageInfo) error {
 		return nil
 	}
 	info, err := safefs.Lstat(pkg.Path)
-	if err != nil || !info.Mode().IsRegular() {
+	if err != nil {
+		return fmt.Errorf("failed to inspect Go binary %s", pkg.Path)
+	}
+	if !info.Mode().IsRegular() {
 		return fmt.Errorf("failed to inspect Go binary %s", pkg.Path)
 	}
 	pkg.SizeBytes = info.Size()
@@ -612,7 +738,9 @@ func (s *packageScanner) executableAlreadySeen(target executableWrapper) bool {
 	key := target.Tool + "/" + target.Package
 	alreadySeen := s.seenExecutables[key]
 	s.seenExecutables[key] = true
-	return alreadySeen || target.Package == ""
+	hasPackage := target.Package != ""
+	trackExecutable := !alreadySeen && hasPackage
+	return !trackExecutable
 }
 
 func packageFromExecutable(target executableWrapper) *core.PackageInfo {
@@ -662,17 +790,30 @@ func mergeExistingPackage(inventory map[string]map[string]*core.PackageInfo, pkg
 	mergePackageHistory(pkg, existing)
 	mergePackageDetails(pkg, existing)
 	preserveFingerprint := pkg.Tool != core.ToolGoBinary || preserveGoFingerprint
-	if pkg.Fingerprint == "" && preserveFingerprint {
+	if pkg.Fingerprint != "" {
+		return
+	}
+	if preserveFingerprint {
 		pkg.Fingerprint = existing.Fingerprint
 	}
 }
 
 func mergePackageHistory(pkg, existing *core.PackageInfo) {
-	if pkg.InstallDate.IsZero() || (!existing.InstallDate.IsZero() && existing.InstallDate.Before(pkg.InstallDate)) {
+	if shouldPreserveInstallDate(pkg, existing) {
 		pkg.InstallDate = existing.InstallDate
 	}
 	pkg.LastUsed = existing.LastUsed
 	pkg.UsageCount = existing.UsageCount
+}
+
+func shouldPreserveInstallDate(pkg, existing *core.PackageInfo) bool {
+	if pkg.InstallDate.IsZero() {
+		return true
+	}
+	if existing.InstallDate.IsZero() {
+		return false
+	}
+	return existing.InstallDate.Before(pkg.InstallDate)
 }
 
 func mergePackageDetails(pkg, existing *core.PackageInfo) {
@@ -685,12 +826,20 @@ func mergePackageDetails(pkg, existing *core.PackageInfo) {
 }
 
 func unchangedGoBinary(pkg, existing *core.PackageInfo) bool {
-	if pkg.Tool != core.ToolGoBinary || pkg.Path != existing.Path {
+	if pkg.Tool != core.ToolGoBinary {
+		return false
+	}
+	if pkg.Path != existing.Path {
 		return false
 	}
 	sameSize := pkg.SizeBytes == existing.SizeBytes
-	sameModification := pkg.ModifiedAt != 0 && pkg.ModifiedAt == existing.ModifiedAt
-	return sameSize && sameModification
+	if !sameSize {
+		return false
+	}
+	if pkg.ModifiedAt == 0 {
+		return false
+	}
+	return pkg.ModifiedAt == existing.ModifiedAt
 }
 
 func existingPackageFor(inventory map[string]map[string]*core.PackageInfo, pkg *core.PackageInfo) *core.PackageInfo {
@@ -790,6 +939,14 @@ func reconcilePackageScan(reconciler packageReconciler, scan *inventoryScan) err
 func cleanup(cmd *command, args []string) error {
 	activity := cliOutput().StartActivity("Cleaning execution history")
 	defer activity.Stop()
+	if err := runCleanup(activity); err != nil {
+		return err
+	}
+	activity.Success("Cleanup completed")
+	return nil
+}
+
+func runCleanup(activity *dx.Activity) error {
 	config, err := core.LoadConfig("")
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)
@@ -804,8 +961,6 @@ func cleanup(cmd *command, args []string) error {
 	if err := store.Cleanup(time.Time{}); err != nil {
 		return fmt.Errorf("cleanup failed: %w", err)
 	}
-
-	activity.Success("Cleanup completed")
 	return nil
 }
 
@@ -813,6 +968,14 @@ func cleanup(cmd *command, args []string) error {
 func backup(cmd *command, args []string) error {
 	activity := cliOutput().StartActivity("Creating backup")
 	defer activity.Stop()
+	if err := runBackup(activity); err != nil {
+		return err
+	}
+	activity.Success("Backup created")
+	return nil
+}
+
+func runBackup(activity *dx.Activity) error {
 	config, err := core.LoadConfig("")
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)
@@ -827,8 +990,6 @@ func backup(cmd *command, args []string) error {
 	if err := store.Backup(); err != nil {
 		return fmt.Errorf("backup failed: %w", err)
 	}
-
-	activity.Success("Backup created")
 	return nil
 }
 
@@ -882,7 +1043,10 @@ func withFallbackRecordLock(config *core.Config, record func() error) (err error
 func acquireFallbackRecordLock(storagePath string) (*os.File, bool, error) {
 	for attempt := 0; attempt < fallbackRecordLockAttempts; attempt++ {
 		lock, acquired, err := tryAcquireFallbackRecordLock(storagePath)
-		if err != nil || acquired {
+		if err != nil {
+			return lock, acquired, err
+		}
+		if acquired {
 			return lock, acquired, err
 		}
 		if attempt+1 < fallbackRecordLockAttempts {
@@ -972,98 +1136,93 @@ func installExecutableWrappers(config *core.Config) error {
 // discoverExecutableWrappers discovers executables to wrap
 func discoverExecutableWrappers(config *core.Config) []executableWrapper {
 	targets := make(map[string]executableWrapper)
-	toolEnabled := func(tool string) bool {
-		for _, enabled := range config.Monitoring.EnabledTools {
-			if core.NormalizeToolName(enabled) == tool {
-				return true
-			}
-		}
-		return false
-	}
-	addExecutableDir := func(tool, dir string) {
-		if dir == "" {
-			return
-		}
-		entries, err := os.ReadDir(dir)
-		if err != nil {
-			return
-		}
-		for _, entry := range entries {
-			name := entry.Name()
-			if shouldSkipExecutableWrapper(name) {
-				continue
-			}
-			path := filepath.Join(dir, name)
-			info, err := os.Stat(path)
-			if err != nil || info.IsDir() || info.Mode()&core.ExecutableModeMask == 0 {
-				continue
-			}
-			if _, exists := targets[name]; exists {
-				continue
-			}
-			targets[name] = executableWrapper{
-				Name:         name,
-				OriginalPath: path,
-				Tool:         tool,
-				Package:      packageNameForExecutable(tool, path, name),
-			}
-		}
-	}
-
-	if toolEnabled(core.ToolHomebrew) {
-		for _, dir := range config.Monitoring.Filesystem.WatchPaths[core.ToolHomebrew] {
-			addExecutableDir(core.ToolHomebrew, dir)
-		}
-	}
-	if toolEnabled(core.ToolNPM) {
-		if npmBin := npmGlobalBinDir(); npmBin != "" {
-			addExecutableDir(core.ToolNPM, npmBin)
-		}
-		for _, dir := range config.Monitoring.Filesystem.WatchPaths[core.ToolNPM] {
-			addExecutableDir(core.ToolNPM, dir)
-		}
-	}
-	if toolEnabled(core.ToolPNPM) {
-		if pnpmBin := pnpmGlobalBinDir(); pnpmBin != "" {
-			addExecutableDir(core.ToolPNPM, pnpmBin)
-		}
-		for _, dir := range config.Monitoring.Filesystem.WatchPaths[core.ToolPNPM] {
-			addExecutableDir(core.ToolPNPM, dir)
-		}
-	}
-	if toolEnabled(core.ToolBun) {
-		if bunBin := bunGlobalBinDir(); bunBin != "" {
-			addExecutableDir(core.ToolBun, bunBin)
-		}
-		for _, dir := range config.Monitoring.Filesystem.WatchPaths[core.ToolBun] {
-			addExecutableDir(core.ToolBun, dir)
-		}
-	}
-	if toolEnabled(core.ToolGo) {
-		if goBin := goBinaryDir(config); goBin != "" {
-			addExecutableDir(core.ToolGoBinary, goBin)
-		}
-	}
-	if toolEnabled(core.ToolPip) {
-		if pythonBin := pythonUserBaseBinDir(); pythonBin != "" {
-			addExecutableDir(core.ToolPip, pythonBin)
-		}
-		for _, dir := range config.Monitoring.Filesystem.WatchPaths[core.ToolPip] {
-			addExecutableDir(core.ToolPip, dir)
-		}
-	}
-	if toolEnabled(core.ToolUV) {
-		if uvBin := uvToolBinDir(); uvBin != "" {
-			addExecutableDir(core.ToolUV, uvBin)
-		}
-		for _, dir := range config.Monitoring.Filesystem.WatchPaths[core.ToolUV] {
-			addExecutableDir(core.ToolUV, dir)
-		}
-	}
+	watchPaths := config.Monitoring.Filesystem.WatchPaths
+	addToolExecutableDirs(config, targets, core.ToolHomebrew, watchPaths[core.ToolHomebrew])
+	addToolExecutableDirs(config, targets, core.ToolNPM, executableDirs(npmGlobalBinDir(), watchPaths[core.ToolNPM]))
+	addToolExecutableDirs(config, targets, core.ToolPNPM, executableDirs(pnpmGlobalBinDir(), watchPaths[core.ToolPNPM]))
+	addToolExecutableDirs(config, targets, core.ToolBun, executableDirs(bunGlobalBinDir(), watchPaths[core.ToolBun]))
+	addGoExecutableDirs(config, targets)
+	addToolExecutableDirs(config, targets, core.ToolPip, executableDirs(pythonUserBaseBinDir(), watchPaths[core.ToolPip]))
+	addToolExecutableDirs(config, targets, core.ToolUV, executableDirs(uvToolBinDir(), watchPaths[core.ToolUV]))
 
 	return slices.SortedFunc(maps.Values(targets), func(a, b executableWrapper) int {
 		return strings.Compare(a.Name, b.Name)
 	})
+}
+
+func monitoringToolEnabled(config *core.Config, tool string) bool {
+	for _, enabled := range config.Monitoring.EnabledTools {
+		if core.NormalizeToolName(enabled) == tool {
+			return true
+		}
+	}
+	return false
+}
+
+func executableDirs(primary string, extra []string) []string {
+	if primary == "" {
+		return extra
+	}
+	return append([]string{primary}, extra...)
+}
+
+func addToolExecutableDirs(config *core.Config, targets map[string]executableWrapper, tool string, dirs []string) {
+	if !monitoringToolEnabled(config, tool) {
+		return
+	}
+	for _, dir := range dirs {
+		addExecutableDir(targets, tool, dir)
+	}
+}
+
+func addGoExecutableDirs(config *core.Config, targets map[string]executableWrapper) {
+	if !monitoringToolEnabled(config, core.ToolGo) {
+		return
+	}
+	addExecutableDir(targets, core.ToolGoBinary, goBinaryDir(config))
+}
+
+func addExecutableDir(targets map[string]executableWrapper, tool, dir string) {
+	if dir == "" {
+		return
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		addExecutableEntry(targets, tool, dir, entry.Name())
+	}
+}
+
+func addExecutableEntry(targets map[string]executableWrapper, tool, dir, name string) {
+	if shouldSkipExecutableWrapper(name) {
+		return
+	}
+	path := filepath.Join(dir, name)
+	info, err := os.Stat(path)
+	if !usableExecutableInfo(info, err) {
+		return
+	}
+	if _, exists := targets[name]; exists {
+		return
+	}
+	targets[name] = executableWrapper{
+		Name:         name,
+		OriginalPath: path,
+		Tool:         tool,
+		Package:      packageNameForExecutable(tool, path, name),
+	}
+}
+
+func usableExecutableInfo(info os.FileInfo, err error) bool {
+	if err != nil {
+		return false
+	}
+	if info.IsDir() {
+		return false
+	}
+	return info.Mode()&core.ExecutableModeMask != 0
 }
 
 // writeExecutableWrapper writes a wrapper script for an executable
@@ -1072,82 +1231,16 @@ func writeExecutableWrapper(config *core.Config, target executableWrapper) error
 	if err != nil {
 		return err
 	}
-
-	script := fmt.Sprintf(`#!/bin/bash
-%s
-DIU_SOCKET="%s"
-DIU_BINARY="%s"
-ORIGINAL_BINARY="%s"
-DIU_TOOL="%s"
-DIU_PACKAGE="%s"
-DIU_EXECUTABLE="%s"
-START_TIME=$(date +%%s)
-
-"$ORIGINAL_BINARY" "$@"
-EXIT_CODE=$?
-
-END_TIME=$(date +%%s)
-DURATION=$(( (END_TIME - START_TIME) * 1000 ))
-
-json_escape() {
-    local value="$1"
-    value="${value//\\/\\\\}"
-    value="${value//\"/\\\"}"
-    value="${value//$'\n'/\\n}"
-    value="${value//$'\r'/\\r}"
-    value="${value//$'\t'/\\t}"
-    printf '%%s' "$value"
-}
-
-args_json="["
-first=true
-for arg in "$@"; do
-    if [ "$first" = true ]; then
-        first=false
-    else
-        args_json="$args_json,"
-    fi
-    args_json="$args_json\"$(json_escape "$arg")\""
-done
-args_json="$args_json]"
-
-payload=$(cat <<EOF
-{
-        "tool": "$DIU_TOOL",
-        "command": "$(json_escape "$DIU_EXECUTABLE $*")",
-        "args": $args_json,
-        "exit_code": $EXIT_CODE,
-        "duration_ms": $DURATION,
-        "timestamp": "$(date -u +%%Y-%%m-%%dT%%H:%%M:%%SZ)",
-        "working_dir": "$(json_escape "$(pwd)")",
-        "user": "$(json_escape "$(whoami)")",
-        "packages_affected": ["$(json_escape "$DIU_PACKAGE")"],
-        "metadata": {
-            "executable": "$(json_escape "$DIU_EXECUTABLE")",
-            "original_path": "$(json_escape "$ORIGINAL_BINARY")"
-        }
-}
-EOF
-)
-
-{
-    sent=false
-    if [ -S "$DIU_SOCKET" ] && command -v nc >/dev/null 2>&1; then
-        if printf '%%s\n' "$payload" | nc -w 1 -U "$DIU_SOCKET" 2>/dev/null; then
-            sent=true
-        fi
-    fi
-
-    if [ "$sent" != true ]; then
-        DIU_RECORD_BINARY="$(command -v "$DIU_BINARY" 2>/dev/null || true)"
-        if [ -n "$DIU_RECORD_BINARY" ] && [ -x "$DIU_RECORD_BINARY" ]; then
-            printf '%%s\n' "$payload" | "$DIU_RECORD_BINARY" record >/dev/null 2>&1
-        fi
-    fi
-} &>/dev/null &
-
-exit $EXIT_CODE
-`, core.GeneratedWrapperMarker, core.ShellEscapeString(config.Daemon.SocketPath), "diu", core.ShellEscapeString(target.OriginalPath), core.ShellEscapeString(target.Tool), core.ShellEscapeString(target.Package), core.ShellEscapeString(target.Name))
-
+	script := executableWrapperScript(config, target)
 	return writeOwnerExecutableFile(wrapperPath, []byte(script))
+}
+
+func executableWrapperScript(config *core.Config, target executableWrapper) string {
+	marker := core.GeneratedWrapperMarker
+	socket := core.ShellEscapeString(config.Daemon.SocketPath)
+	original := core.ShellEscapeString(target.OriginalPath)
+	tool := core.ShellEscapeString(target.Tool)
+	pkg := core.ShellEscapeString(target.Package)
+	name := core.ShellEscapeString(target.Name)
+	return fmt.Sprintf(executableWrapperScriptTemplate, marker, socket, "diu", original, tool, pkg, name)
 }

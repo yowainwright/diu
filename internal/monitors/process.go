@@ -27,151 +27,7 @@ type shellPathEntry struct {
 	line string
 }
 
-func NewProcessMonitor(name, binaryPath string) *ProcessMonitor {
-	homeDir := os.Getenv("HOME")
-	if dir, err := os.UserHomeDir(); err == nil {
-		homeDir = dir
-	}
-	return &ProcessMonitor{
-		BaseMonitor: NewBaseMonitor(name),
-		binaryPath:  binaryPath,
-		homeDir:     homeDir,
-	}
-}
-
-func (m *ProcessMonitor) Initialize(config *core.Config) error {
-	if err := m.BaseMonitor.Initialize(config); err != nil {
-		return err
-	}
-
-	m.wrapperPath = filepath.Join(config.Monitoring.Process.WrapperDir, filepath.Base(m.binaryPath))
-	originalPath, err := m.findOriginalBinary()
-	if err != nil {
-		if config.Monitoring.Process.AutoInstallWrappers {
-			return err
-		}
-		m.originalPath = m.binaryPath
-	} else {
-		m.originalPath = originalPath
-	}
-
-	if config.Monitoring.Process.AutoInstallWrappers {
-		return m.InstallWrapper()
-	}
-
-	return nil
-}
-
-func (m *ProcessMonitor) findOriginalBinary() (string, error) {
-	if filepath.IsAbs(m.binaryPath) {
-		validatedPath, err := validateExecutablePath(m.binaryPath)
-		if err != nil {
-			return "", err
-		}
-		if pathWithinDirectory(validatedPath, m.config.Monitoring.Process.WrapperDir) {
-			return "", fmt.Errorf("original binary %q resolves inside wrapper directory %s", validatedPath, filepath.Clean(m.config.Monitoring.Process.WrapperDir))
-		}
-		return validatedPath, nil
-	}
-
-	paths := filepath.SplitList(os.Getenv("PATH"))
-	wrapperDir := filepath.Clean(m.config.Monitoring.Process.WrapperDir)
-	for _, path := range paths {
-		if path == "" || !filepath.IsAbs(path) || filepath.Clean(path) == wrapperDir {
-			continue
-		}
-
-		candidate := filepath.Join(path, filepath.Base(m.binaryPath))
-		info, err := safefs.Stat(candidate)
-		if err == nil && !info.IsDir() {
-			if info.Mode()&core.ExecutableModeMask != 0 {
-				validatedPath, err := validateExecutablePath(candidate)
-				if err != nil {
-					continue
-				}
-				if pathWithinDirectory(validatedPath, wrapperDir) {
-					continue
-				}
-				return validatedPath, nil
-			}
-		}
-	}
-	return "", fmt.Errorf("original binary %q not found in PATH outside wrapper directory %s: %w", filepath.Base(m.binaryPath), wrapperDir, exec.ErrNotFound)
-}
-
-func pathWithinDirectory(path, dir string) bool {
-	if strings.TrimSpace(path) == "" || strings.TrimSpace(dir) == "" {
-		return false
-	}
-
-	cleanPath := filepath.Clean(path)
-	cleanDir := filepath.Clean(dir)
-	if !filepath.IsAbs(cleanPath) {
-		absPath, err := filepath.Abs(cleanPath)
-		if err != nil {
-			return false
-		}
-		cleanPath = absPath
-	}
-	if !filepath.IsAbs(cleanDir) {
-		absDir, err := filepath.Abs(cleanDir)
-		if err != nil {
-			return false
-		}
-		cleanDir = absDir
-	}
-	if resolvedPath, err := filepath.EvalSymlinks(cleanPath); err == nil {
-		cleanPath = resolvedPath
-	}
-	if resolvedDir, err := filepath.EvalSymlinks(cleanDir); err == nil {
-		cleanDir = resolvedDir
-	}
-
-	relativePath, err := filepath.Rel(cleanDir, cleanPath)
-	if err != nil {
-		return false
-	}
-	return relativePath == "." || (relativePath != ".." && !strings.HasPrefix(relativePath, ".."+string(filepath.Separator)))
-}
-
-func (m *ProcessMonitor) InstallWrapper() error {
-	if err := os.MkdirAll(m.config.Monitoring.Process.WrapperDir, core.OwnerDirectoryMode); err != nil {
-		return fmt.Errorf("failed to create wrapper directory: %w", err)
-	}
-
-	wrapperContent := m.generateWrapperScript()
-	if err := writeOwnerExecutableFile(m.wrapperPath, []byte(wrapperContent)); err != nil {
-		return fmt.Errorf("failed to write wrapper script: %w", err)
-	}
-
-	return m.updateShellConfig()
-}
-
-func writeOwnerExecutableFile(path string, data []byte) (err error) {
-	file, err := safefs.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, core.PrivateFileMode)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		closeErr := file.Close()
-		shouldReturnCloseErr := err == nil && closeErr != nil
-		if shouldReturnCloseErr {
-			err = closeErr
-		}
-	}()
-
-	if _, err := file.Write(data); err != nil {
-		return err
-	}
-	return file.Chmod(core.OwnerExecutableMode)
-}
-
-func (m *ProcessMonitor) generateWrapperScript() string {
-	return generateProcessWrapperScript(m.originalPath, "diu", m.config.Daemon.SocketPath, m.name)
-}
-
-func generateProcessWrapperScript(originalPath, diuPath, socketPath, tool string) string {
-	return fmt.Sprintf(`#!/bin/bash
+const processWrapperScriptTemplate = `#!/bin/bash
 %s
 ORIGINAL="%s"
 DIU_BINARY="%s"
@@ -241,11 +97,219 @@ EOF
 } &>/dev/null &
 
 exit $EXIT_CODE
-`, core.GeneratedWrapperMarker, core.ShellEscapeString(originalPath), core.ShellEscapeString(diuPath), core.ShellEscapeString(socketPath), core.ShellEscapeString(tool))
+`
+
+func NewProcessMonitor(name, binaryPath string) *ProcessMonitor {
+	homeDir := os.Getenv("HOME")
+	if dir, err := os.UserHomeDir(); err == nil {
+		homeDir = dir
+	}
+	return &ProcessMonitor{
+		BaseMonitor: NewBaseMonitor(name),
+		binaryPath:  binaryPath,
+		homeDir:     homeDir,
+	}
+}
+
+func (m *ProcessMonitor) Initialize(config *core.Config) error {
+	if err := m.BaseMonitor.Initialize(config); err != nil {
+		return err
+	}
+
+	m.wrapperPath = filepath.Join(config.Monitoring.Process.WrapperDir, filepath.Base(m.binaryPath))
+	if err := m.setOriginalPath(config); err != nil {
+		return err
+	}
+	if !config.Monitoring.Process.AutoInstallWrappers {
+		return nil
+	}
+	return m.InstallWrapper()
+}
+
+func (m *ProcessMonitor) setOriginalPath(config *core.Config) error {
+	originalPath, err := m.findOriginalBinary()
+	if err != nil {
+		if config.Monitoring.Process.AutoInstallWrappers {
+			return err
+		}
+		m.originalPath = m.binaryPath
+		return nil
+	}
+	m.originalPath = originalPath
+	return nil
+}
+
+func (m *ProcessMonitor) findOriginalBinary() (string, error) {
+	wrapperDir := m.cleanWrapperDir()
+	if filepath.IsAbs(m.binaryPath) {
+		return validateOriginalBinaryPath(m.binaryPath, wrapperDir)
+	}
+
+	paths := filepath.SplitList(os.Getenv("PATH"))
+	for _, path := range paths {
+		if skipSearchPath(path, wrapperDir) {
+			continue
+		}
+
+		candidate := filepath.Join(path, filepath.Base(m.binaryPath))
+		validatedPath, ok := executableCandidate(candidate, wrapperDir)
+		if ok {
+			return validatedPath, nil
+		}
+	}
+	return "", fmt.Errorf("original binary %q not found in PATH outside wrapper directory %s: %w", filepath.Base(m.binaryPath), wrapperDir, exec.ErrNotFound)
+}
+
+func validateOriginalBinaryPath(binaryPath, wrapperDir string) (string, error) {
+	validatedPath, err := validateExecutablePath(binaryPath)
+	if err != nil {
+		return "", err
+	}
+	if pathWithinDirectory(validatedPath, wrapperDir) {
+		return "", fmt.Errorf("original binary %q resolves inside wrapper directory %s", validatedPath, wrapperDir)
+	}
+	return validatedPath, nil
+}
+
+func skipSearchPath(path, wrapperDir string) bool {
+	isEmpty := path == ""
+	isRelative := !filepath.IsAbs(path)
+	isWrapperDir := filepath.Clean(path) == wrapperDir
+	shouldSkip := isEmpty || isRelative || isWrapperDir
+	return shouldSkip
+}
+
+func executableCandidate(candidate, wrapperDir string) (string, bool) {
+	info, err := safefs.Stat(candidate)
+	isDirectory := err == nil && info.IsDir()
+	unusablePath := err != nil || isDirectory
+	if unusablePath {
+		return "", false
+	}
+	isExecutable := info.Mode()&core.ExecutableModeMask != 0
+	if !isExecutable {
+		return "", false
+	}
+	validatedPath, err := validateExecutablePath(candidate)
+	if err != nil {
+		return "", false
+	}
+	if pathWithinDirectory(validatedPath, wrapperDir) {
+		return "", false
+	}
+	return validatedPath, true
+}
+
+func pathWithinDirectory(path, dir string) bool {
+	cleanPath, cleanDir, ok := cleanDirectoryPaths(path, dir)
+	if !ok {
+		return false
+	}
+	relativePath, err := filepath.Rel(cleanDir, cleanPath)
+	if err != nil {
+		return false
+	}
+	return relativePathInsideDirectory(relativePath)
+}
+
+func cleanDirectoryPaths(path, dir string) (string, string, bool) {
+	pathEmpty := strings.TrimSpace(path) == ""
+	dirEmpty := strings.TrimSpace(dir) == ""
+	missingPath := pathEmpty || dirEmpty
+	if missingPath {
+		return "", "", false
+	}
+
+	cleanPath, ok := absoluteCleanPath(path)
+	if !ok {
+		return "", "", false
+	}
+	cleanDir, ok := absoluteCleanPath(dir)
+	if !ok {
+		return "", "", false
+	}
+	cleanPath = resolvedCleanPath(cleanPath)
+	cleanDir = resolvedCleanPath(cleanDir)
+	return cleanPath, cleanDir, true
+}
+
+func absoluteCleanPath(path string) (string, bool) {
+	cleanPath := filepath.Clean(path)
+	if filepath.IsAbs(cleanPath) {
+		return cleanPath, true
+	}
+	absPath, err := filepath.Abs(cleanPath)
+	return absPath, err == nil
+}
+
+func resolvedCleanPath(path string) string {
+	resolvedPath, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return path
+	}
+	return resolvedPath
+}
+
+func relativePathInsideDirectory(relativePath string) bool {
+	if relativePath == "." {
+		return true
+	}
+	if relativePath == ".." {
+		return false
+	}
+	parentPrefix := ".." + string(filepath.Separator)
+	insideSubtree := !strings.HasPrefix(relativePath, parentPrefix)
+	return insideSubtree
+}
+
+func (m *ProcessMonitor) InstallWrapper() error {
+	wrapperDir := m.wrapperDir()
+	if err := os.MkdirAll(wrapperDir, core.OwnerDirectoryMode); err != nil {
+		return fmt.Errorf("failed to create wrapper directory: %w", err)
+	}
+
+	wrapperContent := m.generateWrapperScript()
+	if err := writeOwnerExecutableFile(m.wrapperPath, []byte(wrapperContent)); err != nil {
+		return fmt.Errorf("failed to write wrapper script: %w", err)
+	}
+
+	return m.updateShellConfig()
+}
+
+func writeOwnerExecutableFile(path string, data []byte) (err error) {
+	file, err := safefs.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, core.PrivateFileMode)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		closeErr := file.Close()
+		shouldReturnCloseErr := err == nil && closeErr != nil
+		if shouldReturnCloseErr {
+			err = closeErr
+		}
+	}()
+
+	if _, err := file.Write(data); err != nil {
+		return err
+	}
+	return file.Chmod(core.OwnerExecutableMode)
+}
+
+func (m *ProcessMonitor) generateWrapperScript() string {
+	return generateProcessWrapperScript(m.originalPath, "diu", m.config.Daemon.SocketPath, m.name)
+}
+
+func generateProcessWrapperScript(originalPath, diuPath, socketPath, tool string) string {
+	marker := core.GeneratedWrapperMarker
+	original := core.ShellEscapeString(originalPath)
+	diu := core.ShellEscapeString(diuPath)
+	socket := core.ShellEscapeString(socketPath)
+	escapedTool := core.ShellEscapeString(tool)
+	return fmt.Sprintf(processWrapperScriptTemplate, marker, original, diu, socket, escapedTool)
 }
 
 func (m *ProcessMonitor) updateShellConfig() error {
-	wrapperDir := m.config.Monitoring.Process.WrapperDir
+	wrapperDir := m.wrapperDir()
 	bashPath := filepath.Join(m.homeDir, ".bashrc")
 	zshPath := filepath.Join(m.homeDir, ".zshrc")
 	fishPath := filepath.Join(m.homeDir, ".config", "fish", "config.fish")
@@ -260,12 +324,26 @@ func (m *ProcessMonitor) updateShellConfig() error {
 	return nil
 }
 
+func (m *ProcessMonitor) wrapperDir() string {
+	monitoring := m.config.Monitoring
+	process := monitoring.Process
+	return process.WrapperDir
+}
+
+func (m *ProcessMonitor) cleanWrapperDir() string {
+	wrapperDir := m.wrapperDir()
+	return filepath.Clean(wrapperDir)
+}
+
 func appendPathConfigIfPresent(path, line string) error {
 	content, err := readShellConfigIfPresent(path)
 	if err != nil {
 		return err
 	}
-	if content == nil || strings.Contains(string(content), line) {
+	if content == nil {
+		return nil
+	}
+	if strings.Contains(string(content), line) {
 		return nil
 	}
 	lineWithNewline := line + "\n"
@@ -317,65 +395,106 @@ func (m *ProcessMonitor) Start(ctx context.Context, eventChan chan<- *core.Execu
 
 func (m *ProcessMonitor) ExecuteAndTrack(cmd string, args []string) (*core.ExecutionRecord, error) {
 	startTime := time.Now()
+	command, err := m.trackedCommand(args)
+	if err != nil {
+		return nil, err
+	}
+	err = command.Run()
+	exitCode := commandExitCode(err)
+	duration := time.Since(startTime)
+	record := m.newExecutionRecord(cmd, args, startTime, duration, exitCode)
+	m.applyParsedCommand(record, cmd, args)
+	return record, nil
+}
 
+func (m *ProcessMonitor) trackedCommand(args []string) (*exec.Cmd, error) {
 	originalPath, err := validateExecutablePath(m.originalPath)
 	if err != nil {
 		return nil, err
 	}
-
 	// #nosec G204 -- originalPath is resolved from PATH, validated as an absolute executable, and args are forwarded intentionally.
 	command := exec.Command(originalPath, args...)
 	command.Stdout = os.Stdout
 	command.Stderr = os.Stderr
 	command.Stdin = os.Stdin
+	return command, nil
+}
 
-	err = command.Run()
-	exitCode := 0
-	if err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			exitCode = exitErr.ExitCode()
-		}
+func commandExitCode(err error) int {
+	if err == nil {
+		return 0
 	}
+	exitErr, ok := err.(*exec.ExitError)
+	if !ok {
+		return 0
+	}
+	return exitErr.ExitCode()
+}
 
-	duration := time.Since(startTime)
+func (m *ProcessMonitor) newExecutionRecord(cmd string, args []string, start time.Time, duration time.Duration, exitCode int) *core.ExecutionRecord {
 	workingDir, _ := os.Getwd()
-	usr, _ := user.Current()
-
-	record := &core.ExecutionRecord{
+	return &core.ExecutionRecord{
 		ID:         fmt.Sprintf("exec_%s_%d", time.Now().Format("20060102_150405"), time.Now().UnixNano()),
 		Tool:       m.name,
 		Command:    fmt.Sprintf("%s %s", cmd, strings.Join(args, " ")),
 		Args:       args,
-		Timestamp:  startTime,
+		Timestamp:  start,
 		Duration:   duration,
 		ExitCode:   exitCode,
 		WorkingDir: workingDir,
-		User:       usr.Username,
+		User:       currentUsername(),
 	}
+}
 
-	if parsed, err := m.ParseCommand(cmd, args); err == nil {
-		record.PackagesAffected = parsed.PackagesAffected
-		record.Metadata = parsed.Metadata
+func currentUsername() string {
+	usr, err := user.Current()
+	if err != nil {
+		return ""
 	}
+	return usr.Username
+}
 
-	return record, nil
+func (m *ProcessMonitor) applyParsedCommand(record *core.ExecutionRecord, cmd string, args []string) {
+	parsed, err := m.ParseCommand(cmd, args)
+	if err != nil {
+		return
+	}
+	record.PackagesAffected = parsed.PackagesAffected
+	record.Metadata = parsed.Metadata
 }
 
 func validateExecutablePath(path string) (string, error) {
+	cleanPath, err := cleanExecutablePath(path)
+	if err != nil {
+		return "", err
+	}
+	resolvedPath, err := resolveExecutablePath(cleanPath)
+	if err != nil {
+		return "", err
+	}
+	return inspectExecutablePath(resolvedPath)
+}
+
+func cleanExecutablePath(path string) (string, error) {
 	if strings.TrimSpace(path) == "" {
 		return "", fmt.Errorf("executable path cannot be empty")
 	}
-
 	cleanPath := filepath.Clean(path)
 	if !filepath.IsAbs(cleanPath) {
 		return "", fmt.Errorf("executable path must be absolute: %s", path)
 	}
+	return cleanPath, nil
+}
 
+func resolveExecutablePath(cleanPath string) (string, error) {
 	resolvedPath, err := filepath.EvalSymlinks(cleanPath)
 	if err != nil {
 		return "", fmt.Errorf("failed to resolve executable %s: %w", cleanPath, err)
 	}
+	return resolvedPath, nil
+}
 
+func inspectExecutablePath(resolvedPath string) (string, error) {
 	info, err := safefs.Stat(resolvedPath)
 	if err != nil {
 		return "", fmt.Errorf("failed to inspect executable %s: %w", resolvedPath, err)
@@ -390,6 +509,7 @@ func validateExecutablePath(path string) (string, error) {
 	return resolvedPath, nil
 }
 
+//nolint:legibility // Monitor interface requires this method name.
 func (m *ProcessMonitor) GetInstalledPackages() ([]*core.PackageInfo, error) {
 	return nil, fmt.Errorf("not implemented for base process monitor")
 }

@@ -51,6 +51,14 @@ func TestActivityReportsWarningAndFailure(t *testing.T) {
 }
 
 func TestActivityRestoresCursorWhenAnimated(t *testing.T) {
+	output := animatedActivityOutput(t)
+	assertCursorRestored(t, output)
+	assertActivityCompletion(t, output)
+}
+
+func animatedActivityOutput(t *testing.T) string {
+	t.Helper()
+
 	t.Setenv("DIU_ACTIVITY", "always")
 	t.Setenv("DIU_COLOR", "never")
 	t.Setenv("TERM", "xterm-256color")
@@ -60,10 +68,23 @@ func TestActivityRestoresCursorWhenAnimated(t *testing.T) {
 	activity := out.StartActivity("loading")
 	activity.Success("loaded")
 
-	output := stderr.String()
-	if !strings.Contains(output, "\x1b[?25l") || !strings.Contains(output, "\x1b[?25h") {
+	return stderr.String()
+}
+
+func assertCursorRestored(t *testing.T, output string) {
+	t.Helper()
+
+	hidesCursor := strings.Contains(output, "\x1b[?25l")
+	showsCursor := strings.Contains(output, "\x1b[?25h")
+	restoresCursor := hidesCursor && showsCursor
+	if !restoresCursor {
 		t.Fatalf("activity did not restore cursor: %q", output)
 	}
+}
+
+func assertActivityCompletion(t *testing.T, output string) {
+	t.Helper()
+
 	if !strings.HasSuffix(output, "[ok] loaded\n") {
 		t.Fatalf("activity completion = %q", output)
 	}
@@ -102,6 +123,14 @@ func TestActivityStopIsIdempotent(t *testing.T) {
 }
 
 func TestActivityNoticeStopsAnimationBeforeStatus(t *testing.T) {
+	output := activityNoticeOutput(t)
+	assertSingleCursorRestore(t, output)
+	assertActivityStatusesOrdered(t, output)
+}
+
+func activityNoticeOutput(t *testing.T) string {
+	t.Helper()
+
 	t.Setenv("DIU_ACTIVITY", "always")
 	t.Setenv("DIU_COLOR", "never")
 	t.Setenv("TERM", "xterm-256color")
@@ -112,13 +141,26 @@ func TestActivityNoticeStopsAnimationBeforeStatus(t *testing.T) {
 	activity.Notice(dx.Warning, "partial result")
 	activity.Success("loaded")
 
-	output := stderr.String()
+	return stderr.String()
+}
+
+func assertSingleCursorRestore(t *testing.T, output string) {
+	t.Helper()
+
 	if strings.Count(output, "\x1b[?25h") != 1 {
 		t.Fatalf("cursor restore count in %q", output)
 	}
+}
+
+func assertActivityStatusesOrdered(t *testing.T, output string) {
+	t.Helper()
+
 	warningIndex := strings.Index(output, "[!] partial result\n")
 	successIndex := strings.Index(output, "[ok] loaded\n")
-	if warningIndex < 0 || successIndex < warningIndex {
+	hasWarning := warningIndex >= 0
+	successAfterWarning := successIndex >= warningIndex
+	statusesOrdered := hasWarning && successAfterWarning
+	if !statusesOrdered {
 		t.Fatalf("activity statuses interleaved: %q", output)
 	}
 }

@@ -92,91 +92,116 @@ type ReportingConfig struct {
 }
 
 func DefaultConfig() *Config {
+	dataDir := DefaultDataDir()
+	config := &Config{
+		Version:    ConfigVersion,
+		Daemon:     defaultDaemonConfig(dataDir),
+		Storage:    defaultStorageConfig(dataDir),
+		Monitoring: defaultMonitoringConfig(),
+		Tools:      defaultToolsConfig(),
+		API:        defaultAPIConfig(),
+		Reporting:  defaultReportingConfig(),
+	}
+	return config
+}
+
+func defaultDaemonConfig(dataDir string) DaemonConfig {
+	return DaemonConfig{
+		Port:       DefaultDaemonPort,
+		LogLevel:   DefaultLogLevel,
+		DataDir:    dataDir,
+		PIDFile:    DefaultPIDFilePath(dataDir),
+		SocketPath: DefaultSocketPath(dataDir),
+	}
+}
+
+func defaultStorageConfig(dataDir string) StorageConfig {
+	return StorageConfig{
+		Backend:         StorageBackendJSON,
+		JSONFile:        filepath.Join(dataDir, "executions.json"),
+		BackupEnabled:   true,
+		BackupInterval:  24 * time.Hour,
+		RetentionDays:   DefaultRetentionDays,
+		MaxExecutions:   DefaultMaxExecutions,
+		MaxStorageBytes: DefaultMaxStorageBytes,
+		MaxBackups:      DefaultMaxBackups,
+	}
+}
+
+func defaultMonitoringConfig() MonitoringConfig {
 	homeDir := os.Getenv("HOME")
 	if dir, err := os.UserHomeDir(); err == nil {
 		homeDir = dir
 	}
-	dataDir := DefaultDataDir()
-
-	return &Config{
-		Version: ConfigVersion,
-		Daemon: DaemonConfig{
-			Port:       DefaultDaemonPort,
-			LogLevel:   DefaultLogLevel,
-			DataDir:    dataDir,
-			PIDFile:    DefaultPIDFilePath(dataDir),
-			SocketPath: DefaultSocketPath(dataDir),
-		},
-		Storage: StorageConfig{
-			Backend:         StorageBackendJSON,
-			JSONFile:        filepath.Join(dataDir, "executions.json"),
-			BackupEnabled:   true,
-			BackupInterval:  24 * time.Hour,
-			RetentionDays:   DefaultRetentionDays,
-			MaxExecutions:   DefaultMaxExecutions,
-			MaxStorageBytes: DefaultMaxStorageBytes,
-			MaxBackups:      DefaultMaxBackups,
-		},
-		Monitoring: MonitoringConfig{
-			EnabledTools: DefaultEnabledTools,
-			Methods:      DefaultMonitorMethods,
-			Process: ProcessConfig{
-				WrapperDir:          filepath.Join(homeDir, ".local", "bin", "diu-wrappers"),
-				AutoInstallWrappers: true,
-			},
-			Filesystem: FilesystemConfig{
-				ScanInterval: 30 * time.Second,
-				WatchPaths: map[string][]string{
-					ToolHomebrew: HomebrewBinPaths,
-					ToolNPM:      {filepath.Join(homeDir, ".npm", "bin"), "/usr/local/lib/node_modules"},
-					ToolPNPM:     {filepath.Join(homeDir, "Library", "pnpm"), filepath.Join(homeDir, ".local", "share", "pnpm")},
-					ToolBun:      {filepath.Join(homeDir, ".bun", "bin")},
-				},
-			},
-		},
-		Tools: ToolsConfig{
-			Homebrew: HomebrewConfig{
-				CellarPaths:   HomebrewCellarPaths,
-				TrackCasks:    true,
-				TrackServices: true,
-			},
-			NPM: NPMConfig{
-				TrackGlobalOnly:       true,
-				IgnoreDevDependencies: true,
-			},
-			Go: GoConfig{
-				GoPath: os.Getenv("GOPATH"),
-				GoBin:  os.Getenv("GOBIN"),
-			},
-		},
-		API: APIConfig{
-			Enabled:     true,
-			Host:        DefaultAPIHost,
-			Port:        DefaultAPIPort,
-			CORSEnabled: false,
-		},
-		Reporting: ReportingConfig{
-			DailySummary:  true,
-			WeeklySummary: true,
-			EmailReports:  false,
-		},
+	return MonitoringConfig{
+		EnabledTools: DefaultEnabledTools,
+		Methods:      DefaultMonitorMethods,
+		Process:      defaultProcessConfig(homeDir),
+		Filesystem:   defaultFilesystemConfig(homeDir),
 	}
+}
+
+func defaultProcessConfig(homeDir string) ProcessConfig {
+	return ProcessConfig{
+		WrapperDir:          filepath.Join(homeDir, ".local", "bin", "diu-wrappers"),
+		AutoInstallWrappers: true,
+	}
+}
+
+func defaultFilesystemConfig(homeDir string) FilesystemConfig {
+	watchPaths := map[string][]string{
+		ToolHomebrew: HomebrewBinPaths,
+		ToolNPM:      {filepath.Join(homeDir, ".npm", "bin"), "/usr/local/lib/node_modules"},
+		ToolPNPM:     {filepath.Join(homeDir, "Library", "pnpm"), filepath.Join(homeDir, ".local", "share", "pnpm")},
+		ToolBun:      {filepath.Join(homeDir, ".bun", "bin")},
+	}
+	return FilesystemConfig{ScanInterval: 30 * time.Second, WatchPaths: watchPaths}
+}
+
+func defaultToolsConfig() ToolsConfig {
+	return ToolsConfig{
+		Homebrew: HomebrewConfig{
+			CellarPaths:   HomebrewCellarPaths,
+			TrackCasks:    true,
+			TrackServices: true,
+		},
+		NPM: NPMConfig{TrackGlobalOnly: true, IgnoreDevDependencies: true},
+		Go:  GoConfig{GoPath: os.Getenv("GOPATH"), GoBin: os.Getenv("GOBIN")},
+	}
+}
+
+func defaultAPIConfig() APIConfig {
+	return APIConfig{Enabled: true, Host: DefaultAPIHost, Port: DefaultAPIPort}
+}
+
+func defaultReportingConfig() ReportingConfig {
+	return ReportingConfig{DailySummary: true, WeeklySummary: true}
 }
 
 func LoadConfig(path string) (*Config, error) {
 	if path == "" {
-		homeDir, _ := os.UserHomeDir()
-		path = filepath.Join(homeDir, ".config", "diu", "config.json")
+		path = defaultConfigPath()
 	}
-
 	data, err := safefs.ReadFile(path)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return DefaultConfig(), nil
-		}
-		return nil, fmt.Errorf("failed to read config: %w", err)
+		return configForReadError(err)
 	}
+	return parseConfig(data)
+}
 
+func defaultConfigPath() string {
+	homeDir, _ := os.UserHomeDir()
+	return filepath.Join(homeDir, ".config", "diu", "config.json")
+}
+
+func configForReadError(err error) (*Config, error) {
+	if os.IsNotExist(err) {
+		return DefaultConfig(), nil
+	}
+	return nil, fmt.Errorf("failed to read config: %w", err)
+}
+
+func parseConfig(data []byte) (*Config, error) {
 	cfg := DefaultConfig()
 	defaultWatchPaths := cfg.Monitoring.Filesystem.WatchPaths
 	cfg.Monitoring.Filesystem.WatchPaths = nil

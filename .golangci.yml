@@ -11,22 +11,6 @@ linters:
         description: Syntax-only Go legibility rules.
         original-url: github.com/yowainwright/golangci-lint-legibility
         settings:
-          disabled-rules:
-            - LEG001
-            - LEG002
-            - LEG003
-            - LEG005
-            - LEG008
-            - LEG009
-            - LEG010
-            - LEG012
-            - LEG031
-            - LEG035
-            - LEG037
-            - LEG038
-            - LEG042
-            - LEG045
-            - LEG051
           max-expression-operators: 4
           max-if-operators: 0
           max-control-flow-depth: 3

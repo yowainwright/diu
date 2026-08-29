@@ -20,7 +20,10 @@ func TestTruncatePreservesAnsiAndVisibleWidth(t *testing.T) {
 	if dx.VisibleWidth(truncated) != 4 {
 		t.Fatalf("visible width = %d, want 4", dx.VisibleWidth(truncated))
 	}
-	if !strings.Contains(truncated, "\x1b[36m") || !strings.HasSuffix(truncated, "\x1b[0m") {
+	preservesColor := strings.Contains(truncated, "\x1b[36m")
+	hasReset := strings.HasSuffix(truncated, "\x1b[0m")
+	preservesANSI := preservesColor && hasReset
+	if !preservesANSI {
 		t.Fatalf("Truncate lost ANSI state: %q", truncated)
 	}
 }
@@ -63,7 +66,9 @@ func TestProgressShowsZeroAndCompleteStates(t *testing.T) {
 }
 
 func TestTableUsesContentWidths(t *testing.T) {
-	table := dx.Table([]string{"tool", "uses"}, [][]string{{"npm", "12"}, {"homebrew", "2"}})
+	headers := []string{"tool", "uses"}
+	rows := [][]string{{"npm", "12"}, {"homebrew", "2"}}
+	table := dx.Table(headers, rows)
 	want := "tool      uses\nnpm       12  \nhomebrew  2   "
 	if table != want {
 		t.Fatalf("Table = %q, want %q", table, want)

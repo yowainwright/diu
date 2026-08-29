@@ -17,10 +17,10 @@ type Storage interface {
 	UpdatePackage(pkg *core.PackageInfo) error
 	GetPackage(tool, name string) (*core.PackageInfo, error)
 	GetPackages(tool string) ([]*core.PackageInfo, error)
-	GetAllPackages() (map[string]map[string]*core.PackageInfo, error)
+	AllPackages() (map[string]map[string]*core.PackageInfo, error)
 	DeletePackage(tool, name string) error
 
-	GetStatistics() (*core.StorageStatistics, error)
+	Statistics() (*core.StorageStatistics, error)
 	UpdateStatistics() error
 
 	Prepare() error
@@ -39,5 +39,3 @@ type QueryOptions struct {
 	SortBy    string
 	SortOrder string
 }
-
-type StorageFactory func(config *core.Config) (Storage, error)

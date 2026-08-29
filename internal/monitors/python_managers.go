@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/yowainwright/diu/internal/core"
-	"github.com/yowainwright/diu/internal/fn"
 )
 
 const (
@@ -20,6 +19,31 @@ const (
 	poetryCommandName = "poetry"
 	pythonListFormat  = "--format=json"
 )
+
+var pythonPackageValueFlags = map[string]bool{
+	"-r":                true,
+	"--requirement":     true,
+	"-c":                true,
+	"--constraint":      true,
+	"-i":                true,
+	"--index-url":       true,
+	"--extra-index-url": true,
+	"-f":                true,
+	"--find-links":      true,
+	"--trusted-host":    true,
+	"--python":          true,
+	"--python-version":  true,
+	"--platform":        true,
+	"--target":          true,
+	"--prefix":          true,
+	"--root":            true,
+	"--group":           true,
+	"--with":            true,
+	"--without":         true,
+	"--from":            true,
+	"-E":                true,
+	"--extras":          true,
+}
 
 type PipMonitor struct {
 	*ProcessMonitor
@@ -45,45 +69,54 @@ func (m *PipMonitor) Initialize(config *core.Config) error {
 }
 
 func (m *PipMonitor) ParseCommand(cmd string, args []string) (*core.ExecutionRecord, error) {
-	record := &core.ExecutionRecord{
-		Tool:     core.ToolPip,
+	record := newPythonExecutionRecord(core.ToolPip, cmd, args)
+	if len(args) == 0 {
+		return record, nil
+	}
+	applyPipSubcommand(record, args[0], args[1:])
+	return record, nil
+}
+
+func newPythonExecutionRecord(tool, cmd string, args []string) *core.ExecutionRecord {
+	return &core.ExecutionRecord{
+		Tool:     tool,
 		Command:  cmd,
 		Args:     args,
 		Metadata: make(map[string]interface{}),
 	}
-	if len(args) == 0 {
-		return record, nil
-	}
+}
 
-	subcommand := args[0]
+func applyPipSubcommand(record *core.ExecutionRecord, subcommand string, args []string) {
 	record.Metadata["subcommand"] = subcommand
 	switch subcommand {
 	case "install":
-		record.PackagesAffected = extractPythonPackages(args[1:])
+		record.PackagesAffected = extractPythonPackages(args)
 		record.Metadata["action"] = "install"
 	case "uninstall", "remove":
-		record.PackagesAffected = extractPythonPackages(args[1:])
+		record.PackagesAffected = extractPythonPackages(args)
 		record.Metadata["action"] = "uninstall"
 	case "list":
 		record.Metadata["action"] = "list"
 	case "freeze":
 		record.Metadata["action"] = "freeze"
 	case "show":
-		record.PackagesAffected = extractPythonPackages(args[1:])
+		record.PackagesAffected = extractPythonPackages(args)
 		record.Metadata["action"] = "show"
 	}
-	return record, nil
 }
 
+//nolint:legibility // Monitor interface requires this method name.
 func (m *PipMonitor) GetInstalledPackages() ([]*core.PackageInfo, error) {
-	output, err := runPipListCommandOutput(m.commandName, true)
+	jsonOutput := true
+	output, err := runPipListCommandOutput(m.commandName, jsonOutput)
 	if err == nil && len(output) > 0 {
 		if packages, parseErr := parsePythonPackageJSON(core.ToolPip, output); parseErr == nil {
 			return packages, nil
 		}
 	}
 
-	output, err = runPipListCommandOutput(m.commandName, false)
+	jsonOutput = false
+	output, err = runPipListCommandOutput(m.commandName, jsonOutput)
 	if err != nil && len(output) == 0 {
 		return nil, fmt.Errorf("failed to list pip packages: %w", err)
 	}
@@ -91,7 +124,8 @@ func (m *PipMonitor) GetInstalledPackages() ([]*core.PackageInfo, error) {
 }
 
 func (m *PipMonitor) Start(ctx context.Context, eventChan chan<- *core.ExecutionRecord) error {
-	return m.ProcessMonitor.Start(ctx, eventChan)
+	err := m.ProcessMonitor.Start(ctx, eventChan)
+	return err
 }
 
 type UVMonitor struct {
@@ -112,35 +146,33 @@ func (m *UVMonitor) Initialize(config *core.Config) error {
 }
 
 func (m *UVMonitor) ParseCommand(cmd string, args []string) (*core.ExecutionRecord, error) {
-	record := &core.ExecutionRecord{
-		Tool:     core.ToolUV,
-		Command:  cmd,
-		Args:     args,
-		Metadata: make(map[string]interface{}),
-	}
+	record := newPythonExecutionRecord(core.ToolUV, cmd, args)
 	if len(args) == 0 {
 		return record, nil
 	}
+	applyUVSubcommand(record, args[0], args[1:])
+	return record, nil
+}
 
-	subcommand := args[0]
+func applyUVSubcommand(record *core.ExecutionRecord, subcommand string, args []string) {
 	record.Metadata["subcommand"] = subcommand
 	switch subcommand {
 	case "pip":
-		parseUVPipCommand(record, args[1:])
+		parseUVPipCommand(record, args)
 	case "tool":
-		parseUVToolCommand(record, args[1:])
+		parseUVToolCommand(record, args)
 	case "add":
-		record.PackagesAffected = extractPythonPackages(args[1:])
+		record.PackagesAffected = extractPythonPackages(args)
 		record.Metadata["action"] = "add"
 	case "remove":
-		record.PackagesAffected = extractPythonPackages(args[1:])
+		record.PackagesAffected = extractPythonPackages(args)
 		record.Metadata["action"] = "remove"
 	case "sync", "lock", "run":
 		record.Metadata["action"] = subcommand
 	}
-	return record, nil
 }
 
+//nolint:legibility // Monitor interface requires this method name.
 func (m *UVMonitor) GetInstalledPackages() ([]*core.PackageInfo, error) {
 	output, err := exec.Command(uvCommandName, "tool", "list").Output()
 	if err == nil && len(output) > 0 {
@@ -158,7 +190,8 @@ func (m *UVMonitor) GetInstalledPackages() ([]*core.PackageInfo, error) {
 }
 
 func (m *UVMonitor) Start(ctx context.Context, eventChan chan<- *core.ExecutionRecord) error {
-	return m.ProcessMonitor.Start(ctx, eventChan)
+	err := m.ProcessMonitor.Start(ctx, eventChan)
+	return err
 }
 
 type PoetryMonitor struct {
@@ -179,55 +212,67 @@ func (m *PoetryMonitor) Initialize(config *core.Config) error {
 }
 
 func (m *PoetryMonitor) ParseCommand(cmd string, args []string) (*core.ExecutionRecord, error) {
-	record := &core.ExecutionRecord{
-		Tool:     core.ToolPoetry,
-		Command:  cmd,
-		Args:     args,
-		Metadata: make(map[string]interface{}),
-	}
+	record := newPythonExecutionRecord(core.ToolPoetry, cmd, args)
 	if len(args) == 0 {
 		return record, nil
 	}
-
-	subcommand := args[0]
-	record.Metadata["subcommand"] = subcommand
-	switch subcommand {
-	case "add":
-		record.PackagesAffected = extractPythonPackages(args[1:])
-		record.Metadata["action"] = "add"
-	case "remove":
-		record.PackagesAffected = extractPythonPackages(args[1:])
-		record.Metadata["action"] = "remove"
-	case "update":
-		record.PackagesAffected = extractPythonPackages(args[1:])
-		record.Metadata["action"] = "update"
-	case "show":
-		record.PackagesAffected = extractPythonPackages(args[1:])
-		record.Metadata["action"] = "show"
-	case "install", "sync", "lock":
-		record.Metadata["action"] = subcommand
-	case "self":
-		parsePoetrySelfCommand(record, args[1:])
-	}
+	applyPoetrySubcommand(record, args[0], args[1:])
 	return record, nil
 }
 
+func applyPoetrySubcommand(record *core.ExecutionRecord, subcommand string, args []string) {
+	record.Metadata["subcommand"] = subcommand
+
+	if isPoetryPackageAction(subcommand) {
+		record.PackagesAffected = extractPythonPackages(args)
+		record.Metadata["action"] = subcommand
+		return
+	}
+	if isPoetryLifecycleAction(subcommand) {
+		record.Metadata["action"] = subcommand
+		return
+	}
+	if subcommand == "self" {
+		parsePoetrySelfCommand(record, args)
+	}
+}
+
+func isPoetryPackageAction(subcommand string) bool {
+	switch subcommand {
+	case "add", "remove", "update", "show":
+		return true
+	default:
+		return false
+	}
+}
+
+func isPoetryLifecycleAction(subcommand string) bool {
+	switch subcommand {
+	case "install", "sync", "lock":
+		return true
+	default:
+		return false
+	}
+}
+
+//nolint:legibility // Monitor interface requires this method name.
 func (m *PoetryMonitor) GetInstalledPackages() ([]*core.PackageInfo, error) {
 	return nil, nil
 }
 
 func (m *PoetryMonitor) Start(ctx context.Context, eventChan chan<- *core.ExecutionRecord) error {
-	return m.ProcessMonitor.Start(ctx, eventChan)
+	err := m.ProcessMonitor.Start(ctx, eventChan)
+	return err
 }
 
 func firstAvailableCommand(names ...string) (string, error) {
 	var lastErr error
 	for _, name := range names {
-		if _, err := exec.LookPath(name); err == nil {
+		_, err := exec.LookPath(name)
+		if err == nil {
 			return name, nil
-		} else {
-			lastErr = err
 		}
+		lastErr = err
 	}
 	return "", lastErr
 }
@@ -319,31 +364,6 @@ func parsePoetrySelfCommand(record *core.ExecutionRecord, args []string) {
 }
 
 func extractPythonPackages(args []string) []string {
-	valueFlags := map[string]bool{
-		"-r":                true,
-		"--requirement":     true,
-		"-c":                true,
-		"--constraint":      true,
-		"-i":                true,
-		"--index-url":       true,
-		"--extra-index-url": true,
-		"-f":                true,
-		"--find-links":      true,
-		"--trusted-host":    true,
-		"--python":          true,
-		"--python-version":  true,
-		"--platform":        true,
-		"--target":          true,
-		"--prefix":          true,
-		"--root":            true,
-		"--group":           true,
-		"--with":            true,
-		"--without":         true,
-		"--from":            true,
-		"-E":                true,
-		"--extras":          true,
-	}
-
 	var packages []string
 	skipNext := false
 	for _, arg := range args {
@@ -351,25 +371,31 @@ func extractPythonPackages(args []string) []string {
 			skipNext = false
 			continue
 		}
-		if arg == "" {
+		pkg, skipsNextArg := pythonPackageFromArg(arg)
+		if skipsNextArg {
+			skipNext = true
 			continue
 		}
-		if strings.HasPrefix(arg, "-") {
-			if valueFlags[arg] {
-				skipNext = true
-			}
-			continue
-		}
-		if pkg := cleanPythonPackageSpec(arg); pkg != "" {
+		if pkg != "" {
 			packages = append(packages, pkg)
 		}
 	}
 	return packages
 }
 
+func pythonPackageFromArg(arg string) (string, bool) {
+	if arg == "" {
+		return "", false
+	}
+	if strings.HasPrefix(arg, "-") {
+		return "", pythonPackageValueFlags[arg]
+	}
+	return cleanPythonPackageSpec(arg), false
+}
+
 func cleanPythonPackageSpec(spec string) string {
 	spec = strings.Trim(strings.TrimSpace(spec), `"'`)
-	if spec == "" || spec == "." || strings.HasPrefix(spec, "./") || strings.HasPrefix(spec, "../") || strings.HasPrefix(spec, "/") || strings.Contains(spec, "://") {
+	if skipsPythonPackageSpec(spec) {
 		return ""
 	}
 	if at := strings.Index(spec, " @ "); at > 0 {
@@ -388,6 +414,16 @@ func cleanPythonPackageSpec(spec string) string {
 	return spec
 }
 
+func skipsPythonPackageSpec(spec string) bool {
+	isEmpty := spec == ""
+	isCurrentDir := spec == "."
+	isRelativePath := strings.HasPrefix(spec, "./") || strings.HasPrefix(spec, "../")
+	isAbsolutePath := strings.HasPrefix(spec, "/")
+	isURL := strings.Contains(spec, "://")
+	skipSpec := isEmpty || isCurrentDir || isRelativePath || isAbsolutePath || isURL
+	return skipSpec
+}
+
 type pythonPackageJSON struct {
 	Name    string `json:"name"`
 	Version string `json:"version"`
@@ -398,17 +434,18 @@ func parsePythonPackageJSON(tool string, output []byte) ([]*core.PackageInfo, er
 	if err := json.Unmarshal(output, &raw); err != nil {
 		return nil, err
 	}
-	named := fn.Filter(raw, func(item pythonPackageJSON) bool {
-		return item.Name != ""
-	})
-	packages := fn.Map(named, func(item pythonPackageJSON) *core.PackageInfo {
-		return &core.PackageInfo{
+	packages := make([]*core.PackageInfo, 0, len(raw))
+	for _, item := range raw {
+		if item.Name == "" {
+			continue
+		}
+		packages = append(packages, &core.PackageInfo{
 			Name:        item.Name,
 			Version:     item.Version,
 			Tool:        tool,
 			InstallDate: time.Now(),
-		}
-	})
+		})
+	}
 	return packages, nil
 }
 
@@ -416,46 +453,83 @@ func parsePythonPackageLines(tool, output string) []*core.PackageInfo {
 	var packages []*core.PackageInfo
 	scanner := bufio.NewScanner(strings.NewReader(output))
 	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "Package ") || strings.HasPrefix(line, "---") {
+		pkg := pythonPackageFromLine(tool, scanner.Text())
+		if pkg == nil {
 			continue
 		}
-		fields := strings.Fields(line)
-		if len(fields) < 2 {
-			continue
-		}
-		packages = append(packages, &core.PackageInfo{
-			Name:        fields[0],
-			Version:     fields[1],
-			Tool:        tool,
-			InstallDate: time.Now(),
-		})
+		packages = append(packages, pkg)
 	}
 	return packages
+}
+
+func pythonPackageFromLine(tool, line string) *core.PackageInfo {
+	line = strings.TrimSpace(line)
+	if skipPythonPackageLine(line) {
+		return nil
+	}
+	fields := strings.Fields(line)
+	if len(fields) < 2 {
+		return nil
+	}
+	return &core.PackageInfo{
+		Name:        fields[0],
+		Version:     fields[1],
+		Tool:        tool,
+		InstallDate: time.Now(),
+	}
+}
+
+func skipPythonPackageLine(line string) bool {
+	if line == "" {
+		return true
+	}
+	if strings.HasPrefix(line, "Package ") {
+		return true
+	}
+	return strings.HasPrefix(line, "---")
 }
 
 func parseUVToolList(output string) []*core.PackageInfo {
 	var packages []*core.PackageInfo
 	scanner := bufio.NewScanner(strings.NewReader(output))
 	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "-") {
+		pkg := parseUVToolPackage(scanner.Text())
+		if pkg == nil {
 			continue
 		}
-		fields := strings.Fields(line)
-		if len(fields) == 0 {
-			continue
-		}
-		version := ""
-		if len(fields) > 1 && looksLikeVersion(fields[1]) {
-			version = fields[1]
-		}
-		packages = append(packages, &core.PackageInfo{
-			Name:        fields[0],
-			Version:     version,
-			Tool:        core.ToolUV,
-			InstallDate: time.Now(),
-		})
+		packages = append(packages, pkg)
 	}
 	return packages
+}
+
+func parseUVToolPackage(text string) *core.PackageInfo {
+	line := strings.TrimSpace(text)
+	if skipUVToolLine(line) {
+		return nil
+	}
+	fields := strings.Fields(line)
+	if len(fields) == 0 {
+		return nil
+	}
+	return &core.PackageInfo{
+		Name:        fields[0],
+		Version:     uvToolVersion(fields),
+		Tool:        core.ToolUV,
+		InstallDate: time.Now(),
+	}
+}
+
+func uvToolVersion(fields []string) string {
+	hasVersion := len(fields) > 1 && looksLikeVersion(fields[1])
+	if hasVersion {
+		return fields[1]
+	}
+	return ""
+}
+
+func skipUVToolLine(line string) bool {
+	if line == "" {
+		return true
+	}
+	return strings.HasPrefix(line, "-")
 }

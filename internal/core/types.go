@@ -96,7 +96,7 @@ type StorageData struct {
 	Version            string                            `json:"version"`
 	ExecutionLogFormat string                            `json:"execution_log_format,omitempty"`
 	Metadata           StorageMetadata                   `json:"metadata"`
-	Executions         []ExecutionRecord                 `json:"executions,omitempty"`
+	Executions         []ExecutionRecord                 `json:"executions"`
 	Packages           map[string]map[string]PackageInfo `json:"packages"`
 	PackageTombstones  map[string]map[string]int64       `json:"package_tombstones,omitempty"`
 	Statistics         StorageStatistics                 `json:"statistics"`

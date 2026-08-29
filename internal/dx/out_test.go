@@ -52,7 +52,11 @@ func TestOutExposesConfiguredStreams(t *testing.T) {
 	stdin := strings.NewReader("input")
 	out := dx.NewOut(&stdout, &stderr, stdin)
 
-	if out.Stdout() != &stdout || out.Stderr() != &stderr || out.Stdin() != stdin {
+	hasStdout := out.Stdout() == &stdout
+	hasStderr := out.Stderr() == &stderr
+	hasStdin := out.Stdin() == stdin
+	hasConfiguredStreams := hasStdout && hasStderr && hasStdin
+	if !hasConfiguredStreams {
 		t.Fatal("Out did not retain its configured streams")
 	}
 }
@@ -63,7 +67,11 @@ func TestOutUsesSafeDefaultsForMissingStreams(t *testing.T) {
 
 	out.Print("data")
 	out.UI("status")
-	if out.Stdout() == nil || out.Stderr() == nil || out.Stdin() == nil {
+	hasStdout := out.Stdout() != nil
+	hasStderr := out.Stderr() != nil
+	hasStdin := out.Stdin() != nil
+	hasStreams := hasStdout && hasStderr && hasStdin
+	if !hasStreams {
 		t.Fatal("missing stream was left nil")
 	}
 	if out.CanPrompt() {
@@ -127,15 +135,36 @@ func TestOutCanForceStandardAnsiColor(t *testing.T) {
 }
 
 func TestOutUsesSemanticToneColors(t *testing.T) {
+	out := newColorTestOut(t)
+	assertSemanticToneColors(t, out)
+	assertPlainTone(t, out)
+	assertUnknownTone(t, out)
+}
+
+func newColorTestOut(t *testing.T) *dx.Out {
+	t.Helper()
+
 	t.Setenv("DIU_COLOR", "always")
 	t.Setenv("NO_COLOR", "")
 	t.Setenv("TERM", "xterm-256color")
-	out := dx.NewOut(&bytes.Buffer{}, &bytes.Buffer{}, strings.NewReader(""))
+	return dx.NewOut(&bytes.Buffer{}, &bytes.Buffer{}, strings.NewReader(""))
+}
 
-	tests := []struct {
-		tone dx.Tone
-		code string
-	}{
+func assertSemanticToneColors(t *testing.T, out *dx.Out) {
+	t.Helper()
+
+	for _, test := range semanticToneColorTests() {
+		assertSemanticToneColor(t, out, test)
+	}
+}
+
+type semanticToneColorTest struct {
+	tone dx.Tone
+	code string
+}
+
+func semanticToneColorTests() []semanticToneColorTest {
+	return []semanticToneColorTest{
 		{tone: dx.Accent, code: "1;36"},
 		{tone: dx.Success, code: "32"},
 		{tone: dx.Warning, code: "33"},
@@ -143,15 +172,28 @@ func TestOutUsesSemanticToneColors(t *testing.T) {
 		{tone: dx.Info, code: "36"},
 		{tone: dx.Muted, code: "2"},
 	}
-	for _, test := range tests {
-		want := "\x1b[" + test.code + "mtext\x1b[0m"
-		if got := out.DataStyle(test.tone, "text"); got != want {
-			t.Fatalf("DataStyle(%d) = %q, want %q", test.tone, got, want)
-		}
+}
+
+func assertSemanticToneColor(t *testing.T, out *dx.Out, test semanticToneColorTest) {
+	t.Helper()
+
+	want := "\x1b[" + test.code + "mtext\x1b[0m"
+	if got := out.DataStyle(test.tone, "text"); got != want {
+		t.Fatalf("DataStyle(%d) = %q, want %q", test.tone, got, want)
 	}
+}
+
+func assertPlainTone(t *testing.T, out *dx.Out) {
+	t.Helper()
+
 	if got := out.DataStyle(dx.Plain, "text"); got != "text" {
 		t.Fatalf("plain text = %q", got)
 	}
+}
+
+func assertUnknownTone(t *testing.T, out *dx.Out) {
+	t.Helper()
+
 	if got := out.DataStyle(dx.Tone(255), "text"); got != "text" {
 		t.Fatalf("unknown tone = %q", got)
 	}

@@ -40,15 +40,33 @@ func TestRootCommandHelpListsPublicCommands(t *testing.T) {
 	if err := root.Execute([]string{"--help"}); err != nil {
 		t.Fatalf("help failed: %v", err)
 	}
+	assertPublicCommandsListed(t, stdout.String())
+	assertRecordCommandHidden(t, stdout.String())
+	assertEmptyHelpStderr(t, stderr.String())
+}
+
+func assertPublicCommandsListed(t *testing.T, help string) {
+	t.Helper()
+
 	for _, name := range []string{"daemon", "query", "stats", "packages", "check", "manage", "config", "status", "diagnostics", "setup", "uninstall", "scan"} {
-		if !strings.Contains(stdout.String(), name) {
-			t.Fatalf("help = %q, want command %q", stdout.String(), name)
+		if !strings.Contains(help, name) {
+			t.Fatalf("help = %q, want command %q", help, name)
 		}
 	}
-	if strings.Contains(stdout.String(), "record") {
-		t.Fatalf("help exposed hidden record command: %q", stdout.String())
+}
+
+func assertRecordCommandHidden(t *testing.T, help string) {
+	t.Helper()
+
+	if strings.Contains(help, "record") {
+		t.Fatalf("help exposed hidden record command: %q", help)
 	}
-	if stderr.Len() != 0 {
-		t.Fatalf("stderr = %q", stderr.String())
+}
+
+func assertEmptyHelpStderr(t *testing.T, stderr string) {
+	t.Helper()
+
+	if stderr != "" {
+		t.Fatalf("stderr = %q", stderr)
 	}
 }

@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/yowainwright/diu/internal/core"
-	"github.com/yowainwright/diu/internal/fn"
 	"github.com/yowainwright/diu/internal/safefs"
 )
 
@@ -51,11 +50,21 @@ func (j *JSONStorage) Initialize(config *core.Config) error {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 
+	if err := j.ensureStorageDirectory(); err != nil {
+		return err
+	}
+	return j.loadOrCreateStorage()
+}
+
+func (j *JSONStorage) ensureStorageDirectory() error {
 	dir := filepath.Dir(j.filepath)
 	if err := os.MkdirAll(dir, core.OwnerDirectoryMode); err != nil {
 		return fmt.Errorf("failed to create storage directory: %w", err)
 	}
+	return nil
+}
 
+func (j *JSONStorage) loadOrCreateStorage() error {
 	if _, err := os.Stat(j.filepath); err != nil {
 		if !os.IsNotExist(err) {
 			return fmt.Errorf("failed to stat storage file: %w", err)
@@ -64,7 +73,8 @@ func (j *JSONStorage) Initialize(config *core.Config) error {
 	}
 
 	usesLog, err := storageUsesExecutionLog(j.filepath)
-	if err != nil || !usesLog {
+	hasCurrentLogFormat := err == nil && usesLog
+	if !hasCurrentLogFormat {
 		return err
 	}
 	if err := j.ensureCurrentExecutionLog(); err != nil {
@@ -100,6 +110,7 @@ func newStorageManifest() *core.StorageData {
 		Version:            "1.0.0",
 		ExecutionLogFormat: executionLogFormat,
 		Metadata:           metadata,
+		Executions:         []core.ExecutionRecord{},
 		Packages:           packages,
 		Statistics:         statistics,
 	}
@@ -156,7 +167,7 @@ func (j *JSONStorage) load() error {
 func (j *JSONStorage) save() error {
 	j.data.Metadata.LastUpdated = time.Now()
 	j.data.ExecutionLogFormat = executionLogFormat
-	j.data.Executions = nil
+	j.data.Executions = []core.ExecutionRecord{}
 	data, err := j.marshalStorage(j.data)
 	if err != nil {
 		return fmt.Errorf("failed to marshal storage data: %w", err)
@@ -217,11 +228,7 @@ func syncDirectory(path string) (err error) {
 		return fmt.Errorf("failed to open storage directory: %w", err)
 	}
 	defer func() {
-		closeErr := dir.Close()
-		shouldReturnCloseErr := err == nil && closeErr != nil
-		if shouldReturnCloseErr {
-			err = fmt.Errorf("failed to close storage directory: %w", closeErr)
-		}
+		err = safefs.CloseWithError(err, dir, "failed to close storage directory")
 	}()
 	if err := dir.Sync(); err != nil {
 		return fmt.Errorf("failed to sync storage directory: %w", err)
@@ -285,7 +292,11 @@ func (j *JSONStorage) addExecutionsLocked(records []*core.ExecutionRecord) error
 }
 
 func (j *JSONStorage) prepareExecutions(records []*core.ExecutionRecord) []core.ExecutionRecord {
-	return fn.Map(records, j.prepareExecution)
+	stored := make([]core.ExecutionRecord, len(records))
+	for index, record := range records {
+		stored[index] = j.prepareExecution(record)
+	}
+	return stored
 }
 
 func (j *JSONStorage) prepareExecution(record *core.ExecutionRecord) core.ExecutionRecord {
@@ -326,33 +337,67 @@ func packageToolForRecord(record core.ExecutionRecord) string {
 		return record.Tool
 	}
 	packageType, _ := record.Metadata["type"].(string)
-	if packageType == "cask" || slices.Contains(record.Args, "--cask") {
+	hasCaskType := packageType == "cask"
+	hasCaskFlag := slices.Contains(record.Args, "--cask")
+	isCask := hasCaskType || hasCaskFlag
+	if isCask {
 		return core.ToolHomebrewCask
 	}
 	return record.Tool
 }
 
 func (j *JSONStorage) updateExecutionStatistics(tool string) {
-	j.data.Statistics.TotalExecutions++
-	if j.data.Statistics.ExecutionFrequency == nil {
-		j.data.Statistics.ExecutionFrequency = make(map[string]int)
+	statistics := &j.data.Statistics
+	statistics.TotalExecutions++
+	if statistics.ExecutionFrequency == nil {
+		statistics.ExecutionFrequency = make(map[string]int)
 	}
-	if _, exists := j.data.Statistics.ExecutionFrequency[tool]; !exists {
-		j.data.Statistics.ToolsUsed = append(j.data.Statistics.ToolsUsed, tool)
+	if _, exists := statistics.ExecutionFrequency[tool]; !exists {
+		statistics.ToolsUsed = append(statistics.ToolsUsed, tool)
 	}
-	j.data.Statistics.ExecutionFrequency[tool]++
+	statistics.ExecutionFrequency[tool]++
 }
 
 func (j *JSONStorage) shouldUpdateInventory(record core.ExecutionRecord) bool {
-	if record.Tool == core.ToolGo || record.Tool == core.ToolPoetry {
+	if skipInventoryTool(record.Tool) {
 		return false
 	}
-	if record.Tool != core.ToolNPM && record.Tool != core.ToolPNPM && record.Tool != core.ToolBun {
+	if !isJSManager(record.Tool) {
 		return true
 	}
-	if record.Tool == core.ToolNPM && !j.config.Tools.NPM.TrackGlobalOnly {
+	if j.tracksLocalNPM(record.Tool) {
 		return true
 	}
+	return executionWasGlobal(record)
+}
+
+func skipInventoryTool(tool string) bool {
+	switch tool {
+	case core.ToolGo, core.ToolPoetry:
+		return true
+	default:
+		return false
+	}
+}
+
+func isJSManager(tool string) bool {
+	switch tool {
+	case core.ToolNPM, core.ToolPNPM, core.ToolBun:
+		return true
+	default:
+		return false
+	}
+}
+
+func (j *JSONStorage) tracksLocalNPM(tool string) bool {
+	if tool != core.ToolNPM {
+		return false
+	}
+	npmConfig := j.config.Tools.NPM
+	return !npmConfig.TrackGlobalOnly
+}
+
+func executionWasGlobal(record core.ExecutionRecord) bool {
 	isGlobal, exists := record.Metadata["global"].(bool)
 	return exists && isGlobal
 }
@@ -397,44 +442,45 @@ func (j *JSONStorage) UpdatePackages(packages []*core.PackageInfo) error {
 }
 
 func (j *JSONStorage) setPackage(pkg *core.PackageInfo) {
-	if j.data.Packages == nil {
-		j.data.Packages = make(map[string]map[string]core.PackageInfo)
-	}
-	if j.data.Packages[pkg.Tool] == nil {
-		j.data.Packages[pkg.Tool] = make(map[string]core.PackageInfo)
-	}
 	stored := copyPackageValue(*pkg)
 	stored.UpdatedAt = time.Now().UnixNano()
-	j.data.Packages[pkg.Tool][pkg.Name] = stored
+	toolPackages := j.ensureToolPackages(pkg.Tool)
+	toolPackages[pkg.Name] = stored
 	j.clearPackageTombstone(pkg.Tool, pkg.Name)
 }
 
 func (j *JSONStorage) updatePackageInternal(tool, name string, timestamp time.Time) {
+	toolPackages := j.ensureToolPackages(tool)
+	pkg, exists := toolPackages[name]
+	pkg = packageUsageForUpdate(pkg, exists, tool, name, timestamp)
+	pkg.UpdatedAt = time.Now().UnixNano()
+	toolPackages[name] = pkg
+	j.clearPackageTombstone(tool, name)
+}
+
+func (j *JSONStorage) ensureToolPackages(tool string) map[string]core.PackageInfo {
 	if j.data.Packages == nil {
 		j.data.Packages = make(map[string]map[string]core.PackageInfo)
 	}
-
 	if j.data.Packages[tool] == nil {
 		j.data.Packages[tool] = make(map[string]core.PackageInfo)
 	}
+	return j.data.Packages[tool]
+}
 
-	pkg, exists := j.data.Packages[tool][name]
+func packageUsageForUpdate(pkg core.PackageInfo, exists bool, tool, name string, timestamp time.Time) core.PackageInfo {
 	if !exists {
-		pkg = core.PackageInfo{
+		return core.PackageInfo{
 			Name:        name,
 			Tool:        tool,
 			InstallDate: timestamp,
 			LastUsed:    timestamp,
 			UsageCount:  1,
 		}
-	} else {
-		pkg.LastUsed = timestamp
-		pkg.UsageCount++
 	}
-	pkg.UpdatedAt = time.Now().UnixNano()
-
-	j.data.Packages[tool][name] = pkg
-	j.clearPackageTombstone(tool, name)
+	pkg.LastUsed = timestamp
+	pkg.UsageCount++
+	return pkg
 }
 
 func (j *JSONStorage) DeletePackage(tool, name string) error {
@@ -451,19 +497,30 @@ func (j *JSONStorage) DeletePackage(tool, name string) error {
 }
 
 func (j *JSONStorage) deletePackageInternal(tool, name string) {
-	if j.data.Packages != nil && j.data.Packages[tool] != nil {
-		delete(j.data.Packages[tool], name)
-		if len(j.data.Packages[tool]) == 0 {
-			delete(j.data.Packages, tool)
-		}
+	if j.data.Packages != nil {
+		j.deleteInventoryPackage(tool, name)
 	}
 	if j.data.PackageTombstones == nil {
 		j.data.PackageTombstones = make(map[string]map[string]int64)
 	}
-	if j.data.PackageTombstones[tool] == nil {
-		j.data.PackageTombstones[tool] = make(map[string]int64)
+	tombstones := j.data.PackageTombstones
+	if tombstones[tool] == nil {
+		tombstones[tool] = make(map[string]int64)
 	}
-	j.data.PackageTombstones[tool][name] = time.Now().UnixNano()
+	toolTombstones := tombstones[tool]
+	toolTombstones[name] = time.Now().UnixNano()
+}
+
+func (j *JSONStorage) deleteInventoryPackage(tool, name string) {
+	packages := j.data.Packages
+	toolPackages := packages[tool]
+	if toolPackages == nil {
+		return
+	}
+	delete(toolPackages, name)
+	if len(toolPackages) == 0 {
+		delete(packages, tool)
+	}
 }
 
 func (j *JSONStorage) ReconcilePackages(scanned map[string]map[string]struct{}, startedAt time.Time) error {
@@ -516,11 +573,14 @@ func (j *JSONStorage) applyScannedPackage(pkg *core.PackageInfo, startedAt time.
 }
 
 func (j *JSONStorage) packageHistoryForScan(tool, name string) core.PackageInfo {
-	current := j.data.Packages[tool][name]
+	packages := j.data.Packages
+	toolPackages := packages[tool]
+	current := toolPackages[name]
 	if tool != core.ToolGoBinary {
 		return current
 	}
-	legacy := j.data.Packages[core.ToolGo][name]
+	goPackages := packages[core.ToolGo]
+	legacy := goPackages[name]
 	current.UsageCount += legacy.UsageCount
 	if legacy.LastUsed.After(current.LastUsed) {
 		current.LastUsed = legacy.LastUsed
@@ -539,7 +599,9 @@ func preserveConcurrentUsage(scanned *core.PackageInfo, current core.PackageInfo
 }
 
 func (j *JSONStorage) packageTombstonedAfter(tool, name string, startedAt time.Time) bool {
-	deletedAt := j.data.PackageTombstones[tool][name]
+	tombstones := j.data.PackageTombstones
+	toolTombstones := tombstones[tool]
+	deletedAt := toolTombstones[name]
 	if deletedAt == 0 {
 		return false
 	}
@@ -547,18 +609,26 @@ func (j *JSONStorage) packageTombstonedAfter(tool, name string, startedAt time.T
 }
 
 func (j *JSONStorage) clearPackageTombstone(tool, name string) {
-	delete(j.data.PackageTombstones[tool], name)
-	if len(j.data.PackageTombstones[tool]) == 0 {
-		delete(j.data.PackageTombstones, tool)
+	tombstones := j.data.PackageTombstones
+	toolTombstones := tombstones[tool]
+	delete(toolTombstones, name)
+	if len(toolTombstones) == 0 {
+		delete(tombstones, tool)
 	}
 }
 
 func (j *JSONStorage) prunePackageTombstones(scanned map[string]map[string]struct{}, startedAt time.Time) {
 	for tool := range scanned {
-		for name, deletedAt := range j.data.PackageTombstones[tool] {
-			if deletedAt < startedAt.UnixNano() {
-				j.clearPackageTombstone(tool, name)
-			}
+		j.pruneToolPackageTombstones(tool, startedAt)
+	}
+}
+
+func (j *JSONStorage) pruneToolPackageTombstones(tool string, startedAt time.Time) {
+	tombstones := j.data.PackageTombstones
+	toolTombstones := tombstones[tool]
+	for name, deletedAt := range toolTombstones {
+		if deletedAt < startedAt.UnixNano() {
+			j.clearPackageTombstone(tool, name)
 		}
 	}
 }
@@ -566,23 +636,53 @@ func (j *JSONStorage) prunePackageTombstones(scanned map[string]map[string]struc
 func (j *JSONStorage) removeMissingPackages(scanned map[string]map[string]struct{}, startedAt time.Time) bool {
 	changed := false
 	for tool, seen := range scanned {
-		toolPackages, exists := j.data.Packages[tool]
-		for name, pkg := range toolPackages {
-			if _, exists := seen[name]; exists {
-				continue
-			}
-			if packageUpdatedAfter(pkg, startedAt) {
-				continue
-			}
-			delete(j.data.Packages[tool], name)
+		if j.removeMissingToolPackages(tool, seen, startedAt) {
 			changed = true
 		}
-		if exists && len(j.data.Packages[tool]) == 0 {
-			delete(j.data.Packages, tool)
+		if j.removeEmptyToolPackages(tool) {
 			changed = true
 		}
 	}
 	return changed
+}
+
+func (j *JSONStorage) removeMissingToolPackages(
+	tool string,
+	seen map[string]struct{},
+	startedAt time.Time,
+) bool {
+	changed := false
+	for name, pkg := range j.data.Packages[tool] {
+		if packageShouldRemain(name, pkg, seen, startedAt) {
+			continue
+		}
+		delete(j.data.Packages[tool], name)
+		changed = true
+	}
+	return changed
+}
+
+func (j *JSONStorage) removeEmptyToolPackages(tool string) bool {
+	_, exists := j.data.Packages[tool]
+	empty := len(j.data.Packages[tool]) == 0
+	removeTool := exists && empty
+	if removeTool {
+		delete(j.data.Packages, tool)
+		return true
+	}
+	return false
+}
+
+func packageShouldRemain(
+	name string,
+	pkg core.PackageInfo,
+	seen map[string]struct{},
+	startedAt time.Time,
+) bool {
+	if _, exists := seen[name]; exists {
+		return true
+	}
+	return packageUpdatedAfter(pkg, startedAt)
 }
 
 func packageUpdatedAfter(pkg core.PackageInfo, startedAt time.Time) bool {
@@ -629,25 +729,32 @@ func (j *JSONStorage) backup() error {
 	if err != nil {
 		return err
 	}
+	if err := j.writeBackupManifest(backupPath); err != nil {
+		return err
+	}
+	if err := j.copyBackupExecutionLog(backupPath); err != nil {
+		return err
+	}
+	return j.pruneBackups()
+}
 
+func (j *JSONStorage) writeBackupManifest(path string) error {
 	data, err := json.MarshalIndent(j.data, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal backup data: %w", err)
 	}
-
-	if err := os.WriteFile(backupPath, data, core.PrivateFileMode); err != nil {
+	if err := os.WriteFile(path, data, core.PrivateFileMode); err != nil {
 		return fmt.Errorf("failed to write backup file: %w", err)
 	}
+	return nil
+}
+
+func (j *JSONStorage) copyBackupExecutionLog(backupPath string) error {
 	executionBackupPath := j.executionBackupPath(backupPath)
 	if err := copyManagedFile(j.executionPath, executionBackupPath); err != nil {
 		_ = os.Remove(backupPath)
 		return fmt.Errorf("failed to back up execution log: %w", err)
 	}
-
-	if err := j.pruneBackups(); err != nil {
-		return err
-	}
-
 	return nil
 }
 
@@ -692,7 +799,7 @@ func (j *JSONStorage) Prepare() error {
 		if err := j.ensureCurrentExecutionLog(); err != nil {
 			return err
 		}
-		return j.compactIfNeeded()
+		return j.compactIfLimitsExceeded()
 	})
 }
 
@@ -721,48 +828,77 @@ func (j *JSONStorage) pruneBackups() error {
 	if maxBackups <= 0 {
 		return nil
 	}
-
-	paths, err := filepath.Glob(j.filepath + ".backup.*")
+	backups, err := j.backupFiles()
 	if err != nil {
-		return fmt.Errorf("failed to list backup files: %w", err)
-	}
-
-	backups := make([]backupFile, 0, len(paths))
-	for _, path := range paths {
-		info, err := os.Stat(path)
-		if err != nil {
-			if os.IsNotExist(err) {
-				continue
-			}
-			return fmt.Errorf("failed to stat backup file %s: %w", path, err)
-		}
-		modTime := info.ModTime()
-		backup := backupFile{path: path, modTime: modTime}
-		backups = append(backups, backup)
+		return err
 	}
 	if len(backups) <= maxBackups {
 		return nil
 	}
+	sortBackupFiles(backups)
+	oldBackups := backups[:len(backups)-maxBackups]
+	return j.removeBackupFiles(oldBackups)
+}
 
+func (j *JSONStorage) backupFiles() ([]backupFile, error) {
+	paths, err := filepath.Glob(j.filepath + ".backup.*")
+	if err != nil {
+		return nil, fmt.Errorf("failed to list backup files: %w", err)
+	}
+	backups := make([]backupFile, 0, len(paths))
+	for _, path := range paths {
+		backup, ok, err := statBackupFile(path)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			backups = append(backups, backup)
+		}
+	}
+	return backups, nil
+}
+
+func statBackupFile(path string) (backupFile, bool, error) {
+	info, err := os.Stat(path)
+	if os.IsNotExist(err) {
+		return backupFile{}, false, nil
+	}
+	if err != nil {
+		return backupFile{}, false, fmt.Errorf("failed to stat backup file %s: %w", path, err)
+	}
+	modTime := info.ModTime()
+	backup := backupFile{path: path, modTime: modTime}
+	return backup, true, nil
+}
+
+func sortBackupFiles(backups []backupFile) {
 	slices.SortFunc(backups, func(a, b backupFile) int {
 		if order := a.modTime.Compare(b.modTime); order != 0 {
 			return order
 		}
 		return strings.Compare(a.path, b.path)
 	})
+}
 
-	for _, backup := range backups[:len(backups)-maxBackups] {
-		removeErr := os.Remove(backup.path)
-		if removeErr != nil && !os.IsNotExist(removeErr) {
-			return fmt.Errorf("failed to remove old backup %s: %w", backup.path, removeErr)
+func (j *JSONStorage) removeBackupFiles(backups []backupFile) error {
+	for _, backup := range backups {
+		if err := removeBackupFile(backup.path, "old backup"); err != nil {
+			return err
 		}
 		executionBackup := j.executionBackupPath(backup.path)
-		removeErr = os.Remove(executionBackup)
-		if removeErr != nil && !os.IsNotExist(removeErr) {
-			return fmt.Errorf("failed to remove old execution backup %s: %w", executionBackup, removeErr)
+		if err := removeBackupFile(executionBackup, "old execution backup"); err != nil {
+			return err
 		}
 	}
+	return nil
+}
 
+func removeBackupFile(path, label string) error {
+	err := os.Remove(path)
+	removed := err == nil || os.IsNotExist(err)
+	if !removed {
+		return fmt.Errorf("failed to remove %s %s: %w", label, path, err)
+	}
 	return nil
 }
 
@@ -774,26 +910,42 @@ type backupFile struct {
 func (j *JSONStorage) nextBackupPath(now time.Time) (string, error) {
 	base := fmt.Sprintf("%s.backup.%s", j.filepath, now.Format("20060102_150405_000000000"))
 	for i := 0; i < maxBackupPathAttempts; i++ {
-		path := base
-		if i > 0 {
-			path = fmt.Sprintf("%s.%d", base, i)
-		}
-
-		manifestExists, err := pathExists(path)
+		path := backupPathCandidate(base, i)
+		available, err := j.backupPathAvailable(path)
 		if err != nil {
-			return "", fmt.Errorf("failed to stat backup path %s: %w", path, err)
+			return "", err
 		}
-		executionPath := j.executionBackupPath(path)
-		executionExists, err := pathExists(executionPath)
-		if err != nil {
-			return "", fmt.Errorf("failed to stat execution backup path %s: %w", executionPath, err)
+		if available {
+			return path, nil
 		}
-		if manifestExists || executionExists {
-			continue
-		}
-		return path, nil
 	}
 	return "", fmt.Errorf("failed to find available backup path after %d attempts", maxBackupPathAttempts)
+}
+
+func backupPathCandidate(base string, attempt int) string {
+	if attempt == 0 {
+		return base
+	}
+	return fmt.Sprintf("%s.%d", base, attempt)
+}
+
+func (j *JSONStorage) backupPathAvailable(path string) (bool, error) {
+	manifestExists, err := pathExists(path)
+	if err != nil {
+		return false, fmt.Errorf("failed to stat backup path %s: %w", path, err)
+	}
+	executionPath := j.executionBackupPath(path)
+	executionExists, err := pathExists(executionPath)
+	if err != nil {
+		return false, fmt.Errorf("failed to stat execution backup path %s: %w", executionPath, err)
+	}
+	if manifestExists {
+		return false, nil
+	}
+	if executionExists {
+		return false, nil
+	}
+	return true, nil
 }
 
 func pathExists(path string) (bool, error) {
@@ -831,11 +983,7 @@ func (j *JSONStorage) withFileLock(fn func() error) (err error) {
 		return fmt.Errorf("failed to open storage lock: %w", err)
 	}
 	defer func() {
-		closeErr := lockFile.Close()
-		shouldReturnCloseErr := err == nil && closeErr != nil
-		if shouldReturnCloseErr {
-			err = fmt.Errorf("failed to close storage lock: %w", closeErr)
-		}
+		err = safefs.CloseWithError(err, lockFile, "failed to close storage lock")
 	}()
 
 	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX); err != nil {

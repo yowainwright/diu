@@ -13,7 +13,7 @@ permissions:
   contents: read
 
 env:
-  GOLANGCI_LINT_VERSION: 'v2.13.1'
+  GOLANGCI_LINT_VERSION: 'v2.13.2'
   GORELEASER_VERSION: 'v2.12.0'
   GOVULNCHECK_VERSION: 'v1.6.0'
 

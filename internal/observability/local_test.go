@@ -3,6 +3,7 @@ package observability
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -11,28 +12,47 @@ import (
 
 func TestLocalLoggerWritesPrivateLog(t *testing.T) {
 	dataDir := t.TempDir()
+	writeTestLocalLog(t, dataDir, "diagnostic message")
+
+	assertFileMode(t, LogPath(dataDir), core.PrivateFileMode, "log")
+	assertRecentLogsContain(t, dataDir, "diagnostic message")
+}
+
+func writeTestLocalLog(t *testing.T, dataDir, message string) {
+	t.Helper()
+
 	logger, file, err := NewLocalLogger(dataDir)
 	if err != nil {
 		t.Fatalf("NewLocalLogger failed: %v", err)
 	}
-	logger.Print("diagnostic message")
+	logger.Print(message)
 	if err := file.Close(); err != nil {
 		t.Fatalf("Close failed: %v", err)
 	}
+}
 
-	path := LogPath(dataDir)
+func assertFileMode(t *testing.T, path string, mode os.FileMode, label string) {
+	t.Helper()
+
 	info, err := os.Stat(path)
 	if err != nil {
 		t.Fatalf("Stat failed: %v", err)
 	}
-	if info.Mode().Perm() != core.PrivateFileMode {
-		t.Fatalf("log mode = %v, want %v", info.Mode().Perm(), core.PrivateFileMode)
+	if info.Mode().Perm() != mode {
+		t.Fatalf("%s mode = %v, want %v", label, info.Mode().Perm(), mode)
 	}
+}
+
+func assertRecentLogsContain(t *testing.T, dataDir, target string) {
+	t.Helper()
+
 	lines, err := ReadRecentLogs(dataDir)
 	if err != nil {
 		t.Fatalf("ReadRecentLogs failed: %v", err)
 	}
-	if len(lines) != 1 || !strings.Contains(lines[0], "diagnostic message") {
+	hasSingleLine := len(lines) == 1
+	hasTarget := hasSingleLine && strings.Contains(lines[0], target)
+	if !hasTarget {
 		t.Fatalf("recent logs = %#v", lines)
 	}
 }
@@ -41,9 +61,16 @@ func TestLocalLoggerRotatesOversizedLog(t *testing.T) {
 	dataDir := t.TempDir()
 	path := LogPath(dataDir)
 	oversized := make([]byte, maxLocalLogBytes+1)
-	if err := os.WriteFile(path, oversized, core.PrivateFileMode); err != nil {
-		t.Fatalf("WriteFile failed: %v", err)
-	}
+	writeTestFile(t, path, oversized)
+	openAndCloseLocalLogger(t, dataDir)
+
+	previousPath := filepath.Join(dataDir, previousLogFileName)
+	assertPathExists(t, previousPath, "rotated log")
+	assertFileMode(t, previousPath, core.PrivateFileMode, "rotated log")
+}
+
+func openAndCloseLocalLogger(t *testing.T, dataDir string) {
+	t.Helper()
 
 	_, file, err := NewLocalLogger(dataDir)
 	if err != nil {
@@ -52,35 +79,39 @@ func TestLocalLoggerRotatesOversizedLog(t *testing.T) {
 	if err := file.Close(); err != nil {
 		t.Fatalf("Close failed: %v", err)
 	}
-	previousPath := filepath.Join(dataDir, previousLogFileName)
-	if _, err := os.Stat(previousPath); err != nil {
-		t.Fatalf("rotated log missing: %v", err)
+}
+
+func assertPathExists(t *testing.T, path, label string) {
+	t.Helper()
+
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("%s missing: %v", label, err)
 	}
-	info, err := os.Stat(previousPath)
-	if err != nil {
-		t.Fatalf("Stat failed: %v", err)
-	}
-	if info.Mode().Perm() != core.PrivateFileMode {
-		t.Fatalf("rotated log mode = %v, want %v", info.Mode().Perm(), core.PrivateFileMode)
+}
+
+func writeTestFile(t *testing.T, path string, data []byte) {
+	t.Helper()
+
+	if err := os.WriteFile(path, data, core.PrivateFileMode); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
 	}
 }
 
 func TestReadRecentLogsIncludesPreviousLog(t *testing.T) {
 	dataDir := t.TempDir()
 	previousPath := filepath.Join(dataDir, previousLogFileName)
-	if err := os.WriteFile(previousPath, []byte("before rotation\n"), core.PrivateFileMode); err != nil {
-		t.Fatalf("WriteFile failed: %v", err)
-	}
-	if err := os.WriteFile(LogPath(dataDir), []byte("after rotation\n"), core.PrivateFileMode); err != nil {
-		t.Fatalf("WriteFile failed: %v", err)
-	}
+	writeTestFile(t, previousPath, []byte("before rotation\n"))
+	writeTestFile(t, LogPath(dataDir), []byte("after rotation\n"))
 
 	lines, err := ReadRecentLogs(dataDir)
 	if err != nil {
 		t.Fatalf("ReadRecentLogs failed: %v", err)
 	}
 	joined := strings.Join(lines, "\n")
-	if !strings.Contains(joined, "before rotation") || !strings.Contains(joined, "after rotation") {
+	hasPreviousLog := strings.Contains(joined, "before rotation")
+	hasCurrentLog := strings.Contains(joined, "after rotation")
+	hasBothLogs := hasPreviousLog && hasCurrentLog
+	if !hasBothLogs {
 		t.Fatalf("recent logs = %q", joined)
 	}
 }
@@ -116,19 +147,20 @@ func TestFallbackContentionMarkerIsPrivateAndReadable(t *testing.T) {
 	if err := MarkFallbackContention(dataDir); err != nil {
 		t.Fatalf("MarkFallbackContention failed: %v", err)
 	}
+	assertFallbackContentionDetected(t, dataDir)
+	assertFileMode(t, FallbackContentionPath(dataDir), core.PrivateFileMode, "marker")
+}
+
+func assertFallbackContentionDetected(t *testing.T, dataDir string) {
+	t.Helper()
+
 	lastContention, detected, err := ReadFallbackContention(dataDir)
 	if err != nil {
 		t.Fatalf("ReadFallbackContention failed: %v", err)
 	}
-	if !detected || lastContention.IsZero() {
+	hasContention := detected && !lastContention.IsZero()
+	if !hasContention {
 		t.Fatalf("fallback contention = %v, %v", detected, lastContention)
-	}
-	info, err := os.Stat(FallbackContentionPath(dataDir))
-	if err != nil {
-		t.Fatalf("Stat failed: %v", err)
-	}
-	if info.Mode().Perm() != core.PrivateFileMode {
-		t.Fatalf("marker mode = %v, want %v", info.Mode().Perm(), core.PrivateFileMode)
 	}
 }
 
@@ -149,6 +181,16 @@ func TestFallbackContentionMarkerRejectsSymlink(t *testing.T) {
 func TestRotatingWriterRotatesWhenWriteExceedsRemainingSpace(t *testing.T) {
 	dataDir := t.TempDir()
 	path := LogPath(dataDir)
+	writeRotatingLog(t, path)
+
+	assertLogContains(t, path, "after rotation")
+	previousPath := filepath.Join(dataDir, previousLogFileName)
+	assertFileSize(t, previousPath, maxLocalLogBytes, "previous log")
+}
+
+func writeRotatingLog(t *testing.T, path string) {
+	t.Helper()
+
 	writer, err := newRotatingLogWriter(path)
 	if err != nil {
 		t.Fatalf("newRotatingLogWriter failed: %v", err)
@@ -162,11 +204,17 @@ func TestRotatingWriterRotatesWhenWriteExceedsRemainingSpace(t *testing.T) {
 	if err := writer.Close(); err != nil {
 		t.Fatalf("Close failed: %v", err)
 	}
-	assertLogContains(t, path, "after rotation")
-	previousPath := filepath.Join(dataDir, previousLogFileName)
-	info, err := os.Stat(previousPath)
-	if err != nil || info.Size() != maxLocalLogBytes {
-		t.Fatalf("previous log = %v, %v", info, err)
+}
+
+func assertFileSize(t *testing.T, path string, size int64, label string) {
+	t.Helper()
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("%s stat failed: %v", label, err)
+	}
+	if info.Size() != size {
+		t.Fatalf("%s size = %d, want %d", label, info.Size(), size)
 	}
 }
 
@@ -178,15 +226,19 @@ func TestOversizedLogWriteIsBounded(t *testing.T) {
 	}
 	data := make([]byte, maxLocalLogBytes+10)
 	written, err := writer.Write(data)
-	if err != nil || written != len(data) {
-		t.Fatalf("Write = %d, %v", written, err)
-	}
+	assertWriteResult(t, written, len(data), err)
 	if err := writer.Close(); err != nil {
 		t.Fatalf("Close failed: %v", err)
 	}
-	info, err := os.Stat(path)
-	if err != nil || info.Size() != maxLocalLogBytes {
-		t.Fatalf("bounded log = %v, %v", info, err)
+	assertFileSize(t, path, maxLocalLogBytes, "bounded log")
+}
+
+func assertWriteResult(t *testing.T, written, expected int, err error) {
+	t.Helper()
+
+	writeOK := err == nil && written == expected
+	if !writeOK {
+		t.Fatalf("Write = %d, %v", written, err)
 	}
 }
 
@@ -202,7 +254,8 @@ func TestLogTailTrimsPartialLineAndRedactsText(t *testing.T) {
 	}
 	defer func() { _ = file.Close() }()
 	tail, err := readLogTail(file, int64(len("partial line\nkept line\n")))
-	if err != nil || string(tail) != "kept line\n" {
+	tailOK := err == nil && string(tail) == "kept line\n"
+	if !tailOK {
 		t.Fatalf("tail = %q, %v", tail, err)
 	}
 	if got := RedactText("path=/private/data", map[string]string{"/private": "$ROOT"}); got != "path=$ROOT/data" {
@@ -234,7 +287,13 @@ func TestReadRecentLogsSeparatesUnterminatedRotatedLog(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadRecentLogs failed: %v", err)
 	}
-	if len(lines) != 2 || lines[0] != "before" || lines[1] != "after" {
+	assertLinesEqual(t, lines, []string{"before", "after"})
+}
+
+func assertLinesEqual(t *testing.T, lines, expected []string) {
+	t.Helper()
+
+	if !slices.Equal(lines, expected) {
 		t.Fatalf("recent logs = %#v", lines)
 	}
 }

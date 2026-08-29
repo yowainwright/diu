@@ -6,11 +6,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/yowainwright/diu/internal/core"
-	"github.com/yowainwright/diu/internal/fn"
 )
 
 const (
@@ -42,6 +42,7 @@ func (m *PNPMMonitor) ParseCommand(cmd string, args []string) (*core.ExecutionRe
 	return parseJavaScriptManagerCommand(core.ToolPNPM, cmd, args), nil
 }
 
+//nolint:legibility // Monitor interface requires this method name.
 func (m *PNPMMonitor) GetInstalledPackages() ([]*core.PackageInfo, error) {
 	output, err := exec.Command(pnpmCommandName, "list", jsGlobalShortFlag, "--depth=0", "--json").Output()
 	if err == nil && len(output) > 0 {
@@ -58,7 +59,8 @@ func (m *PNPMMonitor) GetInstalledPackages() ([]*core.PackageInfo, error) {
 }
 
 func (m *PNPMMonitor) Start(ctx context.Context, eventChan chan<- *core.ExecutionRecord) error {
-	return m.ProcessMonitor.Start(ctx, eventChan)
+	err := m.ProcessMonitor.Start(ctx, eventChan)
+	return err
 }
 
 type BunMonitor struct {
@@ -82,6 +84,7 @@ func (m *BunMonitor) ParseCommand(cmd string, args []string) (*core.ExecutionRec
 	return parseJavaScriptManagerCommand(core.ToolBun, cmd, args), nil
 }
 
+//nolint:legibility // Monitor interface requires this method name.
 func (m *BunMonitor) GetInstalledPackages() ([]*core.PackageInfo, error) {
 	output, err := exec.Command(bunCommandName, "pm", "ls", jsGlobalShortFlag, "--json").Output()
 	if err == nil && len(output) > 0 {
@@ -98,80 +101,91 @@ func (m *BunMonitor) GetInstalledPackages() ([]*core.PackageInfo, error) {
 }
 
 func (m *BunMonitor) Start(ctx context.Context, eventChan chan<- *core.ExecutionRecord) error {
-	return m.ProcessMonitor.Start(ctx, eventChan)
+	err := m.ProcessMonitor.Start(ctx, eventChan)
+	return err
 }
 
 func parseJavaScriptManagerCommand(tool, cmd string, args []string) *core.ExecutionRecord {
-	record := &core.ExecutionRecord{
+	record := newJavaScriptExecutionRecord(tool, cmd, args)
+	if len(args) == 0 {
+		return record
+	}
+	subcommand := args[0]
+	record.Metadata["subcommand"] = subcommand
+	record.Metadata["global"] = contains(args, jsGlobalShortFlag) || contains(args, jsGlobalLongFlag)
+	applyJavaScriptSubcommand(record, subcommand, args)
+	return record
+}
+
+func newJavaScriptExecutionRecord(tool, cmd string, args []string) *core.ExecutionRecord {
+	return &core.ExecutionRecord{
 		Tool:     tool,
 		Command:  cmd,
 		Args:     args,
 		Metadata: make(map[string]interface{}),
 	}
+}
 
-	if len(args) == 0 {
-		return record
-	}
-
-	subcommand := args[0]
-	record.Metadata["subcommand"] = subcommand
-	record.Metadata["global"] = contains(args, jsGlobalShortFlag) || contains(args, jsGlobalLongFlag)
-
+func applyJavaScriptSubcommand(record *core.ExecutionRecord, subcommand string, args []string) {
 	switch subcommand {
 	case "install", "i", "add":
-		record.PackagesAffected = extractJavaScriptPackages(args[1:])
-		record.Metadata["action"] = "install"
+		applyJavaScriptInstall(record, args)
 	case "uninstall", "remove", "rm", "r", "un":
-		record.PackagesAffected = extractJavaScriptPackages(args[1:])
-		record.Metadata["action"] = "uninstall"
+		applyJavaScriptUninstall(record, args)
 	case "update", "up", "upgrade":
-		record.PackagesAffected = extractJavaScriptPackages(args[1:])
-		if len(record.PackagesAffected) == 0 {
-			record.Metadata["update_all"] = true
-		}
+		applyJavaScriptUpdate(record, args)
 	case "list", "ls", "pm":
 		record.Metadata["action"] = "list"
 	case "run", "run-script":
-		record.Metadata["action"] = "run"
-		if len(args) > 1 {
-			record.Metadata["script"] = args[1]
-		}
+		applyJavaScriptRun(record, args)
 	case "dlx", "x", "exec":
 		record.Metadata["action"] = "exec"
-		if len(args) > 1 && !strings.HasPrefix(args[1], "-") {
-			if pkg := cleanJavaScriptPackageSpec(args[1]); pkg != "" {
-				record.PackagesAffected = []string{pkg}
-			}
-		}
+		setJavaScriptExecPackage(record, args)
 	}
+}
 
-	return record
+func applyJavaScriptInstall(record *core.ExecutionRecord, args []string) {
+	record.PackagesAffected = extractJavaScriptPackages(args[1:])
+	record.Metadata["action"] = "install"
+}
+
+func applyJavaScriptUninstall(record *core.ExecutionRecord, args []string) {
+	record.PackagesAffected = extractJavaScriptPackages(args[1:])
+	record.Metadata["action"] = "uninstall"
+}
+
+func applyJavaScriptUpdate(record *core.ExecutionRecord, args []string) {
+	record.PackagesAffected = extractJavaScriptPackages(args[1:])
+	if len(record.PackagesAffected) == 0 {
+		record.Metadata["update_all"] = true
+	}
+}
+
+func applyJavaScriptRun(record *core.ExecutionRecord, args []string) {
+	record.Metadata["action"] = "run"
+	if len(args) > 1 {
+		record.Metadata["script"] = args[1]
+	}
+}
+
+func setJavaScriptExecPackage(record *core.ExecutionRecord, args []string) {
+	if len(args) <= 1 {
+		return
+	}
+	if strings.HasPrefix(args[1], "-") {
+		return
+	}
+	if pkg := cleanJavaScriptPackageSpec(args[1]); pkg != "" {
+		record.PackagesAffected = []string{pkg}
+	}
 }
 
 func extractJavaScriptPackages(args []string) []string {
-	valueFlags := map[string]bool{
-		"--registry": true,
-		"--scope":    true,
-		"--tag":      true,
-		"--dir":      true,
-		"--filter":   true,
-		"-C":         true,
-	}
-
+	valueFlags := javaScriptValueFlags()
 	var packages []string
 	skipNext := false
 	for _, arg := range args {
-		if skipNext {
-			skipNext = false
-			continue
-		}
-		if arg == "" {
-			continue
-		}
-		if strings.HasPrefix(arg, "-") {
-			if valueFlags[arg] {
-				skipNext = true
-			}
+		if skipJavaScriptPackageArg(arg, valueFlags, &skipNext) {
 			continue
 		}
 		if pkg := cleanJavaScriptPackageSpec(arg); pkg != "" {
@@ -181,29 +195,71 @@ func extractJavaScriptPackages(args []string) []string {
 	return packages
 }
 
+func javaScriptValueFlags() map[string]bool {
+	return map[string]bool{
+		"--registry": true,
+		"--scope":    true,
+		"--tag":      true,
+		"--dir":      true,
+		"--filter":   true,
+		"-C":         true,
+	}
+}
+
+func skipJavaScriptPackageArg(arg string, valueFlags map[string]bool, skipNext *bool) bool {
+	if *skipNext {
+		*skipNext = false
+		return true
+	}
+	if arg == "" {
+		return true
+	}
+	if !strings.HasPrefix(arg, "-") {
+		return false
+	}
+	if valueFlags[arg] {
+		*skipNext = true
+	}
+	return true
+}
+
 func cleanJavaScriptPackageSpec(spec string) string {
 	spec = strings.TrimSpace(spec)
-	if spec == "" || strings.HasPrefix(spec, ".") || strings.Contains(spec, "://") {
+	if invalidJavaScriptPackageSpec(spec) {
 		return ""
 	}
 	if strings.HasPrefix(spec, "@") {
-		segments := strings.Split(spec, "/")
-		if len(segments) == 0 {
-			return ""
-		}
-		if len(segments) > 1 {
-			name := segments[0] + "/" + segments[1]
-			if at := strings.LastIndex(name, "@"); at > 0 {
-				return name[:at]
-			}
-			return name
-		}
-		return spec
+		return cleanScopedJavaScriptPackageSpec(spec)
 	}
 	if at := strings.Index(spec, "@"); at > 0 {
 		return spec[:at]
 	}
 	return spec
+}
+
+func invalidJavaScriptPackageSpec(spec string) bool {
+	if spec == "" {
+		return true
+	}
+	if strings.HasPrefix(spec, ".") {
+		return true
+	}
+	return strings.Contains(spec, "://")
+}
+
+func cleanScopedJavaScriptPackageSpec(spec string) string {
+	segments := strings.Split(spec, "/")
+	if len(segments) == 0 {
+		return ""
+	}
+	if len(segments) <= 1 {
+		return spec
+	}
+	name := segments[0] + "/" + segments[1]
+	if at := strings.LastIndex(name, "@"); at > 0 {
+		return name[:at]
+	}
+	return name
 }
 
 type nodePackageInfo struct {
@@ -239,65 +295,123 @@ func parseNodePackageJSON(tool string, output []byte) ([]*core.PackageInfo, erro
 func packagesFromNodeLists(tool string, projects []nodePackageList) []*core.PackageInfo {
 	seen := make(map[string]nodePackageInfo)
 	for _, project := range projects {
-		for name, info := range project.Dependencies {
-			seen[name] = info
-		}
-		for name, info := range project.DevDependencies {
-			seen[name] = info
-		}
-		for name, info := range project.OptionalDependencies {
-			seen[name] = info
-		}
+		mergeNodeDeps(seen, project.Dependencies)
+		mergeNodeDeps(seen, project.DevDependencies)
+		mergeNodeDeps(seen, project.OptionalDependencies)
 	}
 	return packagesFromNodeDeps(tool, seen)
 }
 
+func mergeNodeDeps(seen map[string]nodePackageInfo, deps map[string]nodePackageInfo) {
+	for name, info := range deps {
+		seen[name] = info
+	}
+}
+
 func packagesFromNodeDeps(tool string, deps map[string]nodePackageInfo) []*core.PackageInfo {
-	names := fn.SortedKeys(deps)
-	return fn.Map(names, func(name string) *core.PackageInfo {
+	names := sortedNodePackageNames(deps)
+	packages := make([]*core.PackageInfo, len(names))
+	for index, name := range names {
 		info := deps[name]
-		return &core.PackageInfo{
+		packages[index] = &core.PackageInfo{
 			Name:        name,
 			Version:     info.Version,
 			Tool:        tool,
 			InstallDate: time.Now(),
 			Path:        info.Path,
 		}
-	})
+	}
+	return packages
+}
+
+func sortedNodePackageNames(deps map[string]nodePackageInfo) []string {
+	names := make([]string, 0, len(deps))
+	for name := range deps {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	return names
 }
 
 func parseSimplePackageLines(tool, output string) []*core.PackageInfo {
 	var packages []*core.PackageInfo
 	scanner := bufio.NewScanner(strings.NewReader(output))
 	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		line = strings.TrimPrefix(line, "├── ")
-		line = strings.TrimPrefix(line, "└── ")
-		line = strings.TrimPrefix(line, "├─┬ ")
-		line = strings.TrimPrefix(line, "└─┬ ")
-		line = strings.TrimPrefix(line, "- ")
-		if line == "" || strings.HasSuffix(line, ":") || strings.HasPrefix(line, "/") {
+		pkg := simplePackageFromLine(tool, scanner.Text())
+		if pkg == nil {
 			continue
 		}
-		fields := strings.Fields(line)
-		if len(fields) == 0 {
-			continue
-		}
-		name, version := splitPackageVersion(fields[0])
-		if name == "" {
-			continue
-		}
-		if version == "" && len(fields) > 1 && looksLikeVersion(fields[1]) {
-			version = fields[1]
-		}
-		packages = append(packages, &core.PackageInfo{
-			Name:        name,
-			Version:     version,
-			Tool:        tool,
-			InstallDate: time.Now(),
-		})
+		packages = append(packages, pkg)
 	}
 	return packages
+}
+
+func simplePackageFromLine(tool, line string) *core.PackageInfo {
+	name, version, ok := simplePackageParts(line)
+	if !ok {
+		return nil
+	}
+	return &core.PackageInfo{
+		Name:        name,
+		Version:     version,
+		Tool:        tool,
+		InstallDate: time.Now(),
+	}
+}
+
+func simplePackageParts(line string) (string, string, bool) {
+	line = normalizeSimplePackageLine(line)
+	if skipSimplePackageLine(line) {
+		return "", "", false
+	}
+	fields := strings.Fields(line)
+	if len(fields) == 0 {
+		return "", "", false
+	}
+	name, version := splitPackageVersion(fields[0])
+	if name == "" {
+		return "", "", false
+	}
+	version = packageVersionFromFields(version, fields)
+	return name, version, true
+}
+
+func normalizeSimplePackageLine(line string) string {
+	line = strings.TrimSpace(line)
+	line = trimTreeLinePrefix(line)
+	return strings.TrimPrefix(line, "- ")
+}
+
+// trimTreeLinePrefix strips the tree-drawing glyphs npm/pnpm/bun use to
+// prefix dependency lines in `list`/`ls` tree output.
+func trimTreeLinePrefix(line string) string {
+	line = strings.TrimPrefix(line, "├── ")
+	line = strings.TrimPrefix(line, "└── ")
+	line = strings.TrimPrefix(line, "├─┬ ")
+	return strings.TrimPrefix(line, "└─┬ ")
+}
+
+func skipSimplePackageLine(line string) bool {
+	if line == "" {
+		return true
+	}
+	if strings.HasSuffix(line, ":") {
+		return true
+	}
+	return strings.HasPrefix(line, "/")
+}
+
+func packageVersionFromFields(version string, fields []string) string {
+	if version != "" {
+		return version
+	}
+	if len(fields) <= 1 {
+		return ""
+	}
+	if !looksLikeVersion(fields[1]) {
+		return ""
+	}
+	return fields[1]
 }
 
 func splitPackageVersion(value string) (string, string) {
@@ -323,5 +437,6 @@ func looksLikeVersion(value string) bool {
 	if value == "" {
 		return false
 	}
-	return value[0] >= '0' && value[0] <= '9'
+	hasNumericPrefix := value[0] >= '0' && value[0] <= '9'
+	return hasNumericPrefix
 }

@@ -131,7 +131,10 @@ func parseConfirmation(value string, err error, fallback bool) (bool, error) {
 
 func selectedValue(value string, choices []Choice) (string, error) {
 	selection, err := strconv.Atoi(value)
-	if err != nil || selection < 1 || selection > len(choices) {
+	tooLow := selection < 1
+	tooHigh := selection > len(choices)
+	invalidSelection := err != nil || tooLow || tooHigh
+	if invalidSelection {
 		return "", fmt.Errorf("invalid selection: %s", value)
 	}
 	return choices[selection-1].Value, nil

@@ -15,6 +15,17 @@ import (
 
 func TestCollectDiagnosticReportRedactsSensitiveData(t *testing.T) {
 	config := setupTestHomeConfig(t)
+	seedSensitiveDiagnosticData(t, config)
+	report := collectDiagnosticReport(config)
+	assertDiagnosticReportLocal(t, report)
+	assertDiagnosticStorageCounts(t, report)
+	output := marshalDiagnosticReport(t, report)
+	assertDiagnosticSecretsRedacted(t, output, config)
+}
+
+func seedSensitiveDiagnosticData(t *testing.T, config *core.Config) {
+	t.Helper()
+
 	store := openTestStore(t, config)
 	addTestExecution(t, store, sensitiveDiagnosticExecution(config.Daemon.DataDir))
 	pkg := &core.PackageInfo{Name: "secret-package", Tool: core.ToolNPM}
@@ -23,19 +34,40 @@ func TestCollectDiagnosticReportRedactsSensitiveData(t *testing.T) {
 	}
 	closeTestStore(t, store)
 	writeDiagnosticLog(t, config, "failed in "+config.Daemon.DataDir)
+}
 
-	report := collectDiagnosticReport(config)
+func assertDiagnosticReportLocal(t *testing.T, report diagnosticReport) {
+	t.Helper()
+
 	if !report.LocalOnly {
 		t.Fatal("diagnostic report must be marked local-only")
 	}
-	if report.Storage.ExecutionCount != 1 || report.Storage.PackageCount != 1 {
+}
+
+func assertDiagnosticStorageCounts(t *testing.T, report diagnosticReport) {
+	t.Helper()
+
+	hasExecutionCount := report.Storage.ExecutionCount == 1
+	hasPackageCount := report.Storage.PackageCount == 1
+	hasStorageCounts := hasExecutionCount && hasPackageCount
+	if !hasStorageCounts {
 		t.Fatalf("storage counts = %d, %d", report.Storage.ExecutionCount, report.Storage.PackageCount)
 	}
+}
+
+func marshalDiagnosticReport(t *testing.T, report diagnosticReport) string {
+	t.Helper()
+
 	encoded, err := json.Marshal(report)
 	if err != nil {
 		t.Fatalf("Marshal failed: %v", err)
 	}
-	output := string(encoded)
+	return string(encoded)
+}
+
+func assertDiagnosticSecretsRedacted(t *testing.T, output string, config *core.Config) {
+	t.Helper()
+
 	for _, secret := range []string{config.Daemon.DataDir, "secret-package", "token=secret"} {
 		if strings.Contains(output, secret) {
 			t.Fatalf("diagnostic report leaked %q", secret)
@@ -49,15 +81,29 @@ func TestCollectDiagnosticReportRedactsSensitiveData(t *testing.T) {
 func TestDiagnosticsWritesPrivateReportFile(t *testing.T) {
 	setupTestHomeConfig(t)
 	outputPath := filepath.Join(t.TempDir(), "diu-diagnostics.json")
+	statusOutput := writeDiagnosticsForTest(t, outputPath)
+	if !strings.Contains(statusOutput, "Diagnostic report written") {
+		t.Fatalf("status output = %q", statusOutput)
+	}
+	assertDiagnosticFileMode(t, outputPath)
+	report := readDiagnosticReport(t, outputPath)
+	assertDiagnosticReportMetadata(t, report)
+}
+
+func writeDiagnosticsForTest(t *testing.T, outputPath string) string {
+	t.Helper()
+
 	cmd := diagnosticsCommandForTest(t, "--output", outputPath)
-	statusOutput := captureStderr(t, func() {
+	return captureStderr(t, func() {
 		if err := diagnostics(cmd, nil); err != nil {
 			t.Fatalf("diagnostics failed: %v", err)
 		}
 	})
-	if !strings.Contains(statusOutput, "Diagnostic report written") {
-		t.Fatalf("status output = %q", statusOutput)
-	}
+}
+
+func assertDiagnosticFileMode(t *testing.T, outputPath string) {
+	t.Helper()
+
 	info, err := os.Stat(outputPath)
 	if err != nil {
 		t.Fatalf("Stat failed: %v", err)
@@ -65,6 +111,11 @@ func TestDiagnosticsWritesPrivateReportFile(t *testing.T) {
 	if info.Mode().Perm() != core.PrivateFileMode {
 		t.Fatalf("report mode = %v, want %v", info.Mode().Perm(), core.PrivateFileMode)
 	}
+}
+
+func readDiagnosticReport(t *testing.T, outputPath string) diagnosticReport {
+	t.Helper()
+
 	data, err := os.ReadFile(outputPath)
 	if err != nil {
 		t.Fatalf("ReadFile failed: %v", err)
@@ -73,7 +124,15 @@ func TestDiagnosticsWritesPrivateReportFile(t *testing.T) {
 	if err := json.Unmarshal(data, &report); err != nil {
 		t.Fatalf("Unmarshal failed: %v", err)
 	}
-	if report.SchemaVersion != diagnosticSchemaVersion || !report.LocalOnly {
+	return report
+}
+
+func assertDiagnosticReportMetadata(t *testing.T, report diagnosticReport) {
+	t.Helper()
+
+	hasSchemaVersion := report.SchemaVersion == diagnosticSchemaVersion
+	hasMetadata := hasSchemaVersion && report.LocalOnly
+	if !hasMetadata {
 		t.Fatalf("diagnostic metadata = %d, %v", report.SchemaVersion, report.LocalOnly)
 	}
 }
@@ -82,7 +141,8 @@ func TestDiagnosticsRefusesManagedOutputPath(t *testing.T) {
 	config := setupTestHomeConfig(t)
 	report := collectDiagnosticReport(config)
 	err := writeDiagnosticOutput(config, config.Storage.JSONFile, report)
-	if err == nil || !strings.Contains(err.Error(), "DIU-managed file") {
+	rejectedManagedPath := err != nil && strings.Contains(err.Error(), "DIU-managed file")
+	if !rejectedManagedPath {
 		t.Fatalf("writeDiagnosticOutput error = %v", err)
 	}
 }
@@ -98,7 +158,8 @@ func TestDiagnosticsDoesNotOverwriteExistingOutput(t *testing.T) {
 		t.Fatal("writeDiagnosticOutput overwrote an existing file")
 	}
 	data, readErr := os.ReadFile(outputPath)
-	if readErr != nil || string(data) != "keep me" {
+	filePreserved := readErr == nil && string(data) == "keep me"
+	if !filePreserved {
 		t.Fatalf("existing output changed: %q, %v", data, readErr)
 	}
 }
@@ -119,7 +180,9 @@ func TestDiagnosticsReportsMalformedConfig(t *testing.T) {
 	if err := json.Unmarshal([]byte(output), &report); err != nil {
 		t.Fatalf("Unmarshal failed: %v", err)
 	}
-	if len(report.Warnings) == 0 || !strings.HasPrefix(report.Warnings[0], "config: ") {
+	hasWarning := len(report.Warnings) > 0
+	hasConfigWarning := hasWarning && strings.HasPrefix(report.Warnings[0], "config: ")
+	if !hasConfigWarning {
 		t.Fatalf("diagnostic warnings = %#v", report.Warnings)
 	}
 }
@@ -149,7 +212,8 @@ func TestRemoveIncompleteDiagnosticOutputReportsCleanupFailure(t *testing.T) {
 	err := removeIncompleteDiagnosticOutput(dir, wantErr)
 	writeErrorPreserved := errors.Is(err, wantErr)
 	cleanupErrorReported := strings.Contains(err.Error(), "failed to remove incomplete diagnostic report")
-	if !writeErrorPreserved || !cleanupErrorReported {
+	reportedBothErrors := writeErrorPreserved && cleanupErrorReported
+	if !reportedBothErrors {
 		t.Fatalf("remove error = %v", err)
 	}
 }

@@ -11,10 +11,13 @@ type command = dx.Command
 type flag = dx.Flag
 
 func coreVersion() string {
-	if version != "" && version != "dev" {
-		return version
+	if version == "" {
+		return core.CurrentVersion()
 	}
-	return core.CurrentVersion()
+	if version == "dev" {
+		return core.CurrentVersion()
+	}
+	return version
 }
 
 func versionString() string {

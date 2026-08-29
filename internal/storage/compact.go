@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"container/heap"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -12,7 +11,6 @@ import (
 	"time"
 
 	"github.com/yowainwright/diu/internal/core"
-	"github.com/yowainwright/diu/internal/fn"
 )
 
 const (
@@ -79,7 +77,10 @@ func newUnboundedCompactionCollector() *compactionCollector {
 }
 
 func compactionCutoff(retentionDays int, before time.Time) time.Time {
-	if !before.IsZero() || retentionDays <= 0 {
+	hasExplicitCutoff := !before.IsZero()
+	retentionDisabled := retentionDays <= 0
+	useProvidedCutoff := hasExplicitCutoff || retentionDisabled
+	if useProvidedCutoff {
 		return before
 	}
 	return time.Now().AddDate(0, 0, -retentionDays)
@@ -89,7 +90,9 @@ func compactedLimit(limit, threshold int64) int64 {
 	if limit <= threshold {
 		return limit
 	}
-	return limit - limit/compactionHeadroomDivisor
+	headroom := limit / compactionHeadroomDivisor
+	compacted := limit - headroom
+	return compacted
 }
 
 func compactedRecordLimit(limit int) int {
@@ -97,7 +100,9 @@ func compactedRecordLimit(limit int) int {
 }
 
 func (c *compactionCollector) add(record core.ExecutionRecord) error {
-	if !c.cutoff.IsZero() && !record.Timestamp.After(c.cutoff) {
+	hasCutoff := !c.cutoff.IsZero()
+	withinRetention := !hasCutoff || record.Timestamp.After(c.cutoff)
+	if !withinRetention {
 		return nil
 	}
 	data, err := json.Marshal(record)
@@ -209,48 +214,27 @@ func (j *JSONStorage) compactIfLimitsExceeded() error {
 	}
 	exceedsBytes := j.executionBytesExceeded(info.Size())
 	exceedsRecords := j.executionCountExceeded()
-	if !exceedsBytes && !exceedsRecords {
+	withinLimits := !exceedsBytes && !exceedsRecords
+	if withinLimits {
 		return nil
 	}
 	return j.compact(time.Time{})
 }
 
-func (j *JSONStorage) compactIfNeeded() error {
-	exceedsRetention, err := j.executionRetentionExceeded()
-	if err != nil {
-		return err
-	}
-	if exceedsRetention {
-		return j.compact(time.Time{})
-	}
-	return j.compactIfLimitsExceeded()
-}
-
-func (j *JSONStorage) executionRetentionExceeded() (bool, error) {
-	cutoff := compactionCutoff(j.config.Storage.RetentionDays, time.Time{})
-	if cutoff.IsZero() {
-		return false, nil
-	}
-	err := scanNDJSONExecutions(j.executionPath, func(record core.ExecutionRecord) error {
-		if !record.Timestamp.After(cutoff) {
-			return errStopStorageScan
-		}
-		return nil
-	})
-	if errors.Is(err, errStopStorageScan) {
-		return true, nil
-	}
-	return false, err
-}
-
 func (j *JSONStorage) executionBytesExceeded(size int64) bool {
 	limit := j.config.Storage.MaxStorageBytes
-	return limit > 0 && size > limit
+	hasLimit := limit > 0
+	exceeded := size > limit
+	shouldCompact := hasLimit && exceeded
+	return shouldCompact
 }
 
 func (j *JSONStorage) executionCountExceeded() bool {
 	limit := j.config.Storage.MaxExecutions
-	return limit > 0 && j.data.Statistics.TotalExecutions > limit
+	hasLimit := limit > 0
+	exceeded := j.data.Statistics.TotalExecutions > limit
+	shouldCompact := hasLimit && exceeded
+	return shouldCompact
 }
 
 func newCompactStorageState() compactStorageState {
@@ -308,8 +292,33 @@ func compactedStatistics(records []compactExecution) core.StorageStatistics {
 	for _, record := range records {
 		updateCompactedStatistics(&statistics, dayCount, record)
 	}
-	statistics.MostActiveDay = fn.MaxValueKey(dayCount)
+	statistics.MostActiveDay = mostActiveDay(dayCount)
 	return statistics
+}
+
+func mostActiveDay(dayCount map[string]int) string {
+	var bestDay string
+	var bestCount int
+	first := true
+	for day, count := range dayCount {
+		if shouldReplaceMostActiveDay(first, day, count, bestDay, bestCount) {
+			bestDay, bestCount, first = day, count, false
+		}
+	}
+	return bestDay
+}
+
+func shouldReplaceMostActiveDay(first bool, day string, count int, bestDay string, bestCount int) bool {
+	if first {
+		return true
+	}
+	if count > bestCount {
+		return true
+	}
+	if count != bestCount {
+		return false
+	}
+	return day < bestDay
 }
 
 func updateCompactedStatistics(

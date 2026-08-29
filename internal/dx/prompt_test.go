@@ -31,7 +31,10 @@ func TestTerminalPrompterRejectsAutomation(t *testing.T) {
 	t.Setenv("CI", "1")
 
 	prompt, err := dx.TerminalPrompter()
-	if prompt != nil || !errors.Is(err, dx.ErrNonInteractive) {
+	rejectedPrompt := prompt == nil
+	hasNonInteractiveError := errors.Is(err, dx.ErrNonInteractive)
+	rejectedAutomation := rejectedPrompt && hasNonInteractiveError
+	if !rejectedAutomation {
 		t.Fatalf("TerminalPrompter = %#v, %v", prompt, err)
 	}
 }
@@ -41,7 +44,8 @@ func TestPromptUsesSafeConfirmationDefault(t *testing.T) {
 	var output bytes.Buffer
 	prompt := dx.NewPrompter(strings.NewReader("\n"), &output)
 
-	confirmed, err := prompt.Confirm("Remove package", false)
+	defaultConfirmed := false
+	confirmed, err := prompt.Confirm("Remove package", defaultConfirmed)
 	if err != nil {
 		t.Fatalf("Confirm failed: %v", err)
 	}
@@ -54,26 +58,41 @@ func TestPromptUsesSafeConfirmationDefault(t *testing.T) {
 }
 
 func TestPromptParsesConfirmationAnswers(t *testing.T) {
-	tests := []struct {
-		input string
-		want  bool
-		err   bool
-	}{
+	for _, test := range confirmationAnswerTests() {
+		assertConfirmationAnswer(t, test)
+	}
+}
+
+type confirmationAnswerTest struct {
+	input string
+	want  bool
+	err   bool
+}
+
+func confirmationAnswerTests() []confirmationAnswerTest {
+	return []confirmationAnswerTest{
 		{input: "yes\n", want: true},
 		{input: "Y\n", want: true},
 		{input: "no\n", want: false},
 		{input: "N\n", want: false},
 		{input: "maybe\n", err: true},
 	}
-	for _, test := range tests {
-		prompt := dx.NewPrompter(strings.NewReader(test.input), &bytes.Buffer{})
-		confirmed, err := prompt.Confirm("Continue", false)
-		if (err != nil) != test.err {
-			t.Fatalf("Confirm(%q) error = %v", test.input, err)
-		}
-		if err == nil && confirmed != test.want {
-			t.Fatalf("Confirm(%q) = %v, want %v", test.input, confirmed, test.want)
-		}
+}
+
+func assertConfirmationAnswer(t *testing.T, test confirmationAnswerTest) {
+	t.Helper()
+
+	prompt := dx.NewPrompter(strings.NewReader(test.input), &bytes.Buffer{})
+	defaultConfirmed := false
+	confirmed, err := prompt.Confirm("Continue", defaultConfirmed)
+	if (err != nil) != test.err {
+		t.Fatalf("Confirm(%q) error = %v", test.input, err)
+	}
+	if err != nil {
+		return
+	}
+	if confirmed != test.want {
+		t.Fatalf("Confirm(%q) = %v, want %v", test.input, confirmed, test.want)
 	}
 }
 
@@ -86,7 +105,10 @@ func TestPromptUsesInputDefault(t *testing.T) {
 	if err != nil {
 		t.Fatalf("InputDefault failed: %v", err)
 	}
-	if value != "go" || output.String() != "? Tool [go]: " {
+	hasValue := value == "go"
+	hasPrompt := output.String() == "? Tool [go]: "
+	inputOK := hasValue && hasPrompt
+	if !inputOK {
 		t.Fatalf("InputDefault = %q, %q", value, output.String())
 	}
 }
@@ -154,7 +176,8 @@ func TestPromptOperationsPropagateInputErrors(t *testing.T) {
 			return err
 		},
 		func(prompt *dx.Prompter) error {
-			_, err := prompt.Confirm("Continue", false)
+			defaultConfirmed := false
+			_, err := prompt.Confirm("Continue", defaultConfirmed)
 			return err
 		},
 		func(prompt *dx.Prompter) error {

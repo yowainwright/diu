@@ -24,6 +24,7 @@ func (m *mockMonitor) Start(ctx context.Context, eventChan chan<- *core.Executio
 	return nil
 }
 
+//nolint:legibility // Monitor interface requires this method name.
 func (m *mockMonitor) GetInstalledPackages() ([]*core.PackageInfo, error) {
 	return nil, errors.New("not implemented")
 }
@@ -70,10 +71,20 @@ func TestBaseMonitorStop(t *testing.T) {
 	monitor.ctx = ctx
 	monitor.cancel = cancel
 
-	err = monitor.Stop()
-	if err != nil {
+	stopMonitorWithCancel(t, monitor)
+	assertContextCanceled(t, ctx)
+}
+
+func stopMonitorWithCancel(t *testing.T, monitor *BaseMonitor) {
+	t.Helper()
+
+	if err := monitor.Stop(); err != nil {
 		t.Fatalf("Stop with cancel failed: %v", err)
 	}
+}
+
+func assertContextCanceled(t *testing.T, ctx context.Context) {
+	t.Helper()
 
 	select {
 	case <-ctx.Done():
@@ -128,29 +139,37 @@ func TestMonitorRegistryGet(t *testing.T) {
 	}
 }
 
-func TestMonitorRegistryGetAll(t *testing.T) {
+func TestMonitorRegistryAll(t *testing.T) {
 	registry := NewMonitorRegistry()
+	names := []string{"monitor1", "monitor2", "monitor3"}
+	registerMockMonitors(registry, names...)
 
-	monitor1 := newMockMonitor("monitor1")
-	monitor2 := newMockMonitor("monitor2")
-	monitor3 := newMockMonitor("monitor3")
-
-	registry.Register(monitor1)
-	registry.Register(monitor2)
-	registry.Register(monitor3)
-
-	all := registry.GetAll()
+	all := registry.All()
 	if len(all) != 3 {
 		t.Errorf("Expected 3 monitors, got %d", len(all))
 	}
+	assertMonitorNames(t, all, names)
+}
 
-	names := make(map[string]bool)
-	for _, m := range all {
-		names[m.Name()] = true
+func registerMockMonitors(registry *MonitorRegistry, names ...string) []*mockMonitor {
+	monitors := make([]*mockMonitor, 0, len(names))
+	for _, name := range names {
+		monitor := newMockMonitor(name)
+		registry.Register(monitor)
+		monitors = append(monitors, monitor)
 	}
+	return monitors
+}
 
-	for _, name := range []string{"monitor1", "monitor2", "monitor3"} {
-		if !names[name] {
+func assertMonitorNames(t *testing.T, monitors []Monitor, want []string) {
+	t.Helper()
+
+	seen := make(map[string]bool)
+	for _, monitor := range monitors {
+		seen[monitor.Name()] = true
+	}
+	for _, name := range want {
+		if !seen[name] {
 			t.Errorf("Monitor %s not found in GetAll", name)
 		}
 	}
@@ -159,23 +178,22 @@ func TestMonitorRegistryGetAll(t *testing.T) {
 func TestMonitorRegistryInitializeAll(t *testing.T) {
 	registry := NewMonitorRegistry()
 	config := core.DefaultConfig()
-
-	monitor1 := newMockMonitor("monitor1")
-	monitor2 := newMockMonitor("monitor2")
-
-	registry.Register(monitor1)
-	registry.Register(monitor2)
+	monitors := registerMockMonitors(registry, "monitor1", "monitor2")
 
 	err := registry.InitializeAll(config)
 	if err != nil {
 		t.Fatalf("InitializeAll failed: %v", err)
 	}
+	assertMonitorsInitialized(t, monitors, config)
+}
 
-	if monitor1.config != config {
-		t.Error("monitor1 not initialized")
-	}
-	if monitor2.config != config {
-		t.Error("monitor2 not initialized")
+func assertMonitorsInitialized(t *testing.T, monitors []*mockMonitor, config *core.Config) {
+	t.Helper()
+
+	for _, monitor := range monitors {
+		if monitor.config != config {
+			t.Errorf("%s not initialized", monitor.Name())
+		}
 	}
 }
 
@@ -197,26 +215,41 @@ func TestMonitorRegistryStopAll(t *testing.T) {
 func TestMonitorRegistryStartAll(t *testing.T) {
 	registry := NewMonitorRegistry()
 	config := core.DefaultConfig()
-
-	monitor1 := newMockMonitor("monitor1")
-	monitor2 := newMockMonitor("monitor2")
-
-	if err := monitor1.Initialize(config); err != nil {
-		t.Fatalf("monitor1 Initialize failed: %v", err)
-	}
-	if err := monitor2.Initialize(config); err != nil {
-		t.Fatalf("monitor2 Initialize failed: %v", err)
-	}
-
-	registry.Register(monitor1)
-	registry.Register(monitor2)
+	monitors := registerInitializedMonitors(t, registry, config, "monitor1", "monitor2")
 
 	ctx := context.Background()
 	eventChan := make(chan *core.ExecutionRecord, 10)
-
 	err := registry.StartAll(ctx, eventChan)
 	if err != nil {
 		t.Fatalf("StartAll failed: %v", err)
+	}
+	assertMonitorsStarted(t, monitors)
+}
+
+func registerInitializedMonitors(
+	t *testing.T,
+	registry *MonitorRegistry,
+	config *core.Config,
+	names ...string,
+) []*mockMonitor {
+	t.Helper()
+
+	monitors := registerMockMonitors(registry, names...)
+	for _, monitor := range monitors {
+		if err := monitor.Initialize(config); err != nil {
+			t.Fatalf("%s Initialize failed: %v", monitor.Name(), err)
+		}
+	}
+	return monitors
+}
+
+func assertMonitorsStarted(t *testing.T, monitors []*mockMonitor) {
+	t.Helper()
+
+	for _, monitor := range monitors {
+		if !monitor.startCalled {
+			t.Errorf("%s was not started", monitor.Name())
+		}
 	}
 }
 
@@ -249,6 +282,7 @@ func (e *enrichMonitor) Start(ctx context.Context, eventChan chan<- *core.Execut
 	return nil
 }
 
+//nolint:legibility // Monitor interface requires this method name.
 func (e *enrichMonitor) GetInstalledPackages() ([]*core.PackageInfo, error) {
 	return nil, nil
 }
@@ -282,7 +316,9 @@ func TestEnrichExecutionRecordFillsPackages(t *testing.T) {
 
 	EnrichExecutionRecord(m, record)
 
-	if len(record.PackagesAffected) != 2 || record.PackagesAffected[0] != "a" {
+	hasTwoPackages := len(record.PackagesAffected) == 2
+	hasFirstPackage := hasTwoPackages && record.PackagesAffected[0] == "a"
+	if !hasFirstPackage {
 		t.Fatalf("packages not filled: %v", record.PackagesAffected)
 	}
 }
@@ -298,7 +334,9 @@ func TestEnrichExecutionRecordDoesNotOverwritePackages(t *testing.T) {
 
 	EnrichExecutionRecord(m, record)
 
-	if len(record.PackagesAffected) != 1 || record.PackagesAffected[0] != "existing" {
+	hasOnePackage := len(record.PackagesAffected) == 1
+	hasExistingPackage := hasOnePackage && record.PackagesAffected[0] == "existing"
+	if !hasExistingPackage {
 		t.Fatalf("expected packages preserved, got %v", record.PackagesAffected)
 	}
 }
@@ -335,7 +373,9 @@ func TestEnrichExecutionRecordCreatesMetadataMap(t *testing.T) {
 
 	EnrichExecutionRecord(m, record)
 
-	if record.Metadata == nil || record.Metadata["k"] != "v" {
+	hasMetadata := record.Metadata != nil
+	hasValue := hasMetadata && record.Metadata["k"] == "v"
+	if !hasValue {
 		t.Fatalf("expected metadata initialized, got %v", record.Metadata)
 	}
 }
@@ -355,23 +395,31 @@ func TestEnrichExecutionRecordEmptyMetadataSkipsAlloc(t *testing.T) {
 }
 
 func TestContainsHelper(t *testing.T) {
-	tests := []struct {
-		slice    []string
-		item     string
-		expected bool
-	}{
-		{[]string{"a", "b", "c"}, "b", true},
-		{[]string{"a", "b", "c"}, "d", false},
-		{[]string{}, "a", false},
-		{[]string{"test"}, "test", true},
-		{[]string{"Test"}, "test", false},
+	for _, test := range containsHelperCases {
+		assertContainsResult(t, test)
 	}
+}
 
-	for _, tt := range tests {
-		result := contains(tt.slice, tt.item)
-		if result != tt.expected {
-			t.Errorf("contains(%v, %s) = %v, expected %v",
-				tt.slice, tt.item, result, tt.expected)
-		}
+type containsHelperCase struct {
+	slice    []string
+	item     string
+	expected bool
+}
+
+var containsHelperCases = []containsHelperCase{
+	{[]string{"a", "b", "c"}, "b", true},
+	{[]string{"a", "b", "c"}, "d", false},
+	{[]string{}, "a", false},
+	{[]string{"test"}, "test", true},
+	{[]string{"Test"}, "test", false},
+}
+
+func assertContainsResult(t *testing.T, test containsHelperCase) {
+	t.Helper()
+
+	result := contains(test.slice, test.item)
+	if result != test.expected {
+		t.Errorf("contains(%v, %s) = %v, expected %v",
+			test.slice, test.item, result, test.expected)
 	}
 }

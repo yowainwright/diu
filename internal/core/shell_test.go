@@ -11,7 +11,8 @@ func TestShellPathLines(t *testing.T) {
 	fish := FishPathLine(wrapperDir)
 	posixContainsPath := strings.Contains(posix, wrapperDir+":$PATH")
 	fishContainsPath := strings.Count(fish, wrapperDir) == 2
-	if !posixContainsPath || !fishContainsPath {
+	hasExpectedLines := posixContainsPath && fishContainsPath
+	if !hasExpectedLines {
 		t.Fatalf("shell path lines = %q, %q", posix, fish)
 	}
 }

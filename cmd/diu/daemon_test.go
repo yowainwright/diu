@@ -13,7 +13,8 @@ func TestWaitForDaemonProcessStopped(t *testing.T) {
 		t.Fatalf("dead process wait failed: %v", err)
 	}
 	err := waitForDaemonProcessStopped(os.Getpid(), 0)
-	if err == nil || !strings.Contains(err.Error(), "waiting for daemon process") {
+	hasWaitError := err != nil && strings.Contains(err.Error(), "waiting for daemon process")
+	if !hasWaitError {
 		t.Fatalf("live process wait error = %v", err)
 	}
 }

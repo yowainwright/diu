@@ -27,121 +27,163 @@ func (m *GoMonitor) Initialize(config *core.Config) error {
 	if err := m.ProcessMonitor.Initialize(config); err != nil {
 		return err
 	}
-
-	m.goPath = config.Tools.Go.GoPath
-	if m.goPath == "" {
-		m.goPath = os.Getenv("GOPATH")
-	}
-	if m.goPath == "" {
-		homeDir, _ := os.UserHomeDir()
-		m.goPath = filepath.Join(homeDir, "go")
-	}
-
-	m.goBin = config.Tools.Go.GoBin
-	if m.goBin == "" {
-		m.goBin = os.Getenv("GOBIN")
-	}
-	if m.goBin == "" {
-		m.goBin = filepath.Join(m.goPath, "bin")
-	}
-
+	m.goPath = goPath(config)
+	m.goBin = goBin(config, m.goPath)
 	return nil
 }
 
+func goPath(config *core.Config) string {
+	path := config.Tools.Go.GoPath
+	if path == "" {
+		path = os.Getenv("GOPATH")
+	}
+	if path == "" {
+		homeDir, _ := os.UserHomeDir()
+		path = filepath.Join(homeDir, "go")
+	}
+	return path
+}
+
+func goBin(config *core.Config, path string) string {
+	bin := config.Tools.Go.GoBin
+	if bin == "" {
+		bin = os.Getenv("GOBIN")
+	}
+	if bin == "" {
+		bin = filepath.Join(path, "bin")
+	}
+	return bin
+}
+
 func (m *GoMonitor) ParseCommand(cmd string, args []string) (*core.ExecutionRecord, error) {
-	record := &core.ExecutionRecord{
+	record := newGoExecutionRecord(cmd, args)
+	if len(args) == 0 {
+		return record, nil
+	}
+	subcommand := args[0]
+	record.Metadata["subcommand"] = subcommand
+	m.applyGoSubcommand(record, subcommand, args)
+	return record, nil
+}
+
+func newGoExecutionRecord(cmd string, args []string) *core.ExecutionRecord {
+	return &core.ExecutionRecord{
 		Tool:     core.ToolGo,
 		Command:  cmd,
 		Args:     args,
 		Metadata: make(map[string]interface{}),
 	}
+}
 
-	if len(args) == 0 {
-		return record, nil
-	}
-
-	subcommand := args[0]
-	record.Metadata["subcommand"] = subcommand
-
+func (m *GoMonitor) applyGoSubcommand(record *core.ExecutionRecord, subcommand string, args []string) {
 	switch subcommand {
 	case "get":
-		packages := m.extractGoPackages(args[1:])
-		record.PackagesAffected = packages
-		record.Metadata["action"] = "get"
-
-		// Check for update flag
-		if contains(args, "-u") {
-			record.Metadata["update"] = true
-		}
-
+		m.applyGoGet(record, args)
 	case "install":
-		packages := m.extractGoPackages(args[1:])
-		record.PackagesAffected = packages
-		record.Metadata["action"] = "install"
-
+		m.applyGoInstall(record, args)
 	case "mod":
-		if len(args) > 1 {
-			modCmd := args[1]
-			record.Metadata["mod_command"] = modCmd
-			switch modCmd {
-			case "download":
-				record.Metadata["action"] = "mod_download"
-			case "tidy":
-				record.Metadata["action"] = "mod_tidy"
-			case "vendor":
-				record.Metadata["action"] = "mod_vendor"
-			case "init":
-				if len(args) > 2 {
-					record.Metadata["module"] = args[2]
-				}
-			}
-		}
-
-	case "build":
-		record.Metadata["action"] = "build"
-		if output := m.extractOutputFlag(args); output != "" {
-			record.Metadata["output"] = output
-		}
-
-	case "run":
-		record.Metadata["action"] = "run"
-		if len(args) > 1 && strings.HasSuffix(args[1], ".go") {
-			record.Metadata["file"] = args[1]
-		}
-
-	case "test":
-		record.Metadata["action"] = "test"
-		packages := m.extractGoPackages(args[1:])
-		if len(packages) > 0 {
-			record.PackagesAffected = packages
-		}
-
-	case "fmt":
-		record.Metadata["action"] = "fmt"
-
-	case "vet":
-		record.Metadata["action"] = "vet"
-
-	case "list":
-		record.Metadata["action"] = "list"
-		if contains(args, "-m") {
-			record.Metadata["modules"] = true
-		}
-
-	case "clean":
-		record.Metadata["action"] = "clean"
-		if contains(args, "-modcache") {
-			record.Metadata["modcache"] = true
-		}
-
-	case "env":
-		record.Metadata["action"] = "env"
-
-	case "version":
-		record.Metadata["action"] = "version"
+		applyGoModMetadata(record, args)
+	default:
+		m.applyGoToolSubcommand(record, subcommand, args)
 	}
+}
 
-	return record, nil
+func (m *GoMonitor) applyGoToolSubcommand(record *core.ExecutionRecord, subcommand string, args []string) {
+	switch subcommand {
+	case "build":
+		m.applyGoBuild(record, args)
+	case "run":
+		applyGoRun(record, args)
+	case "test":
+		m.applyGoTest(record, args)
+	case "fmt", "vet":
+		applyGoSimpleAction(record, subcommand)
+	case "list":
+		applyGoList(record, args)
+	case "clean":
+		applyGoClean(record, args)
+	case "env", "version":
+		applyGoSimpleAction(record, subcommand)
+	}
+}
+
+func applyGoSimpleAction(record *core.ExecutionRecord, action string) {
+	record.Metadata["action"] = action
+}
+
+func (m *GoMonitor) applyGoGet(record *core.ExecutionRecord, args []string) {
+	record.PackagesAffected = m.extractGoPackages(args[1:])
+	record.Metadata["action"] = "get"
+	if contains(args, "-u") {
+		record.Metadata["update"] = true
+	}
+}
+
+func (m *GoMonitor) applyGoInstall(record *core.ExecutionRecord, args []string) {
+	record.PackagesAffected = m.extractGoPackages(args[1:])
+	record.Metadata["action"] = "install"
+}
+
+func (m *GoMonitor) applyGoBuild(record *core.ExecutionRecord, args []string) {
+	record.Metadata["action"] = "build"
+	if output := m.extractOutputFlag(args); output != "" {
+		record.Metadata["output"] = output
+	}
+}
+
+func applyGoRun(record *core.ExecutionRecord, args []string) {
+	record.Metadata["action"] = "run"
+	hasFileArg := len(args) > 1
+	isGoFile := hasFileArg && strings.HasSuffix(args[1], ".go")
+	if isGoFile {
+		record.Metadata["file"] = args[1]
+	}
+}
+
+func (m *GoMonitor) applyGoTest(record *core.ExecutionRecord, args []string) {
+	record.Metadata["action"] = "test"
+	packages := m.extractGoPackages(args[1:])
+	if len(packages) > 0 {
+		record.PackagesAffected = packages
+	}
+}
+
+func applyGoList(record *core.ExecutionRecord, args []string) {
+	record.Metadata["action"] = "list"
+	if contains(args, "-m") {
+		record.Metadata["modules"] = true
+	}
+}
+
+func applyGoClean(record *core.ExecutionRecord, args []string) {
+	record.Metadata["action"] = "clean"
+	if contains(args, "-modcache") {
+		record.Metadata["modcache"] = true
+	}
+}
+
+func applyGoModMetadata(record *core.ExecutionRecord, args []string) {
+	if len(args) <= 1 {
+		return
+	}
+	modCmd := args[1]
+	record.Metadata["mod_command"] = modCmd
+	switch modCmd {
+	case "download":
+		record.Metadata["action"] = "mod_download"
+	case "tidy":
+		record.Metadata["action"] = "mod_tidy"
+	case "vendor":
+		record.Metadata["action"] = "mod_vendor"
+	case "init":
+		recordGoModule(record, args)
+	}
+}
+
+func recordGoModule(record *core.ExecutionRecord, args []string) {
+	if len(args) > 2 {
+		record.Metadata["module"] = args[2]
+	}
 }
 
 func (m *GoMonitor) extractGoPackages(args []string) []string {
@@ -161,7 +203,10 @@ func (m *GoMonitor) extractGoPackages(args []string) []string {
 
 func (m *GoMonitor) extractOutputFlag(args []string) string {
 	for i, arg := range args {
-		if arg == "-o" && i+1 < len(args) {
+		hasOutputFlag := arg == "-o"
+		hasValue := i+1 < len(args)
+		hasOutputValue := hasOutputFlag && hasValue
+		if hasOutputValue {
 			return args[i+1]
 		}
 		if strings.HasPrefix(arg, "-o=") {
@@ -171,15 +216,23 @@ func (m *GoMonitor) extractOutputFlag(args []string) string {
 	return ""
 }
 
+//nolint:legibility // Monitor interface requires this method name.
 func (m *GoMonitor) GetInstalledPackages() ([]*core.PackageInfo, error) {
-	return m.getBinaries()
+	return m.binaries()
 }
 
-func (m *GoMonitor) getBinaries() ([]*core.PackageInfo, error) {
+func (m *GoMonitor) binaries() ([]*core.PackageInfo, error) {
+	entries, err := m.goBinEntries()
+	if err != nil {
+		return nil, err
+	}
+	return m.goBinaryPackages(entries), nil
+}
+
+func (m *GoMonitor) goBinEntries() ([]os.DirEntry, error) {
 	if m.goBin == "" {
 		return nil, nil
 	}
-
 	entries, err := os.ReadDir(m.goBin)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -187,54 +240,70 @@ func (m *GoMonitor) getBinaries() ([]*core.PackageInfo, error) {
 		}
 		return nil, fmt.Errorf("failed to read GOBIN: %w", err)
 	}
-
-	var packages []*core.PackageInfo
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
-
-		info, err := entry.Info()
-		if err != nil {
-			continue
-		}
-
-		// Check if executable
-		if info.Mode()&core.ExecutableModeMask == 0 {
-			continue
-		}
-
-		pkg := &core.PackageInfo{
-			Name:        entry.Name(),
-			Tool:        core.ToolGoBinary,
-			InstallDate: info.ModTime(),
-			Path:        filepath.Join(m.goBin, entry.Name()),
-			SizeBytes:   info.Size(),
-			ModifiedAt:  info.ModTime().UnixNano(),
-		}
-		// Try to get version
-		if version, err := m.getBinaryVersion(pkg.Path); err == nil {
-			pkg.Version = version
-		}
-
-		packages = append(packages, pkg)
-	}
-
-	return packages, nil
+	return entries, nil
 }
 
-func (m *GoMonitor) getBinaryVersion(binaryPath string) (string, error) {
+func (m *GoMonitor) goBinaryPackages(entries []os.DirEntry) []*core.PackageInfo {
+	var packages []*core.PackageInfo
+	for _, entry := range entries {
+		pkg, ok := m.goBinaryPackage(entry)
+		if !ok {
+			continue
+		}
+		packages = append(packages, pkg)
+	}
+	return packages
+}
+
+func (m *GoMonitor) goBinaryPackage(entry os.DirEntry) (*core.PackageInfo, bool) {
+	if entry.IsDir() {
+		return nil, false
+	}
+	info, err := entry.Info()
+	if err != nil {
+		return nil, false
+	}
+	if info.Mode()&core.ExecutableModeMask == 0 {
+		return nil, false
+	}
+	pkg := m.newGoBinaryPackage(entry.Name(), info)
+	m.addGoBinaryVersion(pkg)
+	return pkg, true
+}
+
+func (m *GoMonitor) newGoBinaryPackage(name string, info os.FileInfo) *core.PackageInfo {
+	return &core.PackageInfo{
+		Name:        name,
+		Tool:        core.ToolGoBinary,
+		InstallDate: info.ModTime(),
+		Path:        filepath.Join(m.goBin, name),
+		SizeBytes:   info.Size(),
+		ModifiedAt:  info.ModTime().UnixNano(),
+	}
+}
+
+func (m *GoMonitor) addGoBinaryVersion(pkg *core.PackageInfo) {
+	if version, err := m.binaryVersion(pkg.Path); err == nil {
+		pkg.Version = version
+	}
+}
+
+func (m *GoMonitor) binaryVersion(binaryPath string) (string, error) {
 	info, err := buildinfo.ReadFile(binaryPath)
 	if err != nil {
 		return "", err
 	}
 	version := strings.TrimSpace(info.Main.Version)
-	if version == "" || version == "(devel)" {
+	hasVersion := version != ""
+	isReleasedVersion := version != "(devel)"
+	validVersion := hasVersion && isReleasedVersion
+	if !validVersion {
 		return "", fmt.Errorf("version not found")
 	}
 	return version, nil
 }
 
 func (m *GoMonitor) Start(ctx context.Context, eventChan chan<- *core.ExecutionRecord) error {
-	return m.ProcessMonitor.Start(ctx, eventChan)
+	err := m.ProcessMonitor.Start(ctx, eventChan)
+	return err
 }

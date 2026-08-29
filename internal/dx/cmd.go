@@ -30,13 +30,15 @@ func (c *Command) AddCommand(commands ...*Command) {
 	}
 }
 
+//nolint:legibility // Public command API mirrors Cobra's Execute method.
 func (c *Command) Execute(args []string) error {
 	return c.execute(args)
 }
 
 func (c *Command) execute(args []string) error {
 	handled, err := c.handleBuiltIn(args)
-	if handled || err != nil {
+	shouldReturn := handled || err != nil
+	if shouldReturn {
 		return err
 	}
 	if child := c.child(args); child != nil {
@@ -64,7 +66,10 @@ func (c *Command) handleBuiltIn(args []string) (bool, error) {
 
 func (c *Command) printVersion() (bool, error) {
 	root := c.root()
-	if c.parent != nil || root.Version == nil {
+	isSubcommand := c.parent != nil
+	missingVersion := root.Version == nil
+	skipVersion := isSubcommand || missingVersion
+	if skipVersion {
 		return false, nil
 	}
 	_, err := fmt.Fprintln(c.stdout(), root.Version())
@@ -104,7 +109,8 @@ func (c *Command) runHandler(args []string) error {
 
 func hasHelpFlag(args []string) bool {
 	for _, arg := range args {
-		if arg == "-h" || arg == "--help" {
+		isHelpFlag := arg == "-h" || arg == "--help"
+		if isHelpFlag {
 			return true
 		}
 	}
@@ -118,6 +124,7 @@ func (c *Command) Flags() *FlagSet {
 	return c.flags
 }
 
+//nolint:legibility // Public command API mirrors Cobra's Flag method.
 func (c *Command) Flag(name string) *Flag {
 	return c.Flags().lookupLong(name)
 }
@@ -174,7 +181,9 @@ func (c *Command) printCommands(w io.Writer) {
 }
 
 func (c *Command) printFlags(w io.Writer) {
-	if c.flags == nil || len(c.flags.order) == 0 {
+	hasFlags := c.flags != nil
+	hasOrderedFlags := hasFlags && len(c.flags.order) > 0
+	if !hasOrderedFlags {
 		return
 	}
 	_, _ = fmt.Fprintln(w, "\nFlags:")
@@ -263,7 +272,9 @@ func (s *FlagSet) BoolVar(target *bool, name string, value bool, usage string) {
 
 func (s *FlagSet) GetString(name string) (string, error) {
 	current := s.lookupLong(name)
-	if current == nil || current.kind != flagKindString {
+	hasFlag := current != nil
+	hasStringKind := hasFlag && current.kind == flagKindString
+	if !hasStringKind {
 		return "", fmt.Errorf("unknown string flag: %s", name)
 	}
 	return *current.stringValue, nil
@@ -271,7 +282,9 @@ func (s *FlagSet) GetString(name string) (string, error) {
 
 func (s *FlagSet) GetInt(name string) (int, error) {
 	current := s.lookupLong(name)
-	if current == nil || current.kind != flagKindInt {
+	hasFlag := current != nil
+	hasIntKind := hasFlag && current.kind == flagKindInt
+	if !hasIntKind {
 		return 0, fmt.Errorf("unknown int flag: %s", name)
 	}
 	return *current.intValue, nil
@@ -279,7 +292,9 @@ func (s *FlagSet) GetInt(name string) (int, error) {
 
 func (s *FlagSet) GetBool(name string) (bool, error) {
 	current := s.lookupLong(name)
-	if current == nil || current.kind != flagKindBool {
+	hasFlag := current != nil
+	hasBoolKind := hasFlag && current.kind == flagKindBool
+	if !hasBoolKind {
 		return false, fmt.Errorf("unknown bool flag: %s", name)
 	}
 	return *current.boolValue, nil
@@ -316,14 +331,21 @@ func (s *FlagSet) parseArgument(args []string, index int) (int, bool, []string, 
 	if arg == "--" {
 		return 0, true, append([]string{}, args[index+1:]...), nil
 	}
-	if arg == "-h" || arg == "--help" {
+	isHelpFlag := arg == "-h" || arg == "--help"
+	if isHelpFlag {
 		return 0, false, nil, nil
 	}
-	if strings.HasPrefix(arg, "--") && len(arg) > 2 {
+	return s.parseFlagArgument(args, index, arg)
+}
+
+func (s *FlagSet) parseFlagArgument(args []string, index int, arg string) (int, bool, []string, error) {
+	isLongFlag := strings.HasPrefix(arg, "--") && len(arg) > 2
+	if isLongFlag {
 		consumed, err := s.parseLong(args, index)
 		return consumed, true, nil, err
 	}
-	if strings.HasPrefix(arg, "-") && len(arg) > 1 {
+	isShortFlag := strings.HasPrefix(arg, "-") && len(arg) > 1
+	if isShortFlag {
 		consumed, err := s.parseShort(args, index)
 		return consumed, true, nil, err
 	}
@@ -370,14 +392,19 @@ func (s *FlagSet) shortFlag(name string) (*Flag, string, bool) {
 		return nil, "", false
 	}
 	current := s.lookupShort(name[:1])
-	if current == nil || current.kind == flagKindBool {
+	if current == nil {
+		return nil, "", false
+	}
+	if current.kind == flagKindBool {
 		return nil, "", false
 	}
 	return current, name[1:], true
 }
 
 func flagValueFromArgs(current *Flag, value string, hasValue bool, args []string, index int) (string, bool, int, error) {
-	if current.kind == flagKindBool || hasValue {
+	isBoolFlag := current.kind == flagKindBool
+	hasInlineValue := isBoolFlag || hasValue
+	if hasInlineValue {
 		return value, hasValue, 0, nil
 	}
 	if index+1 >= len(args) {
@@ -468,7 +495,8 @@ func (f *Flag) shortUsage() string {
 	if f.short == "" {
 		return ""
 	}
-	return "-" + f.short + ", "
+	usage := "-" + f.short + ", "
+	return usage
 }
 
 type flagValue struct {

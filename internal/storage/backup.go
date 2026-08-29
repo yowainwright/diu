@@ -22,14 +22,14 @@ func copyManagedFile(source, destination string) (err error) {
 		return err
 	}
 	defer func() {
-		err = closeWithError(err, input)
+		err = safefs.CloseWithError(err, input, "")
 	}()
 	output, err := safefs.OpenFile(destination, os.O_CREATE|os.O_EXCL|os.O_WRONLY, core.PrivateFileMode)
 	if err != nil {
 		return err
 	}
 	defer func() {
-		err = closeWithError(err, output)
+		err = safefs.CloseWithError(err, output, "")
 		if err != nil {
 			_ = os.Remove(destination)
 		}
@@ -40,23 +40,10 @@ func copyManagedFile(source, destination string) (err error) {
 	return nil
 }
 
-func closeWithError(current error, file *os.File) error {
-	closeErr := file.Close()
-	shouldReturnCloseErr := current == nil && closeErr != nil
-	if shouldReturnCloseErr {
-		return closeErr
-	}
-	return current
-}
-
 func (j *JSONStorage) restoreBackup(path string) error {
-	data, err := readManagedFile(path)
+	restored, err := readStorageBackup(path)
 	if err != nil {
-		return fmt.Errorf("failed to read restore file: %w", err)
-	}
-	var restored core.StorageData
-	if err := json.Unmarshal(data, &restored); err != nil {
-		return fmt.Errorf("failed to unmarshal restore data: %w", err)
+		return err
 	}
 	if restored.ExecutionLogFormat == "" {
 		return j.restoreLegacyBackup(path)
@@ -64,12 +51,31 @@ func (j *JSONStorage) restoreBackup(path string) error {
 	if restored.ExecutionLogFormat != executionLogFormat {
 		return fmt.Errorf("%w: %s", ErrUnsupportedExecutionLogFormat, restored.ExecutionLogFormat)
 	}
+	if err := j.restoreExecutionBackup(path); err != nil {
+		return err
+	}
+	j.data = restored
+	return j.save()
+}
+
+func readStorageBackup(path string) (*core.StorageData, error) {
+	data, err := readManagedFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read restore file: %w", err)
+	}
+	var restored core.StorageData
+	if err := json.Unmarshal(data, &restored); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal restore data: %w", err)
+	}
+	return &restored, nil
+}
+
+func (j *JSONStorage) restoreExecutionBackup(path string) error {
 	executionBackup := j.executionBackupPath(path)
 	if err := replaceExecutionLog(executionBackup, j.executionPath); err != nil {
 		return fmt.Errorf("failed to restore execution log: %w", err)
 	}
-	j.data = &restored
-	return j.save()
+	return nil
 }
 
 func (j *JSONStorage) restoreLegacyBackup(path string) error {
@@ -110,7 +116,7 @@ func copyExecutionLog(destination *os.File, source string) (err error) {
 		return err
 	}
 	defer func() {
-		err = closeWithError(err, input)
+		err = safefs.CloseWithError(err, input, "")
 	}()
 	if _, err := io.Copy(destination, input); err != nil {
 		return fmt.Errorf("failed to copy execution log: %w", err)

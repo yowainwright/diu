@@ -22,7 +22,8 @@ type DaemonChecker interface {
 type RealDaemonChecker struct{}
 
 func (RealDaemonChecker) IsRunning(config *core.Config) bool {
-	return daemon.IsRunning(config)
+	running := daemon.IsRunning(config)
+	return running
 }
 
 // defaultDaemonChecker is used by default
@@ -73,41 +74,68 @@ func forkDaemonBackground(config *core.Config) error {
 	activity := out.StartActivity("Starting DIU daemon")
 	defer activity.Stop()
 
-	execPath, err := os.Executable()
-	if err != nil {
-		return fmt.Errorf("failed to get executable path: %w", err)
+	if err := startDaemonProcess(activity); err != nil {
+		return err
 	}
-	execPath, err = validateExecutablePath(execPath)
-	if err != nil {
-		return fmt.Errorf("invalid daemon executable path: %w", err)
-	}
-
-	devNull, err := os.OpenFile(os.DevNull, os.O_RDWR, 0)
-	if err != nil {
-		return fmt.Errorf("failed to open %s: %w", os.DevNull, err)
-	}
-	defer func() {
-		if err := devNull.Close(); err != nil {
-			activity.Notice(dx.Warning, fmt.Sprintf("failed to close %s: %v", os.DevNull, err))
-		}
-	}()
-
-	procAttr := &syscall.ProcAttr{
-		Env:   append(os.Environ(), "DIU_DAEMON_FOREGROUND=1"),
-		Files: []uintptr{devNull.Fd(), devNull.Fd(), devNull.Fd()},
-		Sys:   &syscall.SysProcAttr{Setsid: true},
-	}
-
-	if err := daemonProcessStarter(execPath, []string{execPath, "daemon", "start"}, procAttr); err != nil {
-		return fmt.Errorf("failed to fork daemon: %w", err)
-	}
-
 	if err := waitForDaemonStarted(config, daemonStartTimeout); err != nil {
 		return err
 	}
 
 	activity.Success("DIU daemon started")
 	return nil
+}
+
+func startDaemonProcess(activity *dx.Activity) error {
+	execPath, err := daemonExecutablePath()
+	if err != nil {
+		return err
+	}
+	devNull, err := openDaemonDevNull()
+	if err != nil {
+		return err
+	}
+	defer closeDaemonDevNull(devNull, activity)
+
+	procAttr := daemonProcAttr(devNull)
+	args := []string{execPath, "daemon", "start"}
+	if err := daemonProcessStarter(execPath, args, procAttr); err != nil {
+		return fmt.Errorf("failed to fork daemon: %w", err)
+	}
+	return nil
+}
+
+func daemonExecutablePath() (string, error) {
+	execPath, err := os.Executable()
+	if err != nil {
+		return "", fmt.Errorf("failed to get executable path: %w", err)
+	}
+	execPath, err = validateExecutablePath(execPath)
+	if err != nil {
+		return "", fmt.Errorf("invalid daemon executable path: %w", err)
+	}
+	return execPath, nil
+}
+
+func openDaemonDevNull() (*os.File, error) {
+	devNull, err := os.OpenFile(os.DevNull, os.O_RDWR, 0)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open %s: %w", os.DevNull, err)
+	}
+	return devNull, nil
+}
+
+func closeDaemonDevNull(devNull *os.File, activity *dx.Activity) {
+	if err := devNull.Close(); err != nil {
+		activity.Notice(dx.Warning, fmt.Sprintf("failed to close %s: %v", os.DevNull, err))
+	}
+}
+
+func daemonProcAttr(devNull *os.File) *syscall.ProcAttr {
+	return &syscall.ProcAttr{
+		Env:   append(os.Environ(), "DIU_DAEMON_FOREGROUND=1"),
+		Files: []uintptr{devNull.Fd(), devNull.Fd(), devNull.Fd()},
+		Sys:   &syscall.SysProcAttr{Setsid: true},
+	}
 }
 
 func runDaemonForeground(config *core.Config) error {
@@ -147,31 +175,55 @@ const daemonStopPollInterval = 100 * time.Millisecond
 func stopDaemonWithConfig(config *core.Config) error {
 	running := defaultDaemonChecker.IsRunning(config)
 	pid, pidErr := daemon.ReadPID(config)
-	if !running && os.IsNotExist(pidErr) {
+	if daemonAlreadyStopped(running, pidErr) {
 		cliOutput().Status(dx.Info, "DIU daemon is not running")
 		return nil
 	}
 
-	if err := daemonStopRequester(config); errors.Is(err, daemon.ErrNotRunning) {
-		cliOutput().Status(dx.Info, "DIU daemon is not running")
-		return nil
-	} else if err != nil {
-		return fmt.Errorf("failed to stop daemon: %w", err)
+	alreadyStopped, err := requestDaemonStop(config)
+	stopRequestFinished := alreadyStopped || err != nil
+	if stopRequestFinished {
+		return err
 	}
+	return waitForDaemonStopActivity(config, pid, pidErr)
+}
+
+func waitForDaemonStopActivity(config *core.Config, pid int, pidErr error) error {
 	out := cliOutput()
 	activity := out.StartActivity("Stopping DIU daemon")
 	defer activity.Stop()
 
-	if pidErr == nil {
-		if err := waitForDaemonProcessStopped(pid, daemonStopTimeout); err != nil {
-			return err
-		}
-	} else if err := waitForDaemonStopped(config, daemonStopTimeout); err != nil {
+	if err := waitForDaemonExit(config, pid, pidErr); err != nil {
 		return err
 	}
 
 	activity.Success("DIU daemon stopped")
 	return nil
+}
+
+func daemonAlreadyStopped(running bool, pidErr error) bool {
+	missingPIDFile := os.IsNotExist(pidErr)
+	alreadyStopped := !running && missingPIDFile
+	return alreadyStopped
+}
+
+func requestDaemonStop(config *core.Config) (bool, error) {
+	err := daemonStopRequester(config)
+	if errors.Is(err, daemon.ErrNotRunning) {
+		cliOutput().Status(dx.Info, "DIU daemon is not running")
+		return true, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("failed to stop daemon: %w", err)
+	}
+	return false, nil
+}
+
+func waitForDaemonExit(config *core.Config, pid int, pidErr error) error {
+	if pidErr == nil {
+		return waitForDaemonProcessStopped(pid, daemonStopTimeout)
+	}
+	return waitForDaemonStopped(config, daemonStopTimeout)
 }
 
 // waitForDaemonStarted polls IsRunning until the daemon starts or the timeout elapses.
