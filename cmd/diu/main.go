@@ -38,12 +38,16 @@ func newRootCommand() *command {
 }
 
 func rootCommand() *command {
-	return &command{
+	var styleguide bool
+	rootCmd := &command{
 		Use:     "diu",
 		Short:   "Do I Use - Package Manager Execution Tracker",
 		Long:    `DIU tracks when package managers and global development tools are executed, storing execution data for analysis and auditing.`,
+		RunE:    runRootCommand,
 		Version: versionString,
 	}
+	rootCmd.Flags().BoolVar(&styleguide, "styleguide", defaultBoolFlagValue, "Show CLI style guide")
+	return rootCmd
 }
 
 func rootCommands() []*command {

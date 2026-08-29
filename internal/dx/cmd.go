@@ -124,6 +124,14 @@ func (c *Command) Flags() *FlagSet {
 	return c.flags
 }
 
+func (c *Command) PrintUsage() {
+	c.printUsage(c.stdout())
+}
+
+func (c *Command) PrintErrorUsage() {
+	c.printUsage(c.stderr())
+}
+
 //nolint:legibility // Public command API mirrors Cobra's Flag method.
 func (c *Command) Flag(name string) *Flag {
 	return c.Flags().lookupLong(name)
