@@ -38,7 +38,7 @@ func newRootCommand() *command {
 }
 
 func rootCommand() *command {
-	var styleguide bool
+	var shouldShowStyleguide bool
 	rootCmd := &command{
 		Use:     "diu",
 		Short:   "Do I Use - Package Manager Execution Tracker",
@@ -46,7 +46,7 @@ func rootCommand() *command {
 		RunE:    runRootCommand,
 		Version: versionString,
 	}
-	rootCmd.Flags().BoolVar(&styleguide, "styleguide", defaultBoolFlagValue, "Show CLI style guide")
+	rootCmd.Flags().BoolVar(&shouldShowStyleguide, "styleguide", defaultBoolFlagValue, "Show CLI style guide")
 	return rootCmd
 }
 
@@ -143,10 +143,10 @@ func addQueryFlags(queryCmd *command) {
 
 func newStatsCommand() *command {
 	var (
-		statsDaily  bool
-		statsWeekly bool
-		statsTool   string
-		statsTop    int
+		shouldShowDailyStats  bool
+		shouldShowWeeklyStats bool
+		statsTool             string
+		statsTop              int
 	)
 
 	statsCmd := &command{
@@ -154,8 +154,8 @@ func newStatsCommand() *command {
 		Short: "Show usage statistics",
 		RunE:  showStats,
 	}
-	statsCmd.Flags().BoolVarP(&statsDaily, "daily", "d", defaultBoolFlagValue, "Show daily statistics")
-	statsCmd.Flags().BoolVarP(&statsWeekly, "weekly", "w", defaultBoolFlagValue, "Show weekly statistics")
+	statsCmd.Flags().BoolVarP(&shouldShowDailyStats, "daily", "d", defaultBoolFlagValue, "Show daily statistics")
+	statsCmd.Flags().BoolVarP(&shouldShowWeeklyStats, "weekly", "w", defaultBoolFlagValue, "Show weekly statistics")
 	statsCmd.Flags().StringVarP(&statsTool, "tool", "t", "", "Statistics for specific tool")
 	statsCmd.Flags().IntVar(&statsTop, "top", 10, "Show top N most used packages")
 	return statsCmd
@@ -214,17 +214,17 @@ func newManageCommand() *command {
 
 func addManageFlags(manageCmd *command) {
 	var (
-		manageTool      string
-		manageSearch    string
-		manageUninstall string
-		manageYes       bool
-		manageDryRun    bool
+		manageTool            string
+		manageSearch          string
+		manageUninstall       string
+		shouldManageAssumeYes bool
+		shouldManageDryRun    bool
 	)
 	manageCmd.Flags().StringVarP(&manageTool, "tool", "t", "", "Filter by tool")
 	manageCmd.Flags().StringVarP(&manageSearch, "search", "s", "", "Search package names")
 	manageCmd.Flags().StringVar(&manageUninstall, "uninstall", "", "Uninstall package non-interactively")
-	manageCmd.Flags().BoolVarP(&manageYes, "yes", "y", defaultBoolFlagValue, "Skip uninstall confirmation")
-	manageCmd.Flags().BoolVar(&manageDryRun, "dry-run", defaultBoolFlagValue, "Print uninstall command without running it")
+	manageCmd.Flags().BoolVarP(&shouldManageAssumeYes, "yes", "y", defaultBoolFlagValue, "Skip uninstall confirmation")
+	manageCmd.Flags().BoolVar(&shouldManageDryRun, "dry-run", defaultBoolFlagValue, "Print uninstall command without running it")
 }
 
 func newConfigCommand() *command {
@@ -313,10 +313,10 @@ func newScanCommand() *command {
 
 func newRecordCommand() *command {
 	return &command{
-		Use:    "record",
-		Short:  "Record an execution event from stdin",
-		Hidden: true,
-		RunE:   recordExecution,
+		Use:      "record",
+		Short:    "Record an execution event from stdin",
+		IsHidden: true,
+		RunE:     recordExecution,
 	}
 }
 

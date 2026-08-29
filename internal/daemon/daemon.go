@@ -61,27 +61,27 @@ var daemonSocketControlSender = sendSocketControl
 var ErrNotRunning = errors.New("daemon is not running")
 
 type Daemon struct {
-	config          *core.Config
-	storage         storage.Storage
-	registry        *monitors.MonitorRegistry
-	eventChan       chan *core.ExecutionRecord
-	httpServer      *http.Server
-	socketListener  net.Listener
-	socketInfo      os.FileInfo
-	socketSlots     chan struct{}
-	ctx             context.Context
-	cancel          context.CancelFunc
-	wg              sync.WaitGroup
-	startTime       time.Time
-	stopOnce        sync.Once
-	stopErr         error
-	stopped         atomic.Bool
-	logger          *log.Logger
-	logSink         io.Closer
-	startupWarnings []string
-	pidFile         *os.File
-	pidFileOwned    bool
-	socketOwned     bool
+	config              *core.Config
+	storage             storage.Storage
+	registry            *monitors.MonitorRegistry
+	eventChan           chan *core.ExecutionRecord
+	httpServer          *http.Server
+	socketListener      net.Listener
+	socketInfo          os.FileInfo
+	socketSlots         chan struct{}
+	ctx                 context.Context
+	cancel              context.CancelFunc
+	wg                  sync.WaitGroup
+	startTime           time.Time
+	stopOnce            sync.Once
+	stopErr             error
+	stopped             atomic.Bool
+	logger              *log.Logger
+	logSink             io.Closer
+	startupWarnings     []string
+	pidFile             *os.File
+	hasPIDFileOwnership bool
+	hasSocketOwnership  bool
 }
 
 func NewDaemon(config *core.Config) (*Daemon, error) {
@@ -116,28 +116,26 @@ func initializedMonitorRegistry(config *core.Config) (*monitors.MonitorRegistry,
 }
 
 func monitorForTool(tool string) (monitors.Monitor, bool) {
+	if monitor, ok := primaryMonitorForTool(tool); ok {
+		return monitor, true
+	}
+	return pythonMonitorForTool(tool)
+}
+
+func primaryMonitorForTool(tool string) (monitors.Monitor, bool) {
 	switch tool {
 	case core.ToolHomebrew:
 		return monitors.NewHomebrewMonitor(), true
-	case core.ToolNPM, core.ToolPNPM, core.ToolBun:
-		return javascriptMonitorForTool(tool)
-	case core.ToolGo:
-		return monitors.NewGoMonitor(), true
-	case core.ToolPip, core.ToolUV, core.ToolPoetry:
-		return pythonMonitorForTool(tool)
-	default:
-		return nil, false
-	}
-}
-
-func javascriptMonitorForTool(tool string) (monitors.Monitor, bool) {
-	switch tool {
 	case core.ToolNPM:
 		return monitors.NewNPMMonitor(), true
 	case core.ToolPNPM:
 		return monitors.NewPNPMMonitor(), true
-	default:
+	case core.ToolBun:
 		return monitors.NewBunMonitor(), true
+	case core.ToolGo:
+		return monitors.NewGoMonitor(), true
+	default:
+		return nil, false
 	}
 }
 
@@ -147,8 +145,10 @@ func pythonMonitorForTool(tool string) (monitors.Monitor, bool) {
 		return monitors.NewPipMonitor(), true
 	case core.ToolUV:
 		return monitors.NewUVMonitor(), true
-	default:
+	case core.ToolPoetry:
 		return monitors.NewPoetryMonitor(), true
+	default:
+		return nil, false
 	}
 }
 
@@ -223,7 +223,7 @@ func (d *Daemon) claimRuntimePaths() error {
 	if err := d.writePIDFile(); err != nil {
 		return fmt.Errorf("failed to write PID file: %w", err)
 	}
-	d.pidFileOwned = true
+	d.hasPIDFileOwnership = true
 	return nil
 }
 
@@ -238,7 +238,7 @@ func (d *Daemon) startConfiguredServices() error {
 	if err := d.registry.StartAll(d.ctx, d.eventChan); err != nil {
 		return fmt.Errorf("failed to start monitors: %w", err)
 	}
-	if !d.config.API.Enabled {
+	if !d.config.API.IsEnabled {
 		return nil
 	}
 	if err := d.startHTTPServer(); err != nil {
@@ -249,8 +249,7 @@ func (d *Daemon) startConfiguredServices() error {
 
 func (d *Daemon) rejectLivePID() error {
 	pid, err := readPID(d.config.Daemon.PIDFile)
-	livePID := err == nil && ProcessRunning(pid)
-	if !livePID {
+	if shouldIgnorePID(err, pid) {
 		return nil
 	}
 	locked, err := pidFileLocked(d.config.Daemon.PIDFile, pid)
@@ -261,6 +260,13 @@ func (d *Daemon) rejectLivePID() error {
 		return nil
 	}
 	return fmt.Errorf("daemon process %d is already running", pid)
+}
+
+func shouldIgnorePID(err error, pid int) bool {
+	if err != nil {
+		return true
+	}
+	return !ProcessRunning(pid)
 }
 
 func (d *Daemon) startLocalObservability() error {
@@ -325,11 +331,11 @@ func (d *Daemon) closeStorage() {
 }
 
 func (d *Daemon) releaseRuntimePaths() {
-	if d.pidFileOwned {
+	if d.hasPIDFileOwnership {
 		d.recordStopError("removing PID file", d.removeOwnedPIDFile())
 	}
 	d.recordStopError("closing PID file", d.closePIDFile())
-	if d.socketOwned {
+	if d.hasSocketOwnership {
 		d.recordStopError("removing socket file", d.removeOwnedSocket())
 	}
 }
@@ -363,9 +369,8 @@ func (d *Daemon) removeOwnedPIDFile() error {
 	if os.IsNotExist(err) {
 		return nil
 	}
-	currentPID := pid == os.Getpid()
-	ownsPIDFile := err == nil && currentPID
-	if !ownsPIDFile {
+	shouldKeepPIDFile := err != nil || pid != os.Getpid()
+	if shouldKeepPIDFile {
 		return nil
 	}
 	return os.Remove(d.config.Daemon.PIDFile)
@@ -379,8 +384,8 @@ func (d *Daemon) removeOwnedSocket() error {
 	if err != nil {
 		return err
 	}
-	ownsSocket := d.socketInfo != nil && os.SameFile(d.socketInfo, info)
-	if !ownsSocket {
+	shouldKeepSocket := d.socketInfo == nil || !os.SameFile(d.socketInfo, info)
+	if shouldKeepSocket {
 		return nil
 	}
 	return os.Remove(d.config.Daemon.SocketPath)
@@ -444,24 +449,11 @@ func (d *Daemon) collectEventBatch(first *core.ExecutionRecord) []*core.Executio
 	return events
 }
 
-type executionBatchStorage interface {
-	AddExecutions(records []*core.ExecutionRecord) error
-}
-
 func (d *Daemon) storeExecutions(events []*core.ExecutionRecord) {
 	for _, event := range events {
 		d.enrichExecution(event)
 	}
-	batchStore, supportsBatching := d.storage.(executionBatchStorage)
-	if supportsBatching {
-		err := batchStore.AddExecutions(events)
-		d.logStorageError(err)
-		return
-	}
-	for _, event := range events {
-		err := d.storage.AddExecution(event)
-		d.logStorageError(err)
-	}
+	d.logStorageError(d.storage.AddExecutions(events))
 }
 
 func (d *Daemon) logStorageError(err error) {
@@ -471,7 +463,6 @@ func (d *Daemon) logStorageError(err error) {
 }
 
 func (d *Daemon) enrichExecution(record *core.ExecutionRecord) {
-	// Normalize tool name before looking up monitor
 	record.Tool = core.NormalizeToolName(record.Tool)
 	if record.Timestamp.IsZero() {
 		record.Timestamp = time.Now()
@@ -505,7 +496,7 @@ func (d *Daemon) runPeriodicCleanup() {
 }
 
 func (d *Daemon) backupSchedule() (*time.Ticker, <-chan time.Time) {
-	if !d.config.Storage.BackupEnabled {
+	if !d.config.Storage.IsBackupEnabled {
 		return nil, nil
 	}
 	interval := d.config.Storage.BackupInterval
@@ -536,7 +527,7 @@ func (d *Daemon) startSocketListener() error {
 	}
 	d.socketListener = listener
 	d.socketInfo = socketInfo
-	d.socketOwned = true
+	d.hasSocketOwnership = true
 	d.startSocketAcceptLoop(listener)
 	return nil
 }
@@ -1209,7 +1200,7 @@ func removeMatchingPIDFile(path string, file *os.File) error {
 	return removePIDFile(path)
 }
 
-func pidFileLocked(path string, expectedPID int) (locked bool, err error) {
+func pidFileLocked(path string, expectedPID int) (isLocked bool, err error) {
 	file, err := safefs.OpenFile(path, os.O_RDONLY, 0)
 	if err != nil {
 		return false, err

@@ -10,9 +10,6 @@ import (
 	"strings"
 )
 
-// CloseWithError closes closer and folds any close error into current,
-// preferring the earlier error when both are present. context, if non-empty,
-// wraps a close error to identify what failed to close.
 func CloseWithError(current error, closer io.Closer, context string) error {
 	closeErr := closer.Close()
 	if current != nil {

@@ -24,21 +24,21 @@ import (
 )
 
 type mockStorage struct {
-	mu           sync.RWMutex
-	executions   []*core.ExecutionRecord
-	packages     map[string][]*core.PackageInfo
-	closed       bool
-	addErr       error
-	getErr       error
-	packagesErr  error
-	statsErr     error
-	initialized  bool
-	batchCalls   int
-	backupCalls  int
-	cleanupCalls int
-	prepareCalls int
-	cleanupErr   error
-	lastQuery    storage.QueryOptions
+	mu            sync.RWMutex
+	executions    []*core.ExecutionRecord
+	packages      map[string][]*core.PackageInfo
+	isClosed      bool
+	addErr        error
+	getErr        error
+	packagesErr   error
+	statsErr      error
+	isInitialized bool
+	batchCalls    int
+	backupCalls   int
+	cleanupCalls  int
+	prepareCalls  int
+	cleanupErr    error
+	lastQuery     storage.QueryOptions
 }
 
 func newMockStorage() *mockStorage {
@@ -49,14 +49,14 @@ func newMockStorage() *mockStorage {
 }
 
 func (m *mockStorage) Initialize(config *core.Config) error {
-	m.initialized = true
+	m.isInitialized = true
 	return nil
 }
 
 func (m *mockStorage) Close() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.closed = true
+	m.isClosed = true
 	return nil
 }
 
@@ -381,9 +381,9 @@ func testStorageConfig(tmpDir string) core.StorageConfig {
 
 func testAPIConfig() core.APIConfig {
 	return core.APIConfig{
-		Enabled: false,
-		Host:    "127.0.0.1",
-		Port:    0,
+		IsEnabled: false,
+		Host:      "127.0.0.1",
+		Port:      0,
 	}
 }
 
@@ -798,7 +798,7 @@ func TestDaemonEnrichExecution(t *testing.T) {
 	cfg := testConfig(t)
 	cfg.Monitoring.EnabledTools = []string{core.ToolHomebrew}
 	cfg.Monitoring.Process.WrapperDir = t.TempDir()
-	cfg.Monitoring.Process.AutoInstallWrappers = false
+	cfg.Monitoring.Process.ShouldAutoInstallWrappers = false
 
 	d := newDaemonForTest(t, cfg)
 	defer closeStorageForTest(t, d.storage)
@@ -845,7 +845,7 @@ func newHTTPAPIDaemon(t *testing.T) *Daemon {
 	t.Helper()
 
 	cfg := testConfig(t)
-	cfg.API.Enabled = true
+	cfg.API.IsEnabled = true
 	cfg.API.Port = 0
 	d := newDaemonForTest(t, cfg)
 	d.storage = newMockStorage()
@@ -1723,7 +1723,7 @@ func startHTTPAPIDaemon(t *testing.T) *Daemon {
 	t.Helper()
 
 	cfg := testConfig(t)
-	cfg.API.Enabled = true
+	cfg.API.IsEnabled = true
 	cfg.API.Host = "127.0.0.1"
 	cfg.API.Port = 0
 	d, _ := daemonWithMockStorage(t, cfg)
@@ -1947,7 +1947,7 @@ func startBackupCleanupDaemon(t *testing.T) (*Daemon, *mockStorage) {
 	t.Helper()
 
 	cfg := testConfig(t)
-	cfg.Storage.BackupEnabled = true
+	cfg.Storage.IsBackupEnabled = true
 	cfg.Storage.BackupInterval = 10 * time.Millisecond
 	d := newDaemonForTest(t, cfg)
 	mock := newMockStorage()
