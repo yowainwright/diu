@@ -1264,6 +1264,19 @@ func TestRestoreDoesNotReplaceExecutionLogWhenManifestCommitFails(t *testing.T) 
 	assertExecutionLogIncludesExecution(t, config, newer)
 }
 
+func TestCleanupDoesNotCompactLogWhenManifestCommitFails(t *testing.T) {
+	store, config := newNamedTestStorage(t, "test.json")
+	defer closeStorage(t, store)
+	old := &core.ExecutionRecord{Tool: "npm", Command: "npm install old", Timestamp: time.Now().Add(-48 * time.Hour)}
+	addExecution(t, store, old)
+	addExecution(t, store, &core.ExecutionRecord{Tool: "npm", Command: "npm install new", Timestamp: time.Now()})
+	store.marshalStorage = failingStorageMarshal
+	if err := store.Cleanup(time.Now().Add(-24 * time.Hour)); err == nil {
+		t.Fatal("Cleanup succeeded with failing manifest commit")
+	}
+	assertExecutionLogIncludesExecution(t, config, old)
+}
+
 func TestLoadCompletesPendingStorageCommit(t *testing.T) {
 	store, config := newNamedTestStorage(t, "test.json")
 	record := core.ExecutionRecord{Tool: "npm", Command: "npm install recovered", Timestamp: time.Now()}

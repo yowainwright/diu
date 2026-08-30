@@ -150,13 +150,14 @@ func (j *JSONStorage) compact(before time.Time) error {
 	if err != nil {
 		return err
 	}
-	if err := writeCompactedStorage(j.executionPath, records); err != nil {
+	executionTemp, err := prepareCompactedStorage(j.executionPath, records)
+	if err != nil {
 		return err
 	}
 	statistics := compactedStatistics(records)
 	manifest := state.manifest(statistics)
 	j.data = manifest
-	return j.save()
+	return j.commitPreparedStorage(executionTemp)
 }
 
 func (j *JSONStorage) collectCompaction(before time.Time) (compactStorageState, []compactExecution, error) {
