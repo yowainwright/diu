@@ -1329,6 +1329,52 @@ func TestLoadCompletesPendingStorageCommit(t *testing.T) {
 	assertStatisticsTotal(t, reopened, 1)
 }
 
+func TestGetExecutionsCompletesPendingStorageCommitBeforeReading(t *testing.T) {
+	store, config := newNamedTestStorage(t, "test.json")
+	defer closeStorage(t, store)
+	pending := core.ExecutionRecord{Tool: "npm", Command: "npm install pending query", Timestamp: time.Now()}
+	writeInterruptedStorageCommit(t, store, []core.ExecutionRecord{pending})
+	executions, err := store.GetExecutions(QueryOptions{})
+	if err != nil {
+		t.Fatalf("GetExecutions failed: %v", err)
+	}
+	gotPending := len(executions) == 1 && executions[0].Command == pending.Command
+	if !gotPending {
+		t.Fatalf("executions = %#v, want %s", executions, pending.Command)
+	}
+	assertExecutionLogIncludesExecution(t, config, &pending)
+}
+
+func TestGetPackageCompletesPendingStorageCommitBeforeReading(t *testing.T) {
+	store, config := newNamedTestStorage(t, "test.json")
+	defer closeStorage(t, store)
+	pending := core.ExecutionRecord{
+		Tool:             "npm",
+		Command:          "npm install pending-package",
+		PackagesAffected: []string{"pending-package"},
+		Timestamp:        time.Now(),
+	}
+	writeInterruptedStorageCommit(t, store, []core.ExecutionRecord{pending})
+	if _, err := store.GetPackage("npm", "pending-package"); err != nil {
+		t.Fatalf("GetPackage failed: %v", err)
+	}
+	assertExecutionLogIncludesExecution(t, config, &pending)
+}
+
+func TestInspectJSONFileCompletesPendingStorageCommitBeforeReading(t *testing.T) {
+	store, config := newNamedTestStorage(t, "test.json")
+	defer closeStorage(t, store)
+	pending := core.ExecutionRecord{Tool: "npm", Command: "npm install pending inspect", Timestamp: time.Now()}
+	writeInterruptedStorageCommit(t, store, []core.ExecutionRecord{pending})
+	inspection, err := InspectJSONFile(config.Storage.JSONFile)
+	if err != nil {
+		t.Fatalf("InspectJSONFile failed: %v", err)
+	}
+	if inspection.ExecutionCount != 1 {
+		t.Fatalf("ExecutionCount = %d, want 1", inspection.ExecutionCount)
+	}
+}
+
 func failingStorageMarshal(*core.StorageData) ([]byte, error) {
 	return nil, errors.New("marshal failed")
 }

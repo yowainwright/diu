@@ -45,12 +45,38 @@ type jsonStorageVisitor struct {
 var errStopStorageScan = errors.New("stop storage scan")
 
 func InspectJSONFile(path string) (JSONInspection, error) {
-	info, err := inspectJSONFile(path)
+	storagePath, err := cleanManagedPath(path)
+	if err != nil {
+		return JSONInspection{}, err
+	}
+	info, err := inspectJSONFile(storagePath)
 	cannotInspect := err != nil || info == nil
 	if cannotInspect {
 		return JSONInspection{}, err
 	}
+	storage := JSONStorage{
+		filepath:      storagePath,
+		executionPath: ExecutionLogPath(storagePath),
+	}
+	var inspection JSONInspection
+	err = storage.withFileLock(func() error {
+		if err := storage.recoverPendingStorageCommit(); err != nil {
+			return err
+		}
+		inspection, err = inspectCurrentJSONFile(storagePath)
+		return err
+	})
+	return inspection, err
+}
 
+func inspectCurrentJSONFile(path string) (JSONInspection, error) {
+	info, err := inspectJSONFile(path)
+	if err != nil {
+		return JSONInspection{}, err
+	}
+	if info == nil {
+		return JSONInspection{}, nil
+	}
 	inspection := JSONInspection{HasFile: true, SizeBytes: info.Size()}
 	visitor := inspectionVisitor(&inspection)
 	if err := scanJSONStorage(path, visitor); err != nil {
@@ -630,10 +656,25 @@ func (j *JSONStorage) scanExecutionRecords(visit func(core.ExecutionRecord) erro
 
 func (j *JSONStorage) Executions() iter.Seq2[core.ExecutionRecord, error] {
 	return func(yield func(core.ExecutionRecord, error) bool) {
-		j.mu.RLock()
-		defer j.mu.RUnlock()
-		j.executionSeq()(yield)
+		err := j.withConsistentRead(func() error {
+			j.executionSeq()(yield)
+			return nil
+		})
+		if err != nil {
+			yield(core.ExecutionRecord{}, err)
+		}
 	}
+}
+
+func (j *JSONStorage) withConsistentRead(fn func() error) error {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return j.withFileLock(func() error {
+		if err := j.recoverPendingStorageCommit(); err != nil {
+			return err
+		}
+		return fn()
+	})
 }
 
 func (j *JSONStorage) executionSeq() iter.Seq2[core.ExecutionRecord, error] {
@@ -673,45 +714,52 @@ func (j *JSONStorage) calculateExecutionStatistics() (core.StorageStatistics, er
 }
 
 func (j *JSONStorage) GetExecutions(opts QueryOptions) ([]*core.ExecutionRecord, error) {
-	j.mu.RLock()
-	defer j.mu.RUnlock()
-
 	collector := newExecutionCollector(opts)
-	for record, err := range j.executionSeq() {
-		if err != nil {
-			return nil, err
+	err := j.withConsistentRead(func() error {
+		for record, err := range j.executionSeq() {
+			if err != nil {
+				return err
+			}
+			collector.add(record)
 		}
-		collector.add(record)
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 	return collector.results(), nil
 }
 
 func (j *JSONStorage) GetExecutionByID(id string) (*core.ExecutionRecord, error) {
-	j.mu.RLock()
-	defer j.mu.RUnlock()
-
-	for record, err := range j.executionSeq() {
-		if err != nil {
-			return nil, err
+	var found *core.ExecutionRecord
+	err := j.withConsistentRead(func() error {
+		for record, err := range j.executionSeq() {
+			if err != nil {
+				return err
+			}
+			if record.ID != id {
+				continue
+			}
+			copy := copyExecutionValue(record)
+			found = &copy
+			return nil
 		}
-		if record.ID != id {
-			continue
-		}
-		found := copyExecutionValue(record)
-		return &found, nil
+		return fmt.Errorf("execution not found: %s", id)
+	})
+	if err != nil {
+		return nil, err
 	}
-	return nil, fmt.Errorf("execution not found: %s", id)
+	return found, nil
 }
 
 func (j *JSONStorage) GetPackage(tool, name string) (*core.PackageInfo, error) {
-	j.mu.RLock()
-	defer j.mu.RUnlock()
-
 	var found *core.PackageInfo
 	visit := findPackageVisitor(tool, name, &found)
 	var visitor jsonStorageVisitor
 	visitor.packageInfo = visit
-	err := scanJSONStorage(j.filepath, visitor)
+	err := j.withConsistentRead(func() error {
+		return scanJSONStorage(j.filepath, visitor)
+	})
 	if shouldReturnPackageScanError(err) {
 		return nil, err
 	}
@@ -743,14 +791,13 @@ func shouldReturnPackageScanError(err error) bool {
 }
 
 func (j *JSONStorage) GetPackages(tool string) ([]*core.PackageInfo, error) {
-	j.mu.RLock()
-	defer j.mu.RUnlock()
-
 	var packages []*core.PackageInfo
 	visit := collectPackagesVisitor(tool, &packages)
 	var visitor jsonStorageVisitor
 	visitor.packageInfo = visit
-	err := scanJSONStorage(j.filepath, visitor)
+	err := j.withConsistentRead(func() error {
+		return scanJSONStorage(j.filepath, visitor)
+	})
 	return packages, err
 }
 
@@ -767,14 +814,13 @@ func collectPackagesVisitor(tool string, packages *[]*core.PackageInfo) func(str
 }
 
 func (j *JSONStorage) AllPackages() (map[string]map[string]*core.PackageInfo, error) {
-	j.mu.RLock()
-	defer j.mu.RUnlock()
-
 	packages := make(map[string]map[string]*core.PackageInfo)
 	visit := collectAllPackagesVisitor(packages)
 	var visitor jsonStorageVisitor
 	visitor.packageInfo = visit
-	err := scanJSONStorage(j.filepath, visitor)
+	err := j.withConsistentRead(func() error {
+		return scanJSONStorage(j.filepath, visitor)
+	})
 	return packages, err
 }
 
@@ -790,9 +836,6 @@ func collectAllPackagesVisitor(packages map[string]map[string]*core.PackageInfo)
 }
 
 func (j *JSONStorage) Statistics() (*core.StorageStatistics, error) {
-	j.mu.RLock()
-	defer j.mu.RUnlock()
-
 	var found *core.StorageStatistics
 	visit := func(statistics core.StorageStatistics) {
 		copy := copyStorageStatistics(statistics)
@@ -800,7 +843,9 @@ func (j *JSONStorage) Statistics() (*core.StorageStatistics, error) {
 	}
 	var visitor jsonStorageVisitor
 	visitor.statistics = visit
-	if err := scanJSONStorage(j.filepath, visitor); err != nil {
+	if err := j.withConsistentRead(func() error {
+		return scanJSONStorage(j.filepath, visitor)
+	}); err != nil {
 		return nil, err
 	}
 	if found == nil {
@@ -810,21 +855,21 @@ func (j *JSONStorage) Statistics() (*core.StorageStatistics, error) {
 }
 
 func (j *JSONStorage) SummarizeExecutions(opts QueryOptions) (ExecutionSummary, error) {
-	j.mu.RLock()
-	defer j.mu.RUnlock()
-
 	toolCounts := make(map[string]int)
 	summary := ExecutionSummary{ToolCounts: toolCounts}
-	for record, err := range j.executionSeq() {
-		if err != nil {
-			return summary, err
+	err := j.withConsistentRead(func() error {
+		for record, err := range j.executionSeq() {
+			if err != nil {
+				return err
+			}
+			if executionMatches(record, opts) {
+				summary.Total++
+				summary.ToolCounts[record.Tool]++
+			}
 		}
-		if executionMatches(record, opts) {
-			summary.Total++
-			summary.ToolCounts[record.Tool]++
-		}
-	}
-	return summary, nil
+		return nil
+	})
+	return summary, err
 }
 
 type executionCollector struct {
