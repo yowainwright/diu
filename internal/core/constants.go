@@ -19,10 +19,12 @@ func CurrentVersion() string {
 }
 
 func resolveVersion(linkedVersion, moduleVersion string) string {
-	if linkedVersion != "" && linkedVersion != "dev" {
+	hasLinkedVersion := linkedVersion != "" && linkedVersion != "dev"
+	if hasLinkedVersion {
 		return linkedVersion
 	}
-	if moduleVersion != "" && moduleVersion != "(devel)" {
+	hasModuleVersion := moduleVersion != "" && moduleVersion != "(devel)"
+	if hasModuleVersion {
 		return strings.TrimPrefix(moduleVersion, "v")
 	}
 	return "dev"

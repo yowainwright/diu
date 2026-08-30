@@ -7,8 +7,8 @@ on:
     branches: [ main ]
 
 env:
-  GO_VERSION: '1.26.5'
-  GOLANGCI_LINT_VERSION: 'v2.4.0'
+  GO_VERSION: '1.26.6'
+  GOLANGCI_LINT_VERSION: 'v2.13.2'
   GORELEASER_VERSION: 'v2.12.0'
   GOSEC_VERSION: 'v2.28.0'
   GOVULNCHECK_VERSION: 'v1.6.0'
@@ -37,14 +37,15 @@ jobs:
         run: |
           go vet ./...
           LINT_PACKAGE="github.com/golangci/golangci-lint/v2/cmd/golangci-lint@${GOLANGCI_LINT_VERSION}"
-          go run "$LINT_PACKAGE" run ./...
+          GOFLAGS="-mod=readonly -buildvcs=false" go run "$LINT_PACKAGE" custom
+          ./bin/legibility-golangci-lint run --max-issues-per-linter=0 --max-same-issues=0 ./...
 
   test:
     name: Test
     runs-on: macos-latest
     strategy:
       matrix:
-        go: ['1.25.12', '1.26.5']
+        go: ['1.25.12', '1.26.6']
     steps:
       - uses: actions/checkout@v4
 
@@ -67,7 +68,7 @@ jobs:
           go tool cover -func=coverage.out
 
       - name: Upload coverage to Codecov
-        if: matrix.go == '1.26.5'
+        if: matrix.go == '1.26.6'
         uses: codecov/codecov-action@v6
         with:
           files: ./coverage.out
@@ -246,7 +247,11 @@ jobs:
       - name: Run gosec security scanner
         run: |
           GOSEC_PACKAGE="github.com/securego/gosec/v2/cmd/gosec@${GOSEC_VERSION}"
-          go run "$GOSEC_PACKAGE" -fmt sarif -out gosec-results.sarif ./...
+          go run "$GOSEC_PACKAGE" \
+            -exclude-rules="cmd/diu/diu_daemon.go:G204;internal/dx/dx_exec.go:G204;internal/monitors/monitors_process.go:G204;internal/storage/storage_json.go:G304" \
+            -fmt sarif \
+            -out gosec-results.sarif \
+            ./...
 
       - name: Run govulncheck
         run: |

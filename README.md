@@ -127,13 +127,14 @@ with Homebrew or Go after running the command.
 
 `diu setup` installs lightweight wrappers in `~/.local/bin/diu-wrappers` and adds that directory to existing shell config files when possible. The wrapper runs the original command, preserves its output and exit code, then records the execution in the background.
 
+<!-- Wrapper execution sequence derived from generated wrapper behavior in cmd/diu/setup.go -->
 ```mermaid
 sequenceDiagram
     participant You
     participant Wrapper as DIU wrapper
     participant Tool as Original tool
     participant Recorder as DIU recorder
-    participant Store as Local JSON store
+    participant Store as Append-only execution log
 
     You->>Wrapper: jq --version
     Wrapper->>Tool: jq --version
@@ -143,8 +144,9 @@ sequenceDiagram
     Recorder->>Store: append usage data
 ```
 
-The daemon is optional. When it is running, wrappers send events to a local Unix socket. When it is not running, wrappers fall back to `diu record`.
+The daemon is optional. When it is running, wrappers send events to a local Unix socket. When it is not running, wrappers fall back to `diu record`. Execution writes append one line to the bounded NDJSON log; package inventory and cached statistics stay in a small JSON manifest.
 
+<!-- DIU event and storage flow derived from cmd/diu/setup.go and internal/storage -->
 ```mermaid
 flowchart LR
     command["brew / npm / pnpm / bun / go / pip / uv / poetry / wrapped executable"] --> wrapper["DIU wrapper"]
@@ -152,11 +154,13 @@ flowchart LR
     wrapper --> daemon{"Daemon running?"}
     daemon -- yes --> socket["Unix socket"]
     daemon -- no --> record["diu record"]
-    socket --> storage[("~/.local/share/diu/executions.json")]
-    record --> storage
+    socket --> history[("executions.ndjson")]
+    record --> history
     scan["diu scan"] --> inventory["Package inventory"]
-    inventory --> storage
-    storage --> cli["status / diagnostics / check / query / stats / packages / manage"]
+    inventory --> manifest[("executions.json")]
+    history --> cli["status / diagnostics / query / stats"]
+    manifest --> cli
+    manifest --> packages["check / packages / manage"]
 ```
 
 ## Commands
@@ -241,10 +245,12 @@ curl -X POST http://127.0.0.1:8081/api/v1/executions \
 
 ## Files
 
+<!-- Local paths derived from internal/core defaults and internal/storage.ExecutionLogPath -->
 | Path | Purpose |
 | --- | --- |
 | `~/.config/diu/config.json` | User config. |
-| `~/.local/share/diu/executions.json` | Execution history, package inventory, and stats. |
+| `~/.local/share/diu/executions.json` | Package inventory, cached statistics, and execution-log metadata. |
+| `~/.local/share/diu/executions.ndjson` | Append-only, size-bounded execution history. |
 | `~/.local/share/diu/diu.log` | Private, size-bounded daemon log. |
 | `~/.local/share/diu/fallback-contention` | Private marker for daemon-off recorder contention. |
 | `~/.local/share/diu/diu.pid` | Daemon PID file. |

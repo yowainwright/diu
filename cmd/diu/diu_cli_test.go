@@ -1,0 +1,131 @@
+package main
+
+import (
+	"bytes"
+	"errors"
+	"fmt"
+	"strings"
+	"testing"
+
+	"github.com/yowainwright/diu/internal/dx"
+)
+
+func TestNewUninstallCommand(t *testing.T) {
+	uninstallCmd := newUninstallCommand()
+	if uninstallCmd.Use != "uninstall" {
+		t.Fatalf("Use = %q, want uninstall", uninstallCmd.Use)
+	}
+	if uninstallCmd.RunE == nil {
+		t.Fatal("Expected uninstall command to be executable")
+	}
+}
+
+func TestExitStatusPreservesCommandExitCode(t *testing.T) {
+	commandErr := &dx.CommandError{Name: "tool", Code: 7, Err: errors.New("failed")}
+	if got := exitStatus(fmt.Errorf("wrapped: %w", commandErr)); got != 7 {
+		t.Fatalf("exitStatus = %d, want 7", got)
+	}
+	if got := exitStatus(errors.New("failed")); got != 1 {
+		t.Fatalf("fallback exitStatus = %d, want 1", got)
+	}
+}
+
+func TestRootCommandHelpListsPublicCommands(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	root := newRootCommand()
+	root.Output = &stdout
+	root.ErrorOutput = &stderr
+
+	if err := root.Execute([]string{"--help"}); err != nil {
+		t.Fatalf("help failed: %v", err)
+	}
+	assertPublicCommandsListed(t, stdout.String())
+	assertStyleguideFlagListed(t, stdout.String())
+	assertRecordCommandHidden(t, stdout.String())
+	assertEmptyHelpStderr(t, stderr.String())
+}
+
+func TestRootCommandNoArgsPrintsUsage(t *testing.T) {
+	var stdout bytes.Buffer
+	root := newRootCommand()
+	root.Output = &stdout
+	if err := root.Execute(nil); err != nil {
+		t.Fatalf("root command failed: %v", err)
+	}
+	if !strings.Contains(stdout.String(), "Usage: diu") {
+		t.Fatalf("root output = %q", stdout.String())
+	}
+}
+
+func TestRootCommandUnknownPrintsUsageToStderr(t *testing.T) {
+	var stderr bytes.Buffer
+	root := newRootCommand()
+	root.ErrorOutput = &stderr
+	if err := root.Execute([]string{"wat"}); err == nil {
+		t.Fatal("unknown command succeeded")
+	}
+	if !strings.Contains(stderr.String(), "Usage: diu") {
+		t.Fatalf("root stderr = %q", stderr.String())
+	}
+}
+
+func TestRootCommandStyleguide(t *testing.T) {
+	t.Setenv("DIU_COLOR", "always")
+	t.Setenv("NO_COLOR", "")
+	t.Setenv("TERM", "xterm-256color")
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	root := newRootCommand()
+	root.Output = &stdout
+	root.ErrorOutput = &stderr
+	if err := root.Execute([]string{"--styleguide"}); err != nil {
+		t.Fatalf("styleguide failed: %v", err)
+	}
+	assertStyleguideOutput(t, stdout.String())
+	assertEmptyHelpStderr(t, stderr.String())
+}
+
+func assertStyleguideOutput(t *testing.T, output string) {
+	t.Helper()
+
+	for _, text := range []string{"DIU Styleguide", "Tones", "Status", "Table", "Progress", "\x1b["} {
+		if !strings.Contains(output, text) {
+			t.Fatalf("styleguide = %q, want %q", output, text)
+		}
+	}
+}
+
+func assertStyleguideFlagListed(t *testing.T, help string) {
+	t.Helper()
+
+	if !strings.Contains(help, "--styleguide") {
+		t.Fatalf("help = %q, want --styleguide flag", help)
+	}
+}
+
+func assertPublicCommandsListed(t *testing.T, help string) {
+	t.Helper()
+
+	for _, name := range []string{"daemon", "query", "stats", "packages", "check", "manage", "config", "status", "diagnostics", "setup", "uninstall", "scan"} {
+		if !strings.Contains(help, name) {
+			t.Fatalf("help = %q, want command %q", help, name)
+		}
+	}
+}
+
+func assertRecordCommandHidden(t *testing.T, help string) {
+	t.Helper()
+
+	if strings.Contains(help, "record") {
+		t.Fatalf("help exposed hidden record command: %q", help)
+	}
+}
+
+func assertEmptyHelpStderr(t *testing.T, stderr string) {
+	t.Helper()
+
+	if stderr != "" {
+		t.Fatalf("stderr = %q", stderr)
+	}
+}

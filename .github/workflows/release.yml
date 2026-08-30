@@ -13,7 +13,7 @@ permissions:
   contents: read
 
 env:
-  GOLANGCI_LINT_VERSION: 'v2.4.0'
+  GOLANGCI_LINT_VERSION: 'v2.13.2'
   GORELEASER_VERSION: 'v2.12.0'
   GOVULNCHECK_VERSION: 'v1.6.0'
 
@@ -31,7 +31,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.26.5'
+          go-version: '1.26.6'
 
       - name: Install GoReleaser
         run: |
@@ -45,7 +45,8 @@ jobs:
       - name: Run linters
         run: |
           LINT_PACKAGE="github.com/golangci/golangci-lint/v2/cmd/golangci-lint@${GOLANGCI_LINT_VERSION}"
-          go run "$LINT_PACKAGE" run ./...
+          GOFLAGS="-mod=readonly -buildvcs=false" go run "$LINT_PACKAGE" custom
+          ./bin/legibility-golangci-lint run --max-issues-per-linter=0 --max-same-issues=0 ./...
 
       - name: Run race tests
         run: go test -v -race ./...

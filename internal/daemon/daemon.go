@@ -61,27 +61,27 @@ var daemonSocketControlSender = sendSocketControl
 var ErrNotRunning = errors.New("daemon is not running")
 
 type Daemon struct {
-	config          *core.Config
-	storage         storage.Storage
-	registry        *monitors.MonitorRegistry
-	eventChan       chan *core.ExecutionRecord
-	httpServer      *http.Server
-	socketListener  net.Listener
-	socketInfo      os.FileInfo
-	socketSlots     chan struct{}
-	ctx             context.Context
-	cancel          context.CancelFunc
-	wg              sync.WaitGroup
-	startTime       time.Time
-	stopOnce        sync.Once
-	stopErr         error
-	stopped         atomic.Bool
-	logger          *log.Logger
-	logSink         io.Closer
-	startupWarnings []string
-	pidFile         *os.File
-	pidFileOwned    bool
-	socketOwned     bool
+	config              *core.Config
+	storage             storage.Storage
+	registry            *monitors.MonitorRegistry
+	eventChan           chan *core.ExecutionRecord
+	httpServer          *http.Server
+	socketListener      net.Listener
+	socketInfo          os.FileInfo
+	socketSlots         chan struct{}
+	ctx                 context.Context
+	cancel              context.CancelFunc
+	wg                  sync.WaitGroup
+	startTime           time.Time
+	stopOnce            sync.Once
+	stopErr             error
+	stopped             atomic.Bool
+	logger              *log.Logger
+	logSink             io.Closer
+	startupWarnings     []string
+	pidFile             *os.File
+	hasPIDFileOwnership bool
+	hasSocketOwnership  bool
 }
 
 func NewDaemon(config *core.Config) (*Daemon, error) {
@@ -89,36 +89,22 @@ func NewDaemon(config *core.Config) (*Daemon, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize storage: %w", err)
 	}
+	registry, startupWarnings := initializedMonitorRegistry(config)
+	d := newDaemon(config, store, registry, startupWarnings)
+	return d, nil
+}
 
+func initializedMonitorRegistry(config *core.Config) (*monitors.MonitorRegistry, []string) {
 	registry := monitors.NewMonitorRegistry()
 	var startupWarnings []string
-
 	for _, tool := range config.Monitoring.EnabledTools {
 		tool = core.NormalizeToolName(tool)
-		var monitor monitors.Monitor
-		switch tool {
-		case core.ToolHomebrew:
-			monitor = monitors.NewHomebrewMonitor()
-		case core.ToolNPM:
-			monitor = monitors.NewNPMMonitor()
-		case core.ToolPNPM:
-			monitor = monitors.NewPNPMMonitor()
-		case core.ToolBun:
-			monitor = monitors.NewBunMonitor()
-		case core.ToolGo:
-			monitor = monitors.NewGoMonitor()
-		case core.ToolPip:
-			monitor = monitors.NewPipMonitor()
-		case core.ToolUV:
-			monitor = monitors.NewUVMonitor()
-		case core.ToolPoetry:
-			monitor = monitors.NewPoetryMonitor()
-		default:
+		monitor, ok := monitorForTool(tool)
+		if !ok {
 			warning := fmt.Sprintf("Unknown tool: %s", tool)
 			startupWarnings = append(startupWarnings, warning)
 			continue
 		}
-
 		if err := monitor.Initialize(config); err != nil {
 			warning := fmt.Sprintf("Failed to initialize %s monitor: %v", tool, err)
 			startupWarnings = append(startupWarnings, warning)
@@ -126,27 +112,69 @@ func NewDaemon(config *core.Config) (*Daemon, error) {
 		}
 		registry.Register(monitor)
 	}
+	return registry, startupWarnings
+}
 
-	background := context.Background()
-	ctx, cancel := context.WithCancel(background)
-	eventChan := make(chan *core.ExecutionRecord, core.DefaultEventBuffer)
-	socketSlots := make(chan struct{}, maxSocketHandlers)
-	startTime := time.Now()
+func monitorForTool(tool string) (monitors.Monitor, bool) {
+	if monitor, ok := primaryMonitorForTool(tool); ok {
+		return monitor, true
+	}
+	return pythonMonitorForTool(tool)
+}
 
-	d := &Daemon{
+func primaryMonitorForTool(tool string) (monitors.Monitor, bool) {
+	switch tool {
+	case core.ToolHomebrew:
+		return monitors.NewHomebrewMonitor(), true
+	case core.ToolNPM:
+		return monitors.NewNPMMonitor(), true
+	case core.ToolPNPM:
+		return monitors.NewPNPMMonitor(), true
+	case core.ToolBun:
+		return monitors.NewBunMonitor(), true
+	case core.ToolGo:
+		return monitors.NewGoMonitor(), true
+	default:
+		return nil, false
+	}
+}
+
+func pythonMonitorForTool(tool string) (monitors.Monitor, bool) {
+	switch tool {
+	case core.ToolPip:
+		return monitors.NewPipMonitor(), true
+	case core.ToolUV:
+		return monitors.NewUVMonitor(), true
+	case core.ToolPoetry:
+		return monitors.NewPoetryMonitor(), true
+	default:
+		return nil, false
+	}
+}
+
+func newDaemon(
+	config *core.Config,
+	store storage.Storage,
+	registry *monitors.MonitorRegistry,
+	startupWarnings []string,
+) *Daemon {
+	daemon := &Daemon{
 		config:          config,
 		storage:         store,
 		registry:        registry,
-		eventChan:       eventChan,
-		socketSlots:     socketSlots,
-		ctx:             ctx,
-		cancel:          cancel,
-		startTime:       startTime,
 		logger:          log.Default(),
 		startupWarnings: startupWarnings,
 	}
+	daemon.initRuntime()
+	return daemon
+}
 
-	return d, nil
+func (d *Daemon) initRuntime() {
+	background := context.Background()
+	d.ctx, d.cancel = context.WithCancel(background)
+	d.eventChan = make(chan *core.ExecutionRecord, core.DefaultEventBuffer)
+	d.socketSlots = make(chan struct{}, maxSocketHandlers)
+	d.startTime = time.Now()
 }
 
 func (d *Daemon) Start() error {
@@ -154,6 +182,9 @@ func (d *Daemon) Start() error {
 		return fmt.Errorf("failed to initialize local observability: %w", err)
 	}
 	d.logStartup()
+	if err := d.prepareStorage(); err != nil {
+		return d.failStart(err)
+	}
 	if err := d.claimRuntimePaths(); err != nil {
 		return d.failStart(err)
 	}
@@ -162,6 +193,13 @@ func (d *Daemon) Start() error {
 		return d.failStart(err)
 	}
 	d.handleSignals()
+	return nil
+}
+
+func (d *Daemon) prepareStorage() error {
+	if err := d.storage.Prepare(); err != nil {
+		return fmt.Errorf("failed to prepare storage: %w", err)
+	}
 	return nil
 }
 
@@ -185,7 +223,7 @@ func (d *Daemon) claimRuntimePaths() error {
 	if err := d.writePIDFile(); err != nil {
 		return fmt.Errorf("failed to write PID file: %w", err)
 	}
-	d.pidFileOwned = true
+	d.hasPIDFileOwnership = true
 	return nil
 }
 
@@ -200,7 +238,7 @@ func (d *Daemon) startConfiguredServices() error {
 	if err := d.registry.StartAll(d.ctx, d.eventChan); err != nil {
 		return fmt.Errorf("failed to start monitors: %w", err)
 	}
-	if !d.config.API.Enabled {
+	if !d.config.API.IsEnabled {
 		return nil
 	}
 	if err := d.startHTTPServer(); err != nil {
@@ -211,7 +249,7 @@ func (d *Daemon) startConfiguredServices() error {
 
 func (d *Daemon) rejectLivePID() error {
 	pid, err := readPID(d.config.Daemon.PIDFile)
-	if err != nil || !ProcessRunning(pid) {
+	if shouldIgnorePID(err, pid) {
 		return nil
 	}
 	locked, err := pidFileLocked(d.config.Daemon.PIDFile, pid)
@@ -222,6 +260,13 @@ func (d *Daemon) rejectLivePID() error {
 		return nil
 	}
 	return fmt.Errorf("daemon process %d is already running", pid)
+}
+
+func shouldIgnorePID(err error, pid int) bool {
+	if err != nil {
+		return true
+	}
+	return !ProcessRunning(pid)
 }
 
 func (d *Daemon) startLocalObservability() error {
@@ -249,7 +294,8 @@ func (d *Daemon) Stop() error {
 
 func (d *Daemon) stop() {
 	d.logger.Println("Stopping DIU daemon...")
-	d.stopped.Store(true)
+	stopped := true
+	d.stopped.Store(stopped)
 	d.cancel()
 	d.stopMonitors()
 	d.stopHTTPServer()
@@ -285,11 +331,11 @@ func (d *Daemon) closeStorage() {
 }
 
 func (d *Daemon) releaseRuntimePaths() {
-	if d.pidFileOwned {
+	if d.hasPIDFileOwnership {
 		d.recordStopError("removing PID file", d.removeOwnedPIDFile())
 	}
 	d.recordStopError("closing PID file", d.closePIDFile())
-	if d.socketOwned {
+	if d.hasSocketOwnership {
 		d.recordStopError("removing socket file", d.removeOwnedSocket())
 	}
 }
@@ -323,7 +369,8 @@ func (d *Daemon) removeOwnedPIDFile() error {
 	if os.IsNotExist(err) {
 		return nil
 	}
-	if err != nil || pid != os.Getpid() {
+	shouldKeepPIDFile := err != nil || pid != os.Getpid()
+	if shouldKeepPIDFile {
 		return nil
 	}
 	return os.Remove(d.config.Daemon.PIDFile)
@@ -337,7 +384,8 @@ func (d *Daemon) removeOwnedSocket() error {
 	if err != nil {
 		return err
 	}
-	if d.socketInfo == nil || !os.SameFile(d.socketInfo, info) {
+	shouldKeepSocket := d.socketInfo == nil || !os.SameFile(d.socketInfo, info)
+	if shouldKeepSocket {
 		return nil
 	}
 	return os.Remove(d.config.Daemon.SocketPath)
@@ -401,24 +449,11 @@ func (d *Daemon) collectEventBatch(first *core.ExecutionRecord) []*core.Executio
 	return events
 }
 
-type executionBatchStorage interface {
-	AddExecutions(records []*core.ExecutionRecord) error
-}
-
 func (d *Daemon) storeExecutions(events []*core.ExecutionRecord) {
 	for _, event := range events {
 		d.enrichExecution(event)
 	}
-	batchStore, supportsBatching := d.storage.(executionBatchStorage)
-	if supportsBatching {
-		err := batchStore.AddExecutions(events)
-		d.logStorageError(err)
-		return
-	}
-	for _, event := range events {
-		err := d.storage.AddExecution(event)
-		d.logStorageError(err)
-	}
+	d.logStorageError(d.storage.AddExecutions(events))
 }
 
 func (d *Daemon) logStorageError(err error) {
@@ -428,7 +463,6 @@ func (d *Daemon) logStorageError(err error) {
 }
 
 func (d *Daemon) enrichExecution(record *core.ExecutionRecord) {
-	// Normalize tool name before looking up monitor
 	record.Tool = core.NormalizeToolName(record.Tool)
 	if record.Timestamp.IsZero() {
 		record.Timestamp = time.Now()
@@ -443,7 +477,6 @@ func (d *Daemon) enrichExecution(record *core.ExecutionRecord) {
 
 func (d *Daemon) runPeriodicCleanup() {
 	defer d.wg.Done()
-	d.pruneOldRecords()
 	cleanupTicker := time.NewTicker(24 * time.Hour)
 	defer cleanupTicker.Stop()
 	backupTicker, backupEvents := d.backupSchedule()
@@ -463,7 +496,7 @@ func (d *Daemon) runPeriodicCleanup() {
 }
 
 func (d *Daemon) backupSchedule() (*time.Ticker, <-chan time.Time) {
-	if !d.config.Storage.BackupEnabled {
+	if !d.config.Storage.IsBackupEnabled {
 		return nil, nil
 	}
 	interval := d.config.Storage.BackupInterval
@@ -494,7 +527,7 @@ func (d *Daemon) startSocketListener() error {
 	}
 	d.socketListener = listener
 	d.socketInfo = socketInfo
-	d.socketOwned = true
+	d.hasSocketOwnership = true
 	d.startSocketAcceptLoop(listener)
 	return nil
 }
@@ -523,9 +556,12 @@ func prepareSocketPath(path string) error {
 }
 
 func disableSocketAutoUnlink(listener net.Listener) {
-	if unixListener, ok := listener.(*net.UnixListener); ok {
-		unixListener.SetUnlinkOnClose(false)
+	unixListener, ok := listener.(*net.UnixListener)
+	if !ok {
+		return
 	}
+	unlinkOnClose := false
+	unixListener.SetUnlinkOnClose(unlinkOnClose)
 }
 
 func secureAndInspectSocket(listener net.Listener, path string) (os.FileInfo, error) {
@@ -601,23 +637,41 @@ func (d *Daemon) releaseSocketSlot() {
 }
 
 func removeStaleSocket(path string) error {
-	info, err := os.Lstat(path)
-	if os.IsNotExist(err) {
+	exists, err := validateStaleSocket(path)
+	if err != nil {
+		return err
+	}
+	if !exists {
 		return nil
 	}
+	if err := rejectActiveSocket(path); err != nil {
+		return err
+	}
+	if err := os.Remove(path); err != nil {
+		return fmt.Errorf("failed to remove stale socket: %w", err)
+	}
+	return nil
+}
+
+func validateStaleSocket(path string) (bool, error) {
+	info, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		return false, nil
+	}
 	if err != nil {
-		return fmt.Errorf("failed to inspect stale socket: %w", err)
+		return false, fmt.Errorf("failed to inspect stale socket: %w", err)
 	}
 	if info.Mode()&os.ModeSocket == 0 {
-		return fmt.Errorf("failed to remove stale socket: path is not a socket: %s", path)
+		return false, fmt.Errorf("failed to remove stale socket: path is not a socket: %s", path)
 	}
+	return true, nil
+}
+
+func rejectActiveSocket(path string) error {
 	conn, dialErr := net.DialTimeout("unix", path, socketControlTimeout)
 	if dialErr == nil {
 		_ = conn.Close()
 		return fmt.Errorf("failed to remove stale socket: socket is active: %s", path)
-	}
-	if err := os.Remove(path); err != nil {
-		return fmt.Errorf("failed to remove stale socket: %w", err)
 	}
 	return nil
 }
@@ -664,11 +718,15 @@ func (d *Daemon) readSocketRequest(conn net.Conn) (json.RawMessage, error) {
 
 func (d *Daemon) handleSocketControlMessage(conn net.Conn, raw json.RawMessage) bool {
 	var control socketControlRequest
-	if err := json.Unmarshal(raw, &control); err == nil && control.Type != "" {
-		d.handleSocketControl(conn, control)
-		return true
+	err := json.Unmarshal(raw, &control)
+	if err != nil {
+		return false
 	}
-	return false
+	if control.Type == "" {
+		return false
+	}
+	d.handleSocketControl(conn, control)
+	return true
 }
 
 func decodeSocketExecution(raw json.RawMessage) (*core.ExecutionRecord, error) {
@@ -708,93 +766,127 @@ func (d *Daemon) handleSocketControl(conn net.Conn, request socketControlRequest
 }
 
 func (d *Daemon) startHTTPServer() error {
-	mux := http.NewServeMux()
-
-	mux.HandleFunc("/api/v1/executions", d.handleExecutions)
-	mux.HandleFunc("/api/v1/packages", d.handlePackages)
-	mux.HandleFunc("/api/v1/stats", d.handleStats)
-	mux.HandleFunc("/api/v1/health", d.handleHealth)
-
 	addr := fmt.Sprintf("%s:%d", d.config.API.Host, d.config.API.Port)
-
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
 		return fmt.Errorf("failed to listen on %s: %w", addr, err)
 	}
 	actualAddr := listener.Addr().String()
+	mux := d.httpMux()
+	d.httpServer = httpServer(actualAddr, mux)
+	d.serveHTTP(listener, actualAddr)
+	return nil
+}
 
-	d.httpServer = &http.Server{
-		Addr:              actualAddr,
-		Handler:           mux,
+func (d *Daemon) httpMux() *http.ServeMux {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/executions", d.handleExecutions)
+	mux.HandleFunc("/api/v1/packages", d.handlePackages)
+	mux.HandleFunc("/api/v1/stats", d.handleStats)
+	mux.HandleFunc("/api/v1/health", d.handleHealth)
+	return mux
+}
+
+func httpServer(addr string, handler http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		Handler:           handler,
 		ReadTimeout:       core.DefaultSocketReadTimeout,
 		ReadHeaderTimeout: core.DefaultShutdownTimeout,
 		WriteTimeout:      core.DefaultSocketReadTimeout,
 		IdleTimeout:       core.DefaultSocketReadTimeout,
 	}
+}
 
+func (d *Daemon) serveHTTP(listener net.Listener, actualAddr string) {
 	d.wg.Add(1)
 	go func() {
 		defer d.wg.Done()
 		d.logger.Printf("HTTP API server listening on %s", actualAddr)
-		if err := d.httpServer.Serve(listener); err != nil && err != http.ErrServerClosed {
-			d.logger.Printf("HTTP server error: %v", err)
+		err := d.httpServer.Serve(listener)
+		if err == nil {
+			return
 		}
+		if err == http.ErrServerClosed {
+			return
+		}
+		d.logger.Printf("HTTP server error: %v", err)
 	}()
-
-	return nil
 }
 
 func (d *Daemon) handleExecutions(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		tool := core.NormalizeToolName(r.URL.Query().Get("tool"))
-		packageName := r.URL.Query().Get("package")
-		opts := storage.QueryOptions{
-			Tool:    tool,
-			Package: packageName,
-			Limit:   defaultExecutionQueryLimit,
-		}
-
-		if limitStr := r.URL.Query().Get("limit"); limitStr != "" {
-			limit, err := strconv.Atoi(limitStr)
-			if err != nil || limit < 0 {
-				http.Error(w, "invalid limit", http.StatusBadRequest)
-				return
-			}
-			opts.Limit = limit
-		}
-
-		executions, err := d.storage.GetExecutions(opts)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-
-		w.Header().Set("Content-Type", "application/json")
-		if err := json.NewEncoder(w).Encode(executions); err != nil {
-			d.logger.Printf("Failed to encode executions response: %v", err)
-		}
-
+		d.handleGetExecutions(w, r)
 	case http.MethodPost:
-		record, err := decodeExecutionRecordRequest(w, r)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-
-		select {
-		case d.eventChan <- record:
-			w.WriteHeader(http.StatusAccepted)
-		case <-d.ctx.Done():
-			http.Error(w, "Daemon stopping", http.StatusServiceUnavailable)
-		case <-r.Context().Done():
-			http.Error(w, "Request canceled", http.StatusRequestTimeout)
-		case <-time.After(eventAdmissionTimeout):
-			http.Error(w, "Event queue full", http.StatusServiceUnavailable)
-		}
-
+		d.handlePostExecution(w, r)
 	default:
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func (d *Daemon) handleGetExecutions(w http.ResponseWriter, r *http.Request) {
+	opts, ok := executionQueryOptions(w, r)
+	if !ok {
+		return
+	}
+	executions, err := d.storage.GetExecutions(opts)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(executions); err != nil {
+		d.logger.Printf("Failed to encode executions response: %v", err)
+	}
+}
+
+func executionQueryOptions(w http.ResponseWriter, r *http.Request) (storage.QueryOptions, bool) {
+	opts := storage.QueryOptions{
+		Tool:    core.NormalizeToolName(r.URL.Query().Get("tool")),
+		Package: r.URL.Query().Get("package"),
+		Limit:   defaultExecutionQueryLimit,
+	}
+	limit, ok := executionQueryLimit(w, r)
+	if !ok {
+		return opts, false
+	}
+	opts.Limit = limit
+	return opts, true
+}
+
+func executionQueryLimit(w http.ResponseWriter, r *http.Request) (int, bool) {
+	limitStr := r.URL.Query().Get("limit")
+	if limitStr == "" {
+		return defaultExecutionQueryLimit, true
+	}
+	limit, err := strconv.Atoi(limitStr)
+	if err != nil {
+		http.Error(w, "invalid limit", http.StatusBadRequest)
+		return 0, false
+	}
+	if limit < 0 {
+		http.Error(w, "invalid limit", http.StatusBadRequest)
+		return 0, false
+	}
+	return limit, true
+}
+
+func (d *Daemon) handlePostExecution(w http.ResponseWriter, r *http.Request) {
+	record, err := decodeExecutionRecordRequest(w, r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	select {
+	case d.eventChan <- record:
+		w.WriteHeader(http.StatusAccepted)
+	case <-d.ctx.Done():
+		http.Error(w, "Daemon stopping", http.StatusServiceUnavailable)
+	case <-r.Context().Done():
+		http.Error(w, "Request canceled", http.StatusRequestTimeout)
+	case <-time.After(eventAdmissionTimeout):
+		http.Error(w, "Event queue full", http.StatusServiceUnavailable)
 	}
 }
 
@@ -862,7 +954,7 @@ func (d *Daemon) handleStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	stats, err := d.storage.GetStatistics()
+	stats, err := d.storage.Statistics()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -879,20 +971,26 @@ func (d *Daemon) handleHealth(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	d.writeHealthResponse(w)
+}
 
+func (d *Daemon) writeHealthResponse(w http.ResponseWriter) {
+	health := d.healthResponse()
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(health); err != nil {
+		d.logger.Printf("Failed to encode health response: %v", err)
+	}
+}
+
+func (d *Daemon) healthResponse() map[string]interface{} {
 	version := core.CurrentVersion()
 	uptime := time.Since(d.startTime).String()
-	monitorsActive := len(d.registry.GetAll())
-	health := map[string]interface{}{
+	monitorsActive := len(d.registry.All())
+	return map[string]interface{}{
 		"status":          "healthy",
 		"version":         version,
 		"uptime":          uptime,
 		"monitors_active": monitorsActive,
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(health); err != nil {
-		d.logger.Printf("Failed to encode health response: %v", err)
 	}
 }
 
@@ -930,7 +1028,19 @@ func openLockedPIDFile(path string) (*os.File, error) {
 }
 
 func (d *Daemon) removeStalePIDFile() error {
-	info, err := safefs.Lstat(d.config.Daemon.PIDFile)
+	path := d.config.Daemon.PIDFile
+	if err := validateStalePIDFile(path); err != nil {
+		return err
+	}
+	pid, pidErr := readPID(path)
+	if pidErr != nil {
+		return removePIDFile(path)
+	}
+	return removeUnlockedPIDFileIfFree(path, pid)
+}
+
+func validateStalePIDFile(path string) error {
+	info, err := safefs.Lstat(path)
 	if os.IsNotExist(err) {
 		return nil
 	}
@@ -938,20 +1048,20 @@ func (d *Daemon) removeStalePIDFile() error {
 		return err
 	}
 	if !info.Mode().IsRegular() {
-		return fmt.Errorf("PID path is not a regular file: %s", d.config.Daemon.PIDFile)
+		return fmt.Errorf("PID path is not a regular file: %s", path)
 	}
-	pid, pidErr := readPID(d.config.Daemon.PIDFile)
-	if pidErr != nil {
-		return removePIDFile(d.config.Daemon.PIDFile)
-	}
-	locked, lockErr := pidFileLocked(d.config.Daemon.PIDFile, pid)
+	return nil
+}
+
+func removeUnlockedPIDFileIfFree(path string, pid int) error {
+	locked, lockErr := pidFileLocked(path, pid)
 	if lockErr != nil {
 		return lockErr
 	}
 	if locked {
 		return fmt.Errorf("daemon PID file is still owned by a running process")
 	}
-	return removeUnlockedPIDFile(d.config.Daemon.PIDFile, pid)
+	return removeUnlockedPIDFile(path, pid)
 }
 
 func (d *Daemon) handleSignals() {
@@ -982,7 +1092,8 @@ func IsRunning(config *core.Config) bool {
 		return false
 	}
 	response, err := sendSocketControl(config.Daemon.SocketPath, socketRequestPing)
-	return err == nil && response.PID == pid
+	matchesPID := err == nil && response.PID == pid
+	return matchesPID
 }
 
 func RequestStop(config *core.Config) error {
@@ -1065,7 +1176,7 @@ func verifyPIDFile(file *os.File, expectedPID int) error {
 
 func lockPIDFileForRemoval(file *os.File) error {
 	err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
-	if errors.Is(err, syscall.EWOULDBLOCK) || errors.Is(err, syscall.EAGAIN) {
+	if isPIDFileLockedError(err) {
 		return fmt.Errorf("daemon PID file became locked")
 	}
 	return err
@@ -1089,7 +1200,7 @@ func removeMatchingPIDFile(path string, file *os.File) error {
 	return removePIDFile(path)
 }
 
-func pidFileLocked(path string, expectedPID int) (locked bool, err error) {
+func pidFileLocked(path string, expectedPID int) (isLocked bool, err error) {
 	file, err := safefs.OpenFile(path, os.O_RDONLY, 0)
 	if err != nil {
 		return false, err
@@ -1098,7 +1209,10 @@ func pidFileLocked(path string, expectedPID int) (locked bool, err error) {
 		err = errors.Join(err, file.Close())
 	}()
 	matches, err := pidFileContainsPID(file, expectedPID)
-	if err != nil || !matches {
+	if err != nil {
+		return false, err
+	}
+	if !matches {
 		return false, err
 	}
 	return tryPIDFileLock(file)
@@ -1118,13 +1232,20 @@ func pidFileContainsPID(file *os.File, expectedPID int) (bool, error) {
 
 func tryPIDFileLock(file *os.File) (bool, error) {
 	lockErr := syscall.Flock(int(file.Fd()), syscall.LOCK_SH|syscall.LOCK_NB)
-	if errors.Is(lockErr, syscall.EWOULDBLOCK) || errors.Is(lockErr, syscall.EAGAIN) {
+	if isPIDFileLockedError(lockErr) {
 		return true, nil
 	}
 	if lockErr != nil {
 		return false, lockErr
 	}
 	return false, syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
+}
+
+func isPIDFileLockedError(err error) bool {
+	if errors.Is(err, syscall.EWOULDBLOCK) {
+		return true
+	}
+	return errors.Is(err, syscall.EAGAIN)
 }
 
 func daemonIdentityError(filePID, socketPID int) error {
@@ -1148,7 +1269,10 @@ func readPID(path string) (int, error) {
 
 func parsePID(pidBytes []byte) (int, error) {
 	pid, err := strconv.Atoi(strings.TrimSpace(string(pidBytes)))
-	if err != nil || pid < 1 {
+	if err != nil {
+		return 0, fmt.Errorf("invalid PID %q", strings.TrimSpace(string(pidBytes)))
+	}
+	if pid < 1 {
 		return 0, fmt.Errorf("invalid PID %q", strings.TrimSpace(string(pidBytes)))
 	}
 	return pid, nil
@@ -1167,30 +1291,61 @@ func ReadPID(config *core.Config) (int, error) {
 
 func ProcessRunning(pid int) bool {
 	err := syscall.Kill(pid, 0)
-	return err == nil || errors.Is(err, syscall.EPERM)
+	hasProcess := err == nil || errors.Is(err, syscall.EPERM)
+	return hasProcess
 }
 
 func sendSocketControl(path, requestType string) (socketControlResponse, error) {
-	conn, err := net.DialTimeout("unix", path, socketControlTimeout)
+	conn, err := dialSocketControl(path)
 	if err != nil {
 		return socketControlResponse{}, err
 	}
 	defer func() {
 		_ = conn.Close()
 	}()
-	if err := conn.SetDeadline(time.Now().Add(socketControlTimeout)); err != nil {
+	if err := writeSocketControlRequest(conn, requestType); err != nil {
 		return socketControlResponse{}, err
 	}
+	return readSocketControlResponse(conn)
+}
+
+func dialSocketControl(path string) (net.Conn, error) {
+	conn, err := net.DialTimeout("unix", path, socketControlTimeout)
+	if err != nil {
+		return nil, err
+	}
+	if err := conn.SetDeadline(time.Now().Add(socketControlTimeout)); err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+	return conn, nil
+}
+
+func writeSocketControlRequest(conn net.Conn, requestType string) error {
 	request := socketControlRequest{Type: requestType}
 	if err := json.NewEncoder(conn).Encode(request); err != nil {
-		return socketControlResponse{}, err
+		return err
 	}
+	return nil
+}
+
+func readSocketControlResponse(conn net.Conn) (socketControlResponse, error) {
 	var response socketControlResponse
 	if err := json.NewDecoder(conn).Decode(&response); err != nil {
 		return socketControlResponse{}, err
 	}
-	if response.Status != socketStatusOK || response.PID < 1 {
-		return socketControlResponse{}, fmt.Errorf("invalid daemon response")
+	if err := validateSocketControlResponse(response); err != nil {
+		return socketControlResponse{}, err
 	}
 	return response, nil
+}
+
+func validateSocketControlResponse(response socketControlResponse) error {
+	if response.Status != socketStatusOK {
+		return fmt.Errorf("invalid daemon response")
+	}
+	if response.PID < 1 {
+		return fmt.Errorf("invalid daemon response")
+	}
+	return nil
 }

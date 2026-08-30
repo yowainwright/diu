@@ -1,12 +1,12 @@
 [tools]
-go = "1.26.5"
+go = "1.26.6"
 goreleaser = "2.12.0"
 svu = "3.4.1"
 
 [env]
 CGO_ENABLED = "0"
 GOFLAGS = "-mod=readonly"
-GOLANGCI_LINT_VERSION = "v2.4.0"
+GOLANGCI_LINT_VERSION = "v2.13.2"
 
 [tasks.build]
 description = "Build the DIU binary"
@@ -37,7 +37,8 @@ description = "Run linters"
 run = """
 go vet ./...
 LINT_PACKAGE="github.com/golangci/golangci-lint/v2/cmd/golangci-lint@${GOLANGCI_LINT_VERSION}"
-go run "$LINT_PACKAGE" run ./...
+GOFLAGS="-mod=readonly -buildvcs=false" go run "$LINT_PACKAGE" custom
+./bin/legibility-golangci-lint run --max-issues-per-linter=0 --max-same-issues=0 ./...
 """
 
 [tasks.fmt]
