@@ -80,21 +80,27 @@ payload=$(cat <<EOF
 EOF
 )
 
-{
-    sent=false
-    if [ -S "$DIU_SOCKET" ] && command -v nc >/dev/null 2>&1; then
+record_fallback() {
+    DIU_RECORD_BINARY="$(command -v "$DIU_BINARY" 2>/dev/null || true)"
+    if [ -n "$DIU_RECORD_BINARY" ] && [ -x "$DIU_RECORD_BINARY" ]; then
+        printf '%%s\n' "$payload" | "$DIU_RECORD_BINARY" record >/dev/null 2>&1
+    fi
+}
+
+if [ -S "$DIU_SOCKET" ] && command -v nc >/dev/null 2>&1; then
+    {
+        sent=false
         if printf '%%s\n' "$payload" | nc -w 1 -U "$DIU_SOCKET" 2>/dev/null; then
             sent=true
         fi
-    fi
 
-    if [ "$sent" != true ]; then
-        DIU_RECORD_BINARY="$(command -v "$DIU_BINARY" 2>/dev/null || true)"
-        if [ -n "$DIU_RECORD_BINARY" ] && [ -x "$DIU_RECORD_BINARY" ]; then
-            printf '%%s\n' "$payload" | "$DIU_RECORD_BINARY" record >/dev/null 2>&1
+        if [ "$sent" != true ]; then
+            record_fallback
         fi
-    fi
-} &>/dev/null &
+    } &>/dev/null &
+else
+    record_fallback >/dev/null 2>&1
+fi
 
 exit $EXIT_CODE
 `

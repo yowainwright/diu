@@ -37,7 +37,7 @@ description = "Run linters"
 run = """
 go vet ./...
 LINT_PACKAGE="github.com/golangci/golangci-lint/v2/cmd/golangci-lint@${GOLANGCI_LINT_VERSION}"
-go run "$LINT_PACKAGE" custom
+GOFLAGS="-mod=readonly -buildvcs=false" go run "$LINT_PACKAGE" custom
 ./bin/legibility-golangci-lint run --max-issues-per-linter=0 --max-same-issues=0 ./...
 """
 
