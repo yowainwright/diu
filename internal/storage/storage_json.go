@@ -795,6 +795,9 @@ func (j *JSONStorage) Cleanup(before time.Time) error {
 	defer j.mu.Unlock()
 
 	return j.withFileLock(func() error {
+		if err := j.reload(); err != nil {
+			return err
+		}
 		return j.compact(before)
 	})
 }
@@ -804,17 +807,7 @@ func (j *JSONStorage) Prepare() error {
 	defer j.mu.Unlock()
 
 	return j.withFileLock(func() error {
-		usesLog, err := storageUsesExecutionLog(j.filepath)
-		if err != nil {
-			return err
-		}
-		if !usesLog {
-			return j.compact(time.Time{})
-		}
-		if err := j.load(); err != nil {
-			return err
-		}
-		if err := j.ensureCurrentExecutionLog(); err != nil {
+		if err := j.reload(); err != nil {
 			return err
 		}
 		return j.compactIfLimitsExceeded()

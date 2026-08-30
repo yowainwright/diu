@@ -1277,6 +1277,46 @@ func TestCleanupDoesNotCompactLogWhenManifestCommitFails(t *testing.T) {
 	assertExecutionLogIncludesExecution(t, config, old)
 }
 
+func TestCleanupCompletesPendingStorageCommitBeforeCompacting(t *testing.T) {
+	store, config := newNamedTestStorage(t, "test.json")
+	defer closeStorage(t, store)
+	addExecution(t, store, &core.ExecutionRecord{
+		Tool:      "npm",
+		Command:   "npm install old",
+		Timestamp: time.Now().Add(-48 * time.Hour),
+	})
+	pending := core.ExecutionRecord{
+		Tool:      "npm",
+		Command:   "npm install pending cleanup",
+		Timestamp: time.Now(),
+	}
+	writeInterruptedStorageCommit(t, store, []core.ExecutionRecord{pending})
+	if err := store.Cleanup(time.Now().Add(-24 * time.Hour)); err != nil {
+		t.Fatalf("Cleanup failed: %v", err)
+	}
+	assertExecutionLogIncludesExecution(t, config, &pending)
+}
+
+func TestPrepareCompletesPendingStorageCommitBeforeCompacting(t *testing.T) {
+	store, config := newLimitedStorage(t, core.StorageConfig{MaxExecutions: 1})
+	defer closeStorage(t, store)
+	addExecution(t, store, &core.ExecutionRecord{
+		Tool:      "npm",
+		Command:   "npm install old",
+		Timestamp: time.Now().Add(-time.Minute),
+	})
+	pending := core.ExecutionRecord{
+		Tool:      "npm",
+		Command:   "npm install pending prepare",
+		Timestamp: time.Now(),
+	}
+	writeInterruptedStorageCommit(t, store, []core.ExecutionRecord{pending})
+	if err := store.Prepare(); err != nil {
+		t.Fatalf("Prepare failed: %v", err)
+	}
+	assertExecutionLogIncludesExecution(t, config, &pending)
+}
+
 func TestLoadCompletesPendingStorageCommit(t *testing.T) {
 	store, config := newNamedTestStorage(t, "test.json")
 	record := core.ExecutionRecord{Tool: "npm", Command: "npm install recovered", Timestamp: time.Now()}
