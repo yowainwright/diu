@@ -40,6 +40,20 @@ func copyManagedFile(source, destination string) (err error) {
 	return nil
 }
 
+func copyManagedFileToOpenFile(source string, destination *os.File) (err error) {
+	input, err := safefs.OpenFile(source, os.O_RDONLY, 0)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		err = safefs.CloseWithError(err, input, "")
+	}()
+	if _, err := io.Copy(destination, input); err != nil {
+		return err
+	}
+	return nil
+}
+
 func (j *JSONStorage) restoreBackup(path string) error {
 	restored, err := readStorageBackup(path)
 	if err != nil {
@@ -51,11 +65,8 @@ func (j *JSONStorage) restoreBackup(path string) error {
 	if restored.ExecutionLogFormat != executionLogFormat {
 		return fmt.Errorf("%w: %s", ErrUnsupportedExecutionLogFormat, restored.ExecutionLogFormat)
 	}
-	if err := j.restoreExecutionBackup(path); err != nil {
-		return err
-	}
 	j.data = restored
-	return j.save()
+	return j.restoreExecutionBackup(path)
 }
 
 func readStorageBackup(path string) (*core.StorageData, error) {
@@ -72,10 +83,11 @@ func readStorageBackup(path string) (*core.StorageData, error) {
 
 func (j *JSONStorage) restoreExecutionBackup(path string) error {
 	executionBackup := j.executionBackupPath(path)
-	if err := replaceExecutionLog(executionBackup, j.executionPath); err != nil {
+	executionTemp, err := prepareExecutionLogCopy(executionBackup)
+	if err != nil {
 		return fmt.Errorf("failed to restore execution log: %w", err)
 	}
-	return nil
+	return j.commitPreparedStorage(executionTemp)
 }
 
 func (j *JSONStorage) restoreLegacyBackup(path string) error {
@@ -83,43 +95,15 @@ func (j *JSONStorage) restoreLegacyBackup(path string) error {
 	if err != nil {
 		return err
 	}
-	if err := writeCompactedStorage(j.executionPath, records); err != nil {
+	executionTemp, err := prepareCompactedStorage(j.executionPath, records)
+	if err != nil {
 		return err
 	}
 	statistics := compactedStatistics(records)
 	j.data = state.manifest(statistics)
-	return j.save()
-}
-
-func replaceExecutionLog(source, destination string) error {
-	if err := validateExecutionLog(source); err != nil {
-		return err
-	}
-	file, tempPath, err := createCompactionFile(destination)
-	if err != nil {
-		return err
-	}
-	if err := copyExecutionLog(file, source); err != nil {
-		discardTempFile(file, tempPath)
-		return err
-	}
-	return commitTempFile(file, tempPath, destination)
+	return j.commitPreparedStorage(executionTemp)
 }
 
 func validateExecutionLog(path string) error {
 	return scanNDJSONExecutions(path, nil)
-}
-
-func copyExecutionLog(destination *os.File, source string) (err error) {
-	input, err := safefs.OpenFile(source, os.O_RDONLY, 0)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		err = safefs.CloseWithError(err, input, "")
-	}()
-	if _, err := io.Copy(destination, input); err != nil {
-		return fmt.Errorf("failed to copy execution log: %w", err)
-	}
-	return nil
 }

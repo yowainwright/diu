@@ -339,22 +339,30 @@ func updateCompactedStatistics(
 }
 
 func writeCompactedStorage(path string, records []compactExecution) error {
-	file, tempPath, err := createCompactionFile(path)
+	tempPath, err := prepareCompactedStorage(path, records)
 	if err != nil {
 		return err
 	}
-	if err := commitCompactedStorage(file, tempPath, path, records); err != nil {
-		discardTempFile(file, tempPath)
+	if err := replacePreparedFile(tempPath, path); err != nil {
+		_ = os.Remove(tempPath)
 		return err
 	}
 	return nil
 }
 
-func commitCompactedStorage(file *os.File, tempPath, path string, records []compactExecution) error {
-	if err := writeCompactionFile(file, records); err != nil {
-		return err
+func prepareCompactedStorage(path string, records []compactExecution) (string, error) {
+	file, tempPath, err := createCompactionFile(path)
+	if err != nil {
+		return "", err
 	}
-	return commitTempFile(file, tempPath, path)
+	if err := writeCompactionFile(file, records); err != nil {
+		discardTempFile(file, tempPath)
+		return "", err
+	}
+	if err := closePreparedFile(file, tempPath); err != nil {
+		return "", err
+	}
+	return tempPath, nil
 }
 
 func createCompactionFile(path string) (*os.File, string, error) {

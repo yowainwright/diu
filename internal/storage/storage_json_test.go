@@ -1239,6 +1239,66 @@ func TestAddExecutionStoresHistoryOutsideManifest(t *testing.T) {
 	assertExecutionLogIncludesExecution(t, config, record)
 }
 
+func TestAddExecutionDoesNotAppendWhenManifestCommitFails(t *testing.T) {
+	store, config := newNamedTestStorage(t, "test.json")
+	defer closeStorage(t, store)
+	store.marshalStorage = failingStorageMarshal
+	record := &core.ExecutionRecord{Tool: "npm", Command: "npm install broken", Timestamp: time.Now()}
+	if err := store.AddExecution(record); err == nil {
+		t.Fatal("AddExecution succeeded with failing manifest commit")
+	}
+	assertExecutionLogOmitsExecution(t, config, record)
+}
+
+func TestRestoreDoesNotReplaceExecutionLogWhenManifestCommitFails(t *testing.T) {
+	store, config := newNamedTestStorage(t, "test.json")
+	defer closeStorage(t, store)
+	addExecution(t, store, &core.ExecutionRecord{Tool: "original", Command: "original", Timestamp: time.Now()})
+	backupPath := createBackupForTest(t, store, config)
+	newer := &core.ExecutionRecord{Tool: "newer", Command: "newer", Timestamp: time.Now().Add(time.Minute)}
+	addExecution(t, store, newer)
+	store.marshalStorage = failingStorageMarshal
+	if err := store.Restore(backupPath); err == nil {
+		t.Fatal("Restore succeeded with failing manifest commit")
+	}
+	assertExecutionLogIncludesExecution(t, config, newer)
+}
+
+func TestLoadCompletesPendingStorageCommit(t *testing.T) {
+	store, config := newNamedTestStorage(t, "test.json")
+	record := core.ExecutionRecord{Tool: "npm", Command: "npm install recovered", Timestamp: time.Now()}
+	writeInterruptedStorageCommit(t, store, []core.ExecutionRecord{record})
+	closeStorage(t, store)
+
+	reopened := newStorageWithConfig(t, config)
+	defer closeStorage(t, reopened)
+	assertExecutionLogIncludesExecution(t, config, &record)
+	assertStatisticsTotal(t, reopened, 1)
+}
+
+func failingStorageMarshal(*core.StorageData) ([]byte, error) {
+	return nil, errors.New("marshal failed")
+}
+
+func writeInterruptedStorageCommit(t *testing.T, store *JSONStorage, records []core.ExecutionRecord) {
+	t.Helper()
+	executionTemp, err := store.prepareAppendedExecutionLog(records)
+	if err != nil {
+		t.Fatalf("prepareAppendedExecutionLog failed: %v", err)
+	}
+	store.applyExecutions(records)
+	commit, err := store.prepareStorageCommit(executionTemp)
+	if err != nil {
+		t.Fatalf("prepareStorageCommit failed: %v", err)
+	}
+	if err := store.writeStorageCommitJournal(commit); err != nil {
+		t.Fatalf("writeStorageCommitJournal failed: %v", err)
+	}
+	if err := replacePreparedFile(commit.ManifestTemp, store.filepath); err != nil {
+		t.Fatalf("replacePreparedFile failed: %v", err)
+	}
+}
+
 func assertManifestOmitsExecution(t *testing.T, config *core.Config, record *core.ExecutionRecord) {
 	t.Helper()
 
@@ -1260,6 +1320,30 @@ func assertExecutionLogIncludesExecution(t *testing.T, config *core.Config, reco
 	}
 	if !strings.Contains(string(logData), record.Command) {
 		t.Fatal("execution was not appended to the execution log")
+	}
+}
+
+func assertExecutionLogOmitsExecution(t *testing.T, config *core.Config, record *core.ExecutionRecord) {
+	t.Helper()
+
+	logData, err := os.ReadFile(ExecutionLogPath(config.Storage.JSONFile))
+	if err != nil {
+		t.Fatalf("ReadFile failed: %v", err)
+	}
+	if strings.Contains(string(logData), record.Command) {
+		t.Fatal("execution was appended to the execution log")
+	}
+}
+
+func assertStatisticsTotal(t *testing.T, store Storage, want int) {
+	t.Helper()
+
+	statistics, err := store.Statistics()
+	if err != nil {
+		t.Fatalf("Statistics failed: %v", err)
+	}
+	if statistics.TotalExecutions != want {
+		t.Fatalf("TotalExecutions = %d, want %d", statistics.TotalExecutions, want)
 	}
 }
 

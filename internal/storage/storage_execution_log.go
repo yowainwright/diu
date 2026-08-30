@@ -37,6 +37,36 @@ func appendExecutionRecords(path string, records []core.ExecutionRecord) (err er
 	return nil
 }
 
+func (j *JSONStorage) prepareAppendedExecutionLog(records []core.ExecutionRecord) (string, error) {
+	data, err := encodeExecutionRecords(records)
+	if err != nil {
+		return "", err
+	}
+	file, tempPath, err := createStorageTempFile(j.executionPath, "execution")
+	if err != nil {
+		return "", err
+	}
+	if err := copyManagedFileToOpenFile(j.executionPath, file); err != nil {
+		discardTempFile(file, tempPath)
+		return "", err
+	}
+	return prepareAppendedExecutionFile(file, tempPath, data)
+}
+
+func prepareAppendedExecutionFile(file *os.File, tempPath string, data []byte) (string, error) {
+	if err := writePreparedFile(file, tempPath, data); err != nil {
+		return "", err
+	}
+	return tempPath, nil
+}
+
+func prepareExecutionLogCopy(source string) (string, error) {
+	if err := validateExecutionLog(source); err != nil {
+		return "", err
+	}
+	return prepareFileCopy(source, "execution")
+}
+
 func encodeExecutionRecords(records []core.ExecutionRecord) ([]byte, error) {
 	var buffer bytes.Buffer
 	encoder := json.NewEncoder(&buffer)

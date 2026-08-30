@@ -65,13 +65,20 @@ func (j *JSONStorage) ensureStorageDirectory() error {
 }
 
 func (j *JSONStorage) loadOrCreateStorage() error {
-	if _, err := os.Stat(j.filepath); err != nil {
-		if !os.IsNotExist(err) {
-			return fmt.Errorf("failed to stat storage file: %w", err)
-		}
+	exists, err := storagePathExists(j.filepath)
+	if err != nil {
+		return err
+	}
+	if !exists {
 		return j.initializeEmptyStorage()
 	}
+	if err := j.recoverPendingStorageCommit(); err != nil {
+		return err
+	}
+	return j.loadCurrentStorage()
+}
 
+func (j *JSONStorage) loadCurrentStorage() error {
 	usesLog, err := storageUsesExecutionLog(j.filepath)
 	hasCurrentLogFormat := err == nil && usesLog
 	if !hasCurrentLogFormat {
@@ -82,6 +89,16 @@ func (j *JSONStorage) loadOrCreateStorage() error {
 	}
 	j.data = nil
 	return nil
+}
+
+func storagePathExists(path string) (bool, error) {
+	if _, err := os.Stat(path); err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("failed to stat storage file: %w", err)
+	}
+	return true, nil
 }
 
 func ExecutionLogPath(manifestPath string) string {
@@ -281,11 +298,12 @@ func (j *JSONStorage) addExecutionsLocked(records []*core.ExecutionRecord) error
 		return err
 	}
 	storedRecords := j.prepareExecutions(records)
-	if err := appendExecutionRecords(j.executionPath, storedRecords); err != nil {
+	executionTemp, err := j.prepareAppendedExecutionLog(storedRecords)
+	if err != nil {
 		return err
 	}
 	j.applyExecutions(storedRecords)
-	if err := j.save(); err != nil {
+	if err := j.commitPreparedStorage(executionTemp); err != nil {
 		return err
 	}
 	return j.compactIfLimitsExceeded()
@@ -960,6 +978,9 @@ func pathExists(path string) (bool, error) {
 }
 
 func (j *JSONStorage) reload() error {
+	if err := j.recoverPendingStorageCommit(); err != nil {
+		return err
+	}
 	usesLog, err := storageUsesExecutionLog(j.filepath)
 	if err != nil {
 		return err
