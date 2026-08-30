@@ -13,10 +13,8 @@ import (
 const storageCommitJournalSuffix = ".commit"
 
 type storageCommitJournal struct {
-	ManifestTemp    string `json:"manifest_temp"`
-	ExecutionTemp   string `json:"execution_temp"`
-	ManifestBackup  string `json:"manifest_backup"`
-	ExecutionBackup string `json:"execution_backup"`
+	ManifestTemp  string `json:"manifest_temp"`
+	ExecutionTemp string `json:"execution_temp"`
 }
 
 func (j *JSONStorage) commitPreparedStorage(executionTemp string) error {
@@ -30,7 +28,7 @@ func (j *JSONStorage) commitPreparedStorage(executionTemp string) error {
 		return err
 	}
 	if err := j.applyStorageCommit(commit); err != nil {
-		return j.rollbackStorageCommit(commit, err)
+		return err
 	}
 	return j.removeStorageCommitJournal(commit)
 }
@@ -40,18 +38,7 @@ func (j *JSONStorage) prepareStorageCommit(executionTemp string) (storageCommitJ
 	if err != nil {
 		return storageCommitJournal{}, err
 	}
-	manifestBackup, err := prepareFileCopy(j.filepath, "manifest-backup")
-	if err != nil {
-		_ = os.Remove(manifestTemp)
-		return storageCommitJournal{}, err
-	}
-	executionBackup, err := prepareFileCopy(j.executionPath, "execution-backup")
-	if err != nil {
-		_ = os.Remove(manifestTemp)
-		_ = os.Remove(manifestBackup)
-		return storageCommitJournal{}, err
-	}
-	return storageCommitJournal{manifestTemp, executionTemp, manifestBackup, executionBackup}, nil
+	return storageCommitJournal{manifestTemp, executionTemp}, nil
 }
 
 func (j *JSONStorage) prepareManifestTemp() (string, error) {
@@ -148,24 +135,6 @@ func replacePreparedFile(tempPath, destination string) error {
 	return nil
 }
 
-func (j *JSONStorage) rollbackStorageCommit(commit storageCommitJournal, cause error) error {
-	if err := j.restoreStorageCommitBackups(commit); err != nil {
-		return fmt.Errorf("%w; failed to roll back storage commit: %v", cause, err)
-	}
-	_ = j.removeStorageCommitJournal(commit)
-	return cause
-}
-
-func (j *JSONStorage) restoreStorageCommitBackups(commit storageCommitJournal) error {
-	if err := replacePreparedFile(commit.ManifestBackup, j.filepath); err != nil {
-		return err
-	}
-	if err := replacePreparedFile(commit.ExecutionBackup, j.executionPath); err != nil {
-		return err
-	}
-	return syncDirectory(filepath.Dir(j.filepath))
-}
-
 func (j *JSONStorage) recoverPendingStorageCommit() error {
 	commit, err := j.readStorageCommitJournal()
 	noCommit := commit == nil
@@ -213,8 +182,6 @@ func (j *JSONStorage) removeStorageCommitJournal(commit storageCommitJournal) er
 func removeStorageCommitFiles(commit storageCommitJournal) {
 	_ = os.Remove(commit.ManifestTemp)
 	_ = os.Remove(commit.ExecutionTemp)
-	_ = os.Remove(commit.ManifestBackup)
-	_ = os.Remove(commit.ExecutionBackup)
 }
 
 func (j *JSONStorage) storageCommitJournalPath() string {
