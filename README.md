@@ -308,10 +308,11 @@ mise run release-preview
 mise run release
 ```
 
-`svu` calculates the next version from conventional commits. The release task
-requires a clean, synchronized `main`, runs the complete preview, and pushes an
-annotated `v*` tag after confirmation. The tag workflow publishes the GitHub
-Release, GoReleaser artifacts, and Homebrew formula.
+The version and release tasks refresh tags before `svu` calculates the next
+version from conventional commits. The release task requires a clean,
+synchronized `main`, runs the complete preview, and pushes an annotated `v*` tag
+after confirmation. The tag workflow publishes the GitHub Release, GoReleaser
+artifacts, and Homebrew formula.
 
 `HOMEBREW_TAP_GITHUB_TOKEN` is required by the tag workflow.
 
