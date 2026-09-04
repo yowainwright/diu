@@ -118,7 +118,11 @@ run = "./diu packages --unused 6mo"
 # Release tasks
 [tasks.version]
 description = "Show the next semantic version from conventional commits"
-run = "svu next"
+run = """
+RELEASE_BRANCH="${RELEASE_BRANCH:-main}"
+git fetch --quiet origin "$RELEASE_BRANCH" --tags
+svu next
+"""
 
 [tasks.release-snapshot]
 description = "Create a release snapshot"
