@@ -36,6 +36,9 @@ exec "$SHELL" -l
 # Scan currently installed global tools
 diu scan
 
+# Start the optional recorder, recommended for parallel workflows
+diu daemon start
+
 # Use your tools normally
 jq --version
 npm --version
@@ -72,10 +75,11 @@ Check a package:
 diu check jq
 ```
 
+<!-- Package row format derived from cmd/diu/diu_packages.go -->
 Example output:
 
 ```text
-homebrew  jq  used 12 times  last: 2026-06-20
+1    homebrew        jq                                  12 uses    2026-06-20
 ```
 
 Find packages that have not been used recently:
@@ -125,42 +129,36 @@ with Homebrew or Go after running the command.
 
 ## How It Works
 
-`diu setup` installs lightweight wrappers in `~/.local/bin/diu-wrappers` and adds that directory to existing shell config files when possible. The wrapper runs the original command, preserves its output and exit code, then records the execution in the background.
+`diu setup` installs lightweight wrappers in `~/.local/bin/diu-wrappers` and adds that directory to existing shell config files when possible. Each wrapper runs the original command and preserves its output and exit code.
 
-<!-- Wrapper execution sequence derived from generated wrapper behavior in cmd/diu/setup.go -->
-```mermaid
-sequenceDiagram
-    participant You
-    participant Wrapper as DIU wrapper
-    participant Tool as Original tool
-    participant Recorder as DIU recorder
-    participant Store as Append-only execution log
+<!-- Wrapper execution sequence derived from cmd/diu/diu_setup.go and internal/monitors/monitors_process.go -->
+After the original command finishes, the wrapper records its execution:
 
-    You->>Wrapper: jq --version
-    Wrapper->>Tool: jq --version
-    Tool-->>Wrapper: output and exit code
-    Wrapper-->>You: same output and exit code
-    Wrapper->>Recorder: execution event
-    Recorder->>Store: append usage data
+```text
+command -> DIU wrapper -> original tool -> output to your terminal
+               |
+               +-- daemon available --> send event in the background
+               |
+               +-- daemon absent ----> run diu record synchronously
+               |
+               `--> return the original exit code
 ```
 
-The daemon is optional. When it is running, wrappers send events to a local Unix socket. When it is not running, wrappers fall back to `diu record`. Execution writes append one line to the bounded NDJSON log; package inventory and cached statistics stay in a small JSON manifest.
+The daemon is optional. When available, wrappers send events through a local Unix socket. A failed socket send also falls back to `diu record` in that background task.
 
-<!-- DIU event and storage flow derived from cmd/diu/setup.go and internal/storage -->
-```mermaid
-flowchart LR
-    command["brew / npm / pnpm / bun / go / pip / uv / poetry / wrapped executable"] --> wrapper["DIU wrapper"]
-    wrapper --> original["Original executable"]
-    wrapper --> daemon{"Daemon running?"}
-    daemon -- yes --> socket["Unix socket"]
-    daemon -- no --> record["diu record"]
-    socket --> history[("executions.ndjson")]
-    record --> history
-    scan["diu scan"] --> inventory["Package inventory"]
-    inventory --> manifest[("executions.json")]
-    history --> cli["status / diagnostics / query / stats"]
-    manifest --> cli
-    manifest --> packages["check / packages / manage"]
+<!-- Fallback wait policy derived from cmd/diu/diu_setup.go and internal/storage/storage_json.go -->
+**Daemon-off tracking is best-effort.** The wrapper waits for `diu record` before returning. Recording has a shared 50 ms lock-wait budget; metadata discovery and disk work are separate, so this is not a 50 ms limit on total command time. When locks remain busy, DIU drops the event and marks contention without changing the original command's output or exit code. `diu status` and `diu diagnostics` report that signal.
+
+For parallel commands or large command bursts, start the daemon with `diu daemon start`.
+
+<!-- DIU event and storage flow derived from cmd/diu/diu_setup.go and internal/storage -->
+History lives in a size-bounded NDJSON file; package inventory and cached statistics live in a JSON manifest. Storage applies the configured retention and size limits.
+
+```text
+daemon / diu record ----> executions.ndjson (history)
+          |
+          `------------> executions.json (inventory + statistics)
+diu scan --------------> executions.json
 ```
 
 ## Commands
@@ -180,7 +178,7 @@ flowchart LR
 | `diu daemon start` | Start the optional local recorder/API daemon. |
 | `diu config list` | Print the resolved config as JSON. |
 | `diu cleanup` | Apply retention and storage limits. |
-| `diu backup` | Create a manual JSON storage backup. |
+| `diu backup` | Back up inventory and execution history. |
 
 Useful filters:
 
@@ -195,6 +193,19 @@ diu stats --tool uv --top 20
 ```
 
 ## Terminal Output
+
+<!-- ASCII output derived from cmd/diu/diu_styleguide.go and internal/dx -->
+DIU uses plain ASCII status markers and progress bars. Run `diu --styleguide` to preview the terminal styles. Selected output:
+
+```text
+[ok] setup complete
+[!] using fallback
+[x] failed check
+[i] scanned packages
+[############--------] 60%
+```
+
+The activity indicator cycles through `-`, `\`, `|`, and `/`.
 
 Results and structured data are written to stdout. Prompts, progress, warnings,
 and errors are written to stderr. Color and activity stop automatically for
@@ -250,7 +261,7 @@ curl -X POST http://127.0.0.1:8081/api/v1/executions \
 | --- | --- |
 | `~/.config/diu/config.json` | User config. |
 | `~/.local/share/diu/executions.json` | Package inventory, cached statistics, and execution-log metadata. |
-| `~/.local/share/diu/executions.ndjson` | Append-only, size-bounded execution history. |
+| `~/.local/share/diu/executions.ndjson` | Size-bounded execution history. |
 | `~/.local/share/diu/diu.log` | Private, size-bounded daemon log. |
 | `~/.local/share/diu/fallback-contention` | Private marker for daemon-off recorder contention. |
 | `~/.local/share/diu/diu.pid` | Daemon PID file. |
@@ -296,9 +307,13 @@ Diagnostics remain local and are never uploaded by DIU. Reports include fallback
 ```bash
 mise install
 mise run setup
+mise run lint
 mise run test
 mise run build
 ```
+
+<!-- Development checks derived from .mise.toml and .custom-gcl.yml -->
+Setup installs Bash for shell legibility. Lint runs Go vet, golangci-lint with legibility, shfmt, ShellCheck, and shell legibility. Use `mise run lint-shell` for shell checks alone.
 
 Release checks:
 
@@ -318,8 +333,11 @@ artifacts, and Homebrew formula.
 
 ## Requirements
 
-- macOS 10.15 or later
-- Go 1.25+ when building from source
+<!-- Platform requirements derived from go.mod, .mise.toml, .github/workflows/release.yml, and Go's minimum requirements -->
+- macOS 12 (Monterey) or later for published binaries.
+- Go 1.25.12 or later when building from source; `mise install` selects Go 1.26.6.
+
+Newer Go toolchains can require newer macOS versions. See [Go's platform requirements](https://go.dev/wiki/MinimumRequirements).
 
 ## License
 

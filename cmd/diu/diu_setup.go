@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -69,6 +70,7 @@ const (
 	fallbackRecordLockSuffix   = ".fallback.lock"
 	fallbackRecordLockAttempts = 5
 	fallbackRecordRetryDelay   = 10 * time.Millisecond
+	fallbackRecordLockWait     = fallbackRecordLockAttempts * fallbackRecordRetryDelay
 )
 
 const executableWrapperScriptTemplate = `#!/bin/bash
@@ -999,12 +1001,12 @@ func recordExecution(cmd *command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
-	return withFallbackRecordLock(config, func() error {
-		return storeFallbackExecution(config)
+	return withFallbackRecordLock(config, func(wait time.Duration) error {
+		return storeFallbackExecution(config, wait)
 	})
 }
 
-func storeFallbackExecution(config *core.Config) error {
+func storeFallbackExecution(config *core.Config, wait time.Duration) error {
 	var record core.ExecutionRecord
 	if err := json.NewDecoder(cliOutput().Stdin()).Decode(&record); err != nil {
 		return fmt.Errorf("failed to decode execution record: %w", err)
@@ -1012,7 +1014,7 @@ func storeFallbackExecution(config *core.Config) error {
 
 	enrichExecutionRecord(config, &record)
 
-	store, err := storage.NewJSONStorage(config)
+	store, err := storage.NewJSONStorageWithLockWait(config, wait)
 	if err != nil {
 		return fmt.Errorf("failed to open storage: %w", err)
 	}
@@ -1025,35 +1027,45 @@ func storeFallbackExecution(config *core.Config) error {
 	return nil
 }
 
-func withFallbackRecordLock(config *core.Config, record func() error) (err error) {
-	lock, acquired, err := acquireFallbackRecordLock(config.Storage.JSONFile)
+func withFallbackRecordLock(config *core.Config, record func(time.Duration) error) (err error) {
+	lock, wait, err := acquireFallbackRecordLock(config.Storage.JSONFile)
 	if err != nil {
 		return err
 	}
-	if !acquired {
+	if lock == nil {
 		_ = observability.MarkFallbackContention(config.Daemon.DataDir)
 		return fmt.Errorf("fallback recorder remained busy after %d attempts", fallbackRecordLockAttempts)
 	}
 	defer func() {
+		if errors.Is(err, context.DeadlineExceeded) {
+			_ = observability.MarkFallbackContention(config.Daemon.DataDir)
+		}
 		err = errors.Join(err, releaseFallbackRecordLock(lock))
 	}()
-	return record()
+	return record(wait)
 }
 
-func acquireFallbackRecordLock(storagePath string) (*os.File, bool, error) {
+func acquireFallbackRecordLock(storagePath string) (*os.File, time.Duration, error) {
+	wait := fallbackRecordLockWait
 	for attempt := 0; attempt < fallbackRecordLockAttempts; attempt++ {
 		lock, acquired, err := tryAcquireFallbackRecordLock(storagePath)
-		if err != nil {
-			return lock, acquired, err
+		finished := err != nil || acquired
+		if finished {
+			return lock, wait, err
 		}
-		if acquired {
-			return lock, acquired, err
+		canRetry := attempt+1 < fallbackRecordLockAttempts && wait > 0
+		if !canRetry {
+			return nil, 0, nil
 		}
-		if attempt+1 < fallbackRecordLockAttempts {
-			time.Sleep(fallbackRecordRetryDelay)
-		}
+		wait = waitForFallbackRecordRetry(wait)
 	}
-	return nil, false, nil
+	return nil, 0, nil
+}
+
+func waitForFallbackRecordRetry(wait time.Duration) time.Duration {
+	started := time.Now()
+	time.Sleep(min(fallbackRecordRetryDelay, wait))
+	return max(0, wait-time.Since(started))
 }
 
 func tryAcquireFallbackRecordLock(storagePath string) (*os.File, bool, error) {

@@ -2,6 +2,13 @@
 go = "1.26.6"
 goreleaser = "2.12.0"
 svu = "3.4.1"
+shellcheck = "0.11.0"
+shfmt = "3.14.0"
+
+[tools."github:yowainwright/shellcheck_legibility"]
+version = "0.2.1"
+asset_pattern = "shellcheck-legibility-{{ version }}.tar.gz"
+checksum = "sha256:137942db1000e72ce8f8e2fbe8c10e334c70dc554ad2ef08aa49f0778f0302c0"
 
 [env]
 CGO_ENABLED = "0"
@@ -34,6 +41,7 @@ open coverage.html
 
 [tasks.lint]
 description = "Run linters"
+depends = ["lint-shell"]
 run = """
 go vet ./...
 LINT_PACKAGE="github.com/golangci/golangci-lint/v2/cmd/golangci-lint@${GOLANGCI_LINT_VERSION}"
@@ -41,9 +49,24 @@ GOFLAGS="-mod=readonly -buildvcs=false" go run "$LINT_PACKAGE" custom
 ./bin/legibility-golangci-lint run --max-issues-per-linter=0 --max-same-issues=0 ./...
 """
 
+[tasks.lint-shell]
+description = "Check shell formatting, correctness, and readability"
+run = """
+shfmt -d ops/scripts/*.sh
+shellcheck ops/scripts/*.sh
+# LEG042 also enables heredoc-aware parsing in shell legibility 0.2.1.
+shellcheck-legibility check ops/scripts --select LEG,LEG042
+"""
+
+[tasks."lint/session"]
+depends = ["lint"]
+
 [tasks.fmt]
 description = "Format code"
-run = "gofmt -w ."
+run = """
+gofmt -w .
+shfmt -w ops/scripts/*.sh
+"""
 
 [tasks.check]
 description = "Run all checks (format, lint, test)"
@@ -170,6 +193,7 @@ run = "docker compose -f ops/docker/compose.yaml --profile e2e up --build --exit
 [tasks.setup]
 description = "Initialize project for development"
 run = """
+brew install bash
 go mod download
 mkdir -p ~/.config/diu ~/.local/share/diu ~/.local/bin/diu-wrappers
 echo "✓ Project initialized"

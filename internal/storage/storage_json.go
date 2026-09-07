@@ -1,8 +1,10 @@
 package storage
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -23,15 +25,25 @@ type JSONStorage struct {
 	executionPath  string
 	data           *core.StorageData
 	marshalStorage func(*core.StorageData) ([]byte, error)
+	lockWait       *time.Duration
 	mu             sync.RWMutex
 }
 
 const (
 	maxBackupPathAttempts = 1000
 	executionLogFormat    = "ndjson-v1"
+	storageLockRetryDelay = 10 * time.Millisecond
 )
 
 func NewJSONStorage(config *core.Config) (*JSONStorage, error) {
+	return newJSONStorage(config, nil)
+}
+
+func NewJSONStorageWithLockWait(config *core.Config, wait time.Duration) (*JSONStorage, error) {
+	return newJSONStorage(config, &wait)
+}
+
+func newJSONStorage(config *core.Config, wait *time.Duration) (*JSONStorage, error) {
 	storagePath, err := cleanManagedPath(config.Storage.JSONFile)
 	if err != nil {
 		return nil, fmt.Errorf("invalid storage path: %w", err)
@@ -42,6 +54,7 @@ func NewJSONStorage(config *core.Config) (*JSONStorage, error) {
 		filepath:       storagePath,
 		executionPath:  ExecutionLogPath(storagePath),
 		marshalStorage: marshalStorageData,
+		lockWait:       wait,
 	}
 	return js, js.Initialize(config)
 }
@@ -53,7 +66,7 @@ func (j *JSONStorage) Initialize(config *core.Config) error {
 	if err := j.ensureStorageDirectory(); err != nil {
 		return err
 	}
-	return j.loadOrCreateStorage()
+	return j.withFileLock(j.loadOrCreateStorage)
 }
 
 func (j *JSONStorage) ensureStorageDirectory() error {
@@ -1000,11 +1013,59 @@ func (j *JSONStorage) withFileLock(fn func() error) (err error) {
 		err = safefs.CloseWithError(err, lockFile, "failed to close storage lock")
 	}()
 
-	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX); err != nil {
+	if err := j.lockStorageFile(lockFile); err != nil {
 		return fmt.Errorf("failed to lock storage: %w", err)
 	}
 
 	return fn()
+}
+
+func (j *JSONStorage) lockStorageFile(file *os.File) error {
+	if j.lockWait == nil {
+		return syscall.Flock(int(file.Fd()), syscall.LOCK_EX)
+	}
+	err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+	isContention := errors.Is(err, syscall.EWOULDBLOCK) || errors.Is(err, syscall.EAGAIN)
+	if !isContention {
+		return err
+	}
+	return j.waitForStorageLock(file)
+}
+
+func (j *JSONStorage) waitForStorageLock(file *os.File) error {
+	started := time.Now()
+	ctx, cancel := context.WithTimeout(context.Background(), *j.lockWait)
+	defer cancel()
+	err := lockStorageWithContext(ctx, file)
+	*j.lockWait = max(0, *j.lockWait-time.Since(started))
+	return err
+}
+
+func lockStorageWithContext(ctx context.Context, file *os.File) error {
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		isContention := errors.Is(err, syscall.EWOULDBLOCK) || errors.Is(err, syscall.EAGAIN)
+		if !isContention {
+			return err
+		}
+		if err := waitForStorageLockRetry(ctx); err != nil {
+			return err
+		}
+	}
+}
+
+func waitForStorageLockRetry(ctx context.Context) error {
+	timer := time.NewTimer(storageLockRetryDelay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 func cleanManagedPath(path string) (string, error) {
