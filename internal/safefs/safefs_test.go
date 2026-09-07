@@ -3,6 +3,7 @@ package safefs
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -195,4 +196,62 @@ func TestSHA256(t *testing.T) {
 	if _, err := SHA256(filepath.Join(t.TempDir(), "missing")); err == nil {
 		t.Fatal("SHA256 accepted missing file")
 	}
+}
+
+func TestWriteFileAtomicPreservesOpenReaders(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "wrapper")
+	if err := WriteFileAtomic(path, []byte("original"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	reader, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = reader.Close() }()
+	if err := WriteFileAtomic(path, []byte("replacement"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	assertOpenFileContent(t, reader, "original")
+	assertReadFile(t, path, "replacement")
+}
+
+func assertOpenFileContent(t *testing.T, file *os.File, want string) {
+	t.Helper()
+	data, err := io.ReadAll(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != want {
+		t.Fatalf("open reader = %q, want %q", data, want)
+	}
+}
+
+func TestWriteFileAtomicLeavesUnchangedFileAlone(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "wrapper")
+	data := []byte("original")
+	if err := WriteFileAtomic(path, data, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := os.Stat(path)
+	if err := WriteFileAtomic(path, data, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	after, _ := os.Stat(path)
+	if !os.SameFile(before, after) {
+		t.Fatal("unchanged file was replaced")
+	}
+}
+
+func TestWriteFileAtomicRejectsSymlink(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target")
+	link := filepath.Join(dir, "link")
+	writeTestFile(t, target, "preserved")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteFileAtomic(link, []byte("replacement"), 0o700); err == nil {
+		t.Fatal("expected symlink rejection")
+	}
+	assertReadFile(t, target, "preserved")
 }

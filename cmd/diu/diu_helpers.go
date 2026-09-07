@@ -526,22 +526,8 @@ func wrapperEscapesDirectory(relativePath string) bool {
 	return strings.HasPrefix(relativePath, "..")
 }
 
-func writeOwnerExecutableFile(path string, data []byte) (err error) {
-	file, err := safefs.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, core.PrivateFileMode)
-	if err != nil {
-		return fmt.Errorf("failed to create executable file: %w", err)
-	}
-	defer func() {
-		err = safefs.CloseWithError(err, file, "failed to close executable file")
-	}()
-
-	if _, err := file.Write(data); err != nil {
-		return fmt.Errorf("failed to write executable file: %w", err)
-	}
-	if err := file.Chmod(core.OwnerExecutableMode); err != nil {
-		return fmt.Errorf("failed to set executable permissions: %w", err)
-	}
-	return nil
+func writeOwnerExecutableFile(path string, data []byte) error {
+	return safefs.WriteFileAtomic(path, data, core.OwnerExecutableMode)
 }
 
 func newMonitor(tool string) (monitors.Monitor, error) {

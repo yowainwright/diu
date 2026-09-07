@@ -282,23 +282,8 @@ func (m *ProcessMonitor) InstallWrapper() error {
 	return m.updateShellConfig()
 }
 
-func writeOwnerExecutableFile(path string, data []byte) (err error) {
-	file, err := safefs.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, core.PrivateFileMode)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		closeErr := file.Close()
-		shouldReturnCloseErr := err == nil && closeErr != nil
-		if shouldReturnCloseErr {
-			err = closeErr
-		}
-	}()
-
-	if _, err := file.Write(data); err != nil {
-		return err
-	}
-	return file.Chmod(core.OwnerExecutableMode)
+func writeOwnerExecutableFile(path string, data []byte) error {
+	return safefs.WriteFileAtomic(path, data, core.OwnerExecutableMode)
 }
 
 func (m *ProcessMonitor) generateWrapperScript() string {

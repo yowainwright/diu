@@ -4,16 +4,56 @@
 
 ## Do I Use?
 
-> Know which global development tools you **actually** use
+> See which global development tools you actually use.
 
-DIU tracks package-manager commands and global CLI tools from Homebrew, npm, pnpm, Bun, Go, pip, uv, and Poetry. It keeps a small local JSON inventory so you can answer questions like:
+Set up DIU, use your tools normally, and come back when you want to know what you use and what you might no longer need. DIU records supported command usage locally on your Mac.
 
-- Did I use `jq` recently?
-- Which global JavaScript or Python packages have I not touched in months?
-- What are my most-used command-line tools?
-- What would DIU uninstall before I actually run it?
+```text
+set up DIU -> work as usual -> check your usage
+```
 
-DIU is macOS-first, written in Go, and uses only the Go standard library at runtime.
+## Get Started
+
+Install DIU and enable tracking:
+
+```bash
+brew install yowainwright/tap/diu
+diu setup
+```
+
+Open a new terminal window to activate tracking. Then carry on with your usual work. There is no daily command to run or usage to log by hand.
+
+<!-- Setup and inventory behavior derived from cmd/diu/diu_setup.go and cmd/diu/diu_daemon.go -->
+`setup` discovers your installed tools, starts background tracking, and registers it to start when you log in to your Mac. Usage history begins when tracking is active, so give it time to reflect your habits.
+
+## Get Insights
+
+<!-- Insight commands and filters derived from cmd/diu/main.go and cmd/diu/diu_packages.go -->
+| What you want to know | Command |
+| --- | --- |
+| What is installed, and how much do I use it? | `diu check` |
+| Have I been using `jq`? | `diu check jq` |
+| Which tools have no recorded use in the last 90 days? | `diu packages --unused 90d` |
+| What do I use most? | `diu stats` |
+
+`diu check` opens a searchable package browser in your terminal. Use `/` to search and `q` to quit. Add `--tool npm` or `--tool homebrew` to narrow a check to one package manager.
+
+<!-- Package row format derived from cmd/diu/diu_packages.go -->
+For example, `diu check jq` might show:
+
+```text
+1    homebrew        jq                                  12 uses    2026-06-20
+```
+
+<!-- Unused filtering derived from cmd/diu/diu_packages.go and cmd/diu/diu_helpers.go -->
+“Unused” means DIU has no recorded use in that period, including tools with no history yet. It cannot recover usage from before setup or see uses that bypass its command wrappers, such as a library loaded by another program. Use the history to guide your decisions; DIU does not remove packages automatically.
+
+## When Your Tools Change
+
+<!-- Automatic refresh derived from internal/daemon/daemon.go, internal/core/core_config.go, and cmd/diu/diu_setup.go -->
+DIU refreshes its inventory and command wrappers in the background as you install, upgrade, or remove tools. By default, it checks again 30 seconds after each refresh finishes. You do not need to rerun setup or scan during normal use.
+
+Rerun `diu setup` if you move the DIU binary or change where your shell finds package managers.
 
 ## Supported Managers
 
@@ -24,115 +64,13 @@ DIU is macOS-first, written in Go, and uses only the Go standard library at runt
 | Go | Go | Installed binaries in `GOBIN` or `GOPATH/bin`. |
 | Python | pip, uv, Poetry | pip packages, uv tools, and Poetry command/plugin usage. |
 
-## Quick Start
+## More Options
 
-```bash
-# Install command wrappers and create local storage
-diu setup
-
-# Open a new shell so the wrapper path is active
-exec "$SHELL" -l
-
-# Scan currently installed global tools
-diu scan
-
-# Start the optional recorder, recommended for parallel workflows
-diu daemon start
-
-# Use your tools normally
-jq --version
-npm --version
-uv tool run ruff --version
-
-# Ask DIU what it has seen
-diu check jq
-diu stats --weekly --top 5
-```
-
-## Install
-
-```bash
-# Homebrew
-brew install yowainwright/tap/diu
-
-# Go
-go install github.com/yowainwright/diu/cmd/diu@latest
-```
-
-From source:
-
-```bash
-git clone https://github.com/yowainwright/diu
-cd diu
-mise run build
-```
-
-## Common Examples
-
-Check a package:
-
-```bash
-diu check jq
-```
-
-<!-- Package row format derived from cmd/diu/diu_packages.go -->
-Example output:
-
-```text
-1    homebrew        jq                                  12 uses    2026-06-20
-```
-
-Find packages that have not been used recently:
-
-```bash
-diu packages --unused 6mo
-diu check --unused 90d --format csv
-```
-
-Review recent executions:
-
-```bash
-diu query --last 7d --limit 10
-diu query --tool npm --package eslint --format json
-diu query --tool uv --last 24h
-```
-
-Preview an uninstall command before running it:
-
-```bash
-diu manage --uninstall jq --tool homebrew --dry-run
-# brew uninstall jq
-```
-
-Uninstall after confirmation:
-
-```bash
-diu manage --uninstall jq --tool homebrew
-```
-
-Skip confirmation when scripting:
-
-```bash
-diu manage --uninstall typescript --tool npm --yes
-diu manage --uninstall tsx --tool pnpm --yes
-diu manage --uninstall ruff --tool pip --yes
-```
-
-Remove DIU's wrappers and shell PATH entries:
-
-```bash
-diu uninstall
-```
-
-This preserves DIU's configuration and usage history. Remove the binary separately
-with Homebrew or Go after running the command.
-
-## How It Works
-
-`diu setup` installs lightweight wrappers in `~/.local/bin/diu-wrappers` and adds that directory to existing shell config files when possible. Each wrapper runs the original command and preserves its output and exit code.
+<details>
+<summary>How background tracking works</summary>
 
 <!-- Wrapper execution sequence derived from cmd/diu/diu_setup.go and internal/monitors/monitors_process.go -->
-After the original command finishes, the wrapper records its execution:
+`diu setup` places command wrappers in `~/.local/bin/diu-wrappers` and adds that directory to existing shell config files when possible. Each wrapper runs the original tool and preserves its output and exit code.
 
 ```text
 command -> DIU wrapper -> original tool -> output to your terminal
@@ -144,55 +82,123 @@ command -> DIU wrapper -> original tool -> output to your terminal
                `--> return the original exit code
 ```
 
-The daemon is optional. When available, wrappers send events through a local Unix socket. A failed socket send also falls back to `diu record` in that background task.
-
-<!-- Fallback wait policy derived from cmd/diu/diu_setup.go and internal/storage/storage_json.go -->
-**Daemon-off tracking is best-effort.** The wrapper waits for `diu record` before returning. Recording has a shared 50 ms lock-wait budget; metadata discovery and disk work are separate, so this is not a 50 ms limit on total command time. When locks remain busy, DIU drops the event and marks contention without changing the original command's output or exit code. `diu status` and `diu diagnostics` report that signal.
-
-For parallel commands or large command bursts, start the daemon with `diu daemon start`.
-
-<!-- DIU event and storage flow derived from cmd/diu/diu_setup.go and internal/storage -->
-History lives in a size-bounded NDJSON file; package inventory and cached statistics live in a JSON manifest. Storage applies the configured retention and size limits.
-
-```text
-daemon / diu record ----> executions.ndjson (history)
-          |
-          `------------> executions.json (inventory + statistics)
-diu scan --------------> executions.json
-```
-
-## Commands
-
-| Command | Use it for |
-| --- | --- |
-| `diu setup` | Create config, storage, shell path entries, and wrappers. |
-| `diu uninstall` | Remove wrappers and shell path entries while preserving data. |
-| `diu scan` | Refresh the known package inventory. |
-| `diu check [search]` | Search tracked packages and see usage. |
-| `diu packages` | List tracked packages, optionally filtered by tool or unused duration. |
-| `diu query` | Show recorded executions. |
-| `diu stats` | Summarize usage by time range, tool, and top packages. |
-| `diu status` | Show daemon state, local usage, last location, and observability paths. |
-| `diu diagnostics [--output FILE]` | Print or save a redacted local bug report. |
-| `diu manage` | Search packages and uninstall them interactively or by flag. |
-| `diu daemon start` | Start the optional local recorder/API daemon. |
-| `diu config list` | Print the resolved config as JSON. |
-| `diu cleanup` | Apply retention and storage limits. |
-| `diu backup` | Back up inventory and execution history. |
-
-Useful filters:
+Setup starts the background recorder. These commands pause or resume it:
 
 ```bash
-diu check rip --tool homebrew --limit 5
-diu packages --tool npm
-diu packages --tool pip
-diu packages --unused 30d
-diu query --tool poetry --last 24h --format csv
-diu stats --daily
-diu stats --tool uv --top 20
+diu daemon stop
+diu daemon start
 ```
 
-## Terminal Output
+<!-- Daemon lifecycle derived from cmd/diu/diu_daemon.go -->
+The recorder starts again at your next login, including after a Mac restart. It refreshes tools in a separate process so scans do not block event recording. Refreshes run one at a time and have a two-minute limit. Command wrappers can still record while the daemon is stopped; automatic refresh resumes when it starts again.
+
+<!-- Fallback wait policy derived from cmd/diu/diu_setup.go and internal/storage/storage_json.go -->
+Without the daemon, recording waits for locks for up to 50 ms in total and drops events if locks remain busy. Metadata discovery and disk work take additional time. `diu status` reports detected contention. A failed send to the daemon also falls back to `diu record`.
+
+<!-- DIU event and storage flow derived from cmd/diu/diu_setup.go and internal/storage -->
+Execution history is stored in a size-bounded NDJSON file; inventory and statistics live in a JSON manifest. Both stay local, subject to configured retention and storage limits.
+
+</details>
+
+<details>
+<summary>Reviewing removals or uninstalling DIU</summary>
+
+To review packages for removal, open the interactive manager:
+
+```bash
+diu manage
+```
+
+Or preview one uninstall command before confirming it:
+
+```bash
+diu manage --uninstall jq --tool homebrew --dry-run
+# brew uninstall jq
+```
+
+Remove `--dry-run` to run it after confirmation.
+
+To stop using DIU:
+
+```bash
+diu uninstall
+```
+
+This stops background tracking and removes the login service, wrappers, and shell PATH entries while preserving your configuration and usage history. Remove the DIU binary separately with the method you used to install it.
+
+</details>
+
+<details>
+<summary>History, exports, and the local API</summary>
+
+Use `diu --help` or `diu <command> --help` for the full command reference.
+
+Review individual executions or export a package list:
+
+```bash
+diu query --last 7d --limit 10
+diu check --tool npm --format json --limit 0
+```
+
+The daemon also serves a local HTTP API at `http://127.0.0.1:8081/api/v1`:
+
+```bash
+curl http://127.0.0.1:8081/api/v1/health
+curl http://127.0.0.1:8081/api/v1/stats
+```
+
+The API is unauthenticated. Keep `api.host` bound to `127.0.0.1` for local use.
+
+</details>
+
+<details>
+<summary>Files and configuration</summary>
+
+<!-- Local paths derived from internal/core defaults, internal/storage.ExecutionLogPath, and cmd/diu/diu_daemon.go -->
+| Path | Purpose |
+| --- | --- |
+| `~/.config/diu/config.json` | User config. |
+| `~/.local/share/diu/executions.json` | Package inventory, cached statistics, and execution-log metadata. |
+| `~/.local/share/diu/executions.ndjson` | Size-bounded execution history. |
+| `~/.local/share/diu/diu.log` | Private, size-bounded daemon log. |
+| `~/.local/share/diu/fallback-contention` | Private marker for daemon-off recorder contention. |
+| `~/.local/share/diu/diu.pid` | Daemon PID file. |
+| `~/.local/share/diu/diu.sock` | Daemon Unix socket. |
+| `~/.local/bin/diu-wrappers` | Generated command wrappers. |
+| `~/Library/LaunchAgents/io.github.yowainwright.diu.plist` | Background tracking at login. |
+
+Common config edits:
+
+```bash
+diu config get storage.json_file
+diu config set storage.retention_days 180
+diu config set monitoring.enabled_tools homebrew,npm,pnpm,bun,go,pip,uv,poetry
+diu config list
+```
+
+</details>
+
+<details>
+<summary>Troubleshooting</summary>
+
+If expected usage is missing, open a new terminal window, run a tool normally, and inspect the latest recorded activity:
+
+```bash
+diu status
+```
+
+For a bug report, generate a redacted diagnostic file:
+
+```bash
+diu diagnostics --output diu-diagnostics.json
+```
+
+Diagnostics remain local and are never uploaded by DIU. They include recording and storage health, but exclude command history, package names, environment variables, usernames, hostnames, and absolute managed paths.
+
+</details>
+
+<details>
+<summary>Terminal output and ASCII styles</summary>
 
 <!-- ASCII output derived from cmd/diu/diu_styleguide.go and internal/dx -->
 DIU uses plain ASCII status markers and progress bars. Run `diu --styleguide` to preview the terminal styles. Selected output:
@@ -214,95 +220,31 @@ redirected output, `TERM=dumb`, and CI. `NO_COLOR` always disables color.
 Use `DIU_COLOR=always|never` or `DIU_ACTIVITY=always|never` to override automatic
 color and loader detection.
 
-## Local API
+</details>
 
-The local API is unauthenticated and intended for local development use. Keep `api.host` bound to `127.0.0.1` unless you deliberately want other processes on your network to reach it.
+<details>
+<summary>Other installation methods</summary>
 
-Start the daemon:
-
-```bash
-diu daemon start
-```
-
-Default base URL:
-
-```text
-http://127.0.0.1:8081/api/v1
-```
-
-Examples:
+With Go:
 
 ```bash
-curl http://127.0.0.1:8081/api/v1/health
-curl "http://127.0.0.1:8081/api/v1/executions?tool=homebrew&limit=10"
-curl "http://127.0.0.1:8081/api/v1/packages?tool=pnpm"
-curl http://127.0.0.1:8081/api/v1/stats
+go install github.com/yowainwright/diu/cmd/diu@latest
 ```
 
-Record an event manually:
+From source:
 
 ```bash
-curl -X POST http://127.0.0.1:8081/api/v1/executions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "tool": "uv",
-    "command": "uv tool install ruff",
-    "args": ["tool", "install", "ruff"],
-    "exit_code": 0,
-    "duration_ms": 5432,
-    "user": "jeff"
-  }'
+git clone https://github.com/yowainwright/diu
+cd diu
+mise run build
 ```
 
-## Files
+Then run `diu setup`. For a source build, use `./diu setup` and keep the binary in that location so the login service can find it.
 
-<!-- Local paths derived from internal/core defaults and internal/storage.ExecutionLogPath -->
-| Path | Purpose |
-| --- | --- |
-| `~/.config/diu/config.json` | User config. |
-| `~/.local/share/diu/executions.json` | Package inventory, cached statistics, and execution-log metadata. |
-| `~/.local/share/diu/executions.ndjson` | Size-bounded execution history. |
-| `~/.local/share/diu/diu.log` | Private, size-bounded daemon log. |
-| `~/.local/share/diu/fallback-contention` | Private marker for daemon-off recorder contention. |
-| `~/.local/share/diu/diu.pid` | Daemon PID file. |
-| `~/.local/share/diu/diu.sock` | Daemon Unix socket. |
-| `~/.local/bin/diu-wrappers` | Generated command wrappers. |
+</details>
 
-Common config edits:
-
-```bash
-diu config get storage.json_file
-diu config set storage.retention_days 180
-diu config set monitoring.enabled_tools homebrew,npm,pnpm,bun,go,pip,uv,poetry
-diu config list
-```
-
-## Troubleshooting
-
-```bash
-# The wrapper path is not active in this shell
-exec "$SHELL" -l
-
-# Rebuild wrappers after installing new global tools
-diu setup
-diu scan
-
-# Check daemon state
-diu daemon status
-
-# Show current usage, last activity/location, and local paths
-diu status
-
-# Generate a redacted report to attach to a bug
-diu diagnostics --output diu-diagnostics.json
-
-# Stream the same report as JSON
-diu diagnostics
-```
-
-Diagnostics remain local and are never uploaded by DIU. Reports include fallback contention signals. They exclude command history, package names, environment variables, usernames, hostnames, and absolute managed paths.
-
-## Development
+<details>
+<summary>Development and releases</summary>
 
 ```bash
 mise install
@@ -330,6 +272,8 @@ after confirmation. The tag workflow publishes the GitHub Release, GoReleaser
 artifacts, and Homebrew formula.
 
 `HOMEBREW_TAP_GITHUB_TOKEN` is required by the tag workflow.
+
+</details>
 
 ## Requirements
 

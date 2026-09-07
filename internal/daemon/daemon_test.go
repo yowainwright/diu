@@ -2044,3 +2044,91 @@ func TestProcessEventsDrainsQueuedEventsOnCancel(t *testing.T) {
 	assertProcessEventsDone(t, done, "processEvents did not exit after cancellation")
 	assertMockExecutionCount(t, mockStore, 2)
 }
+
+func TestInventoryRefreshRetriesAndStops(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Monitoring.Filesystem.ScanInterval = time.Millisecond
+	d, _ := newEventDaemon(t, cfg, 0)
+	calls := make(chan context.Context, 1)
+	d.SetInventoryRefresh(func(ctx context.Context) error {
+		select {
+		case calls <- ctx:
+		case <-ctx.Done():
+		}
+		return errors.New("temporary failure")
+	})
+	d.startInventoryRefresh()
+	defer d.cancel()
+	awaitRefreshCall(t, calls)
+	ctx := awaitRefreshCall(t, calls)
+	d.cancel()
+	assertRefreshStopped(t, d)
+	if ctx.Err() == nil {
+		t.Fatal("refresh context was not canceled")
+	}
+}
+
+func TestInventoryRefreshDoesNotOverlap(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Monitoring.Filesystem.ScanInterval = time.Millisecond
+	d, _ := newEventDaemon(t, cfg, 0)
+	calls := make(chan context.Context, 2)
+	d.SetInventoryRefresh(func(ctx context.Context) error {
+		calls <- ctx
+		<-ctx.Done()
+		return ctx.Err()
+	})
+	d.startInventoryRefresh()
+	defer d.cancel()
+	awaitRefreshCall(t, calls)
+	assertNoRefreshCall(t, calls)
+	d.cancel()
+	assertRefreshStopped(t, d)
+}
+
+func awaitRefreshCall(t *testing.T, calls <-chan context.Context) context.Context {
+	t.Helper()
+	select {
+	case ctx := <-calls:
+		return ctx
+	case <-time.After(time.Second):
+		t.Fatal("inventory refresh did not run")
+		return nil
+	}
+}
+
+func assertNoRefreshCall(t *testing.T, calls <-chan context.Context) {
+	t.Helper()
+	select {
+	case <-calls:
+		t.Fatal("inventory refreshes overlapped")
+	case <-time.After(20 * time.Millisecond):
+	}
+}
+
+func assertRefreshStopped(t *testing.T, d *Daemon) {
+	t.Helper()
+	done := make(chan struct{})
+	go func() {
+		d.wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("inventory refresh did not stop")
+	}
+}
+
+func TestInventoryRefreshCanBeDisabled(t *testing.T) {
+	cfg := testConfig(t)
+	d, _ := newEventDaemon(t, cfg, 0)
+	defer d.cancel()
+	calls := make(chan context.Context, 1)
+	d.SetInventoryRefresh(func(ctx context.Context) error {
+		calls <- ctx
+		return nil
+	})
+	d.startInventoryRefresh()
+	assertNoRefreshCall(t, calls)
+}

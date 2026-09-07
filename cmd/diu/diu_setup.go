@@ -73,6 +73,8 @@ const (
 	fallbackRecordLockWait     = fallbackRecordLockAttempts * fallbackRecordRetryDelay
 )
 
+var setupBackgroundTracking = installLaunchAgent
+
 const executableWrapperScriptTemplate = `#!/bin/bash
 %s
 DIU_SOCKET="%s"
@@ -203,7 +205,10 @@ func runSetupProject(activity *dx.Activity) error {
 	if err := installExecutableWrappers(config); err != nil {
 		return err
 	}
-	return nil
+	if _, err := scanInventory(config, activity); err != nil {
+		return err
+	}
+	return setupBackgroundTracking(config)
 }
 
 func loadSetupConfig() (*core.Config, error) {
@@ -236,6 +241,9 @@ func uninstallProject(cmd *command, args []string) error {
 	defer activity.Stop()
 	paths, err := loadUninstallPaths()
 	if err != nil {
+		return err
+	}
+	if err := uninstallBackgroundTracking(); err != nil {
 		return err
 	}
 	if err := removeGeneratedWrappers(paths.wrapperDir); err != nil {
@@ -412,6 +420,69 @@ func removeGeneratedWrappers(wrapperDir string) error {
 	return nil
 }
 
+func removeMissingToolWrappers(wrapperDir string) error {
+	entries, err := os.ReadDir(wrapperDir)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if err := removeMissingToolWrapper(wrapperDir, entry); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func removeMissingToolWrapper(dir string, entry os.DirEntry) error {
+	if !entry.Type().IsRegular() {
+		return nil
+	}
+	path := filepath.Join(dir, entry.Name())
+	data, err := safefs.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	original := generatedWrapperOriginal(string(data))
+	if original == "" {
+		return nil
+	}
+	if _, err := os.Stat(original); os.IsNotExist(err) {
+		return os.Remove(path)
+	}
+	return nil
+}
+
+func generatedWrapperOriginal(content string) string {
+	if !isGeneratedWrapper(content) {
+		return ""
+	}
+	for _, line := range strings.Split(content, "\n") {
+		if strings.HasPrefix(line, `ORIGINAL="`) {
+			return unquoteWrapperPath(strings.TrimPrefix(line, "ORIGINAL="))
+		}
+		if strings.HasPrefix(line, `ORIGINAL_BINARY="`) {
+			return unquoteWrapperPath(strings.TrimPrefix(line, "ORIGINAL_BINARY="))
+		}
+	}
+	return ""
+}
+
+func unquoteWrapperPath(value string) string {
+	if !strings.HasSuffix(value, `"`) {
+		return ""
+	}
+	value = strings.TrimSuffix(strings.TrimPrefix(value, `"`), `"`)
+	replacer := strings.NewReplacer(`\\`, `\`, `\"`, `"`, `\$`, `$`, "\\`", "`")
+	path := replacer.Replace(value)
+	if !filepath.IsAbs(path) {
+		return ""
+	}
+	return path
+}
+
 func removeGeneratedWrapper(wrapperDir string, entry os.DirEntry) error {
 	if !entry.Type().IsRegular() {
 		return nil
@@ -569,17 +640,45 @@ func scanPackages(cmd *command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
+	if flagBool(cmd, "refresh-wrappers") {
+		if err := refreshCommandWrappers(config, activity); err != nil {
+			return err
+		}
+	}
+	total, err := scanInventory(config, activity)
+	if err != nil {
+		return err
+	}
+	activity.Success(fmt.Sprintf("%d packages scanned", total))
+	return nil
+}
 
+func scanInventory(config *core.Config, activity *dx.Activity) (int, error) {
 	store, err := storage.NewJSONStorage(config)
 	if err != nil {
-		return fmt.Errorf("failed to open storage: %w", err)
+		return 0, fmt.Errorf("failed to open storage: %w", err)
 	}
 	defer closeStoreDuringActivity(store, activity)
 	scanner, err := newPackageScanner(config, store, activity)
 	if err != nil {
+		return 0, err
+	}
+	err = scanner.run()
+	return scanner.total, err
+}
+
+func refreshCommandWrappers(config *core.Config, activity *dx.Activity) error {
+	if !config.Monitoring.Process.ShouldAutoInstallWrappers {
+		return nil
+	}
+	warn := func(message string) { activity.Notice(dx.Warning, message) }
+	if err := installWrappers(config, warn); err != nil {
 		return err
 	}
-	return scanner.run()
+	if err := installExecutableWrappers(config); err != nil {
+		return err
+	}
+	return removeMissingToolWrappers(config.Monitoring.Process.WrapperDir)
 }
 
 func newPackageScanner(config *core.Config, store storage.Storage, activity *dx.Activity) (*packageScanner, error) {
@@ -607,7 +706,6 @@ func (s *packageScanner) run() error {
 	if err := commitPackageScan(s.store, s.packages, s.scan); err != nil {
 		return err
 	}
-	s.activity.Success(fmt.Sprintf("%d packages scanned", s.total))
 	return nil
 }
 
