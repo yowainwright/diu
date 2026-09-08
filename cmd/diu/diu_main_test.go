@@ -1613,6 +1613,7 @@ func withReadOnlyStdout(t *testing.T, fn func()) {
 
 func setupTestHomeConfig(t *testing.T) *core.Config {
 	t.Helper()
+	stubBackgroundSetup(t)
 
 	homeDir := t.TempDir()
 	t.Setenv("HOME", homeDir)
@@ -2366,5 +2367,70 @@ func TestRemoveUninstalledPackageState(t *testing.T) {
 	pkg := &core.PackageInfo{Name: "ripgrep", Tool: core.ToolHomebrew}
 	if err := removeUninstalledPackageState(pkg); err != nil {
 		t.Fatalf("removeUninstalledPackageState failed: %v", err)
+	}
+}
+
+func stubBackgroundSetup(t *testing.T) {
+	t.Helper()
+	previous := setupBackgroundTracking
+	setupBackgroundTracking = func(*core.Config) error { return nil }
+	t.Cleanup(func() { setupBackgroundTracking = previous })
+}
+
+func TestSetupScansInventoryBeforeEnablingBackgroundTracking(t *testing.T) {
+	config := setupTestHomeConfig(t)
+	binDir := configureExecutableWrapperScan(t, config)
+	setupBackgroundTracking = func(*core.Config) error {
+		assertScannedWrapperPackage(t, config, binDir)
+		return nil
+	}
+	if err := setupProject(&command{}, nil); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRefreshWrappersFindsNewAndRemovedTools(t *testing.T) {
+	config := setupTestHomeConfig(t)
+	binDir := configureExecutableWrapperScan(t, config)
+	config.Monitoring.Process.ShouldAutoInstallWrappers = true
+	requireConfigDirectories(t, config)
+	runWrapperRefreshForTest(t, config)
+	assertFileExists(t, filepath.Join(config.Monitoring.Process.WrapperDir, "jq"))
+	writeExecutableForTest(t, filepath.Join(binDir, "rg"), "#!/bin/sh\nexit 0\n")
+	if err := os.Remove(filepath.Join(binDir, "jq")); err != nil {
+		t.Fatal(err)
+	}
+	runWrapperRefreshForTest(t, config)
+	assertFileMissing(t, filepath.Join(config.Monitoring.Process.WrapperDir, "jq"))
+	assertFileExists(t, filepath.Join(config.Monitoring.Process.WrapperDir, "rg"))
+}
+
+func runWrapperRefreshForTest(t *testing.T, config *core.Config) {
+	t.Helper()
+	activity := cliOutput().StartActivity("refresh test")
+	defer activity.Stop()
+	if err := refreshCommandWrappers(config, activity); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestMissingToolCleanupPreservesCustomWrappers(t *testing.T) {
+	config := setupTestHomeConfig(t)
+	requireConfigDirectories(t, config)
+	path := filepath.Join(config.Monitoring.Process.WrapperDir, "custom")
+	writeExecutableForTest(t, path, "#!/bin/sh\nexit 0\n")
+	if err := removeMissingToolWrappers(config.Monitoring.Process.WrapperDir); err != nil {
+		t.Fatal(err)
+	}
+	assertFileExists(t, path)
+}
+
+func TestWrapperOriginalRoundTripsShellCharacters(t *testing.T) {
+	config := setupTestHomeConfig(t)
+	original := filepath.Join(t.TempDir(), "a $path `with` \"quotes\" \\ slashes")
+	target := executableWrapper{Name: "test", OriginalPath: original, Tool: "npm", Package: "test"}
+	content := executableWrapperScript(config, target)
+	if got := generatedWrapperOriginal(content); got != original {
+		t.Fatalf("wrapper original = %q, want %q", got, original)
 	}
 }

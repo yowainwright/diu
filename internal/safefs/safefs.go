@@ -1,6 +1,8 @@
 package safefs
 
 import (
+	"bytes"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -9,6 +11,62 @@ import (
 	"path/filepath"
 	"strings"
 )
+
+func WriteFileAtomic(path string, data []byte, mode os.FileMode) (err error) {
+	root, name, err := openRootFor(path)
+	if err != nil {
+		return err
+	}
+	defer func() { err = CloseWithError(err, root, "failed to close root") }()
+	unchanged, err := unchangedRegularFile(root, name, data, mode)
+	if err != nil {
+		return err
+	}
+	if unchanged {
+		return nil
+	}
+	return replaceRegularFile(root, name, data, mode)
+}
+
+func unchangedRegularFile(root *os.Root, name string, data []byte, mode os.FileMode) (bool, error) {
+	info, err := root.Lstat(name)
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if !info.Mode().IsRegular() {
+		return false, fmt.Errorf("refusing to replace non-regular file: %s", name)
+	}
+	current, err := root.ReadFile(name)
+	unchanged := bytes.Equal(current, data) && info.Mode().Perm() == mode.Perm()
+	return unchanged, err
+}
+
+func replaceRegularFile(root *os.Root, name string, data []byte, mode os.FileMode) error {
+	temporary := ".diu-" + rand.Text()
+	defer func() { _ = root.Remove(temporary) }()
+	if err := writeReplacement(root, temporary, data, mode); err != nil {
+		return err
+	}
+	return root.Rename(temporary, name)
+}
+
+func writeReplacement(root *os.Root, name string, data []byte, mode os.FileMode) (err error) {
+	file, err := root.OpenFile(name, os.O_CREATE|os.O_EXCL|os.O_WRONLY, mode)
+	if err != nil {
+		return err
+	}
+	defer func() { err = CloseWithError(err, file, "failed to close replacement") }()
+	if _, err := file.Write(data); err != nil {
+		return err
+	}
+	if err := file.Chmod(mode); err != nil {
+		return err
+	}
+	return file.Sync()
+}
 
 func CloseWithError(current error, closer io.Closer, context string) error {
 	closeErr := closer.Close()

@@ -82,6 +82,11 @@ type Daemon struct {
 	pidFile             *os.File
 	hasPIDFileOwnership bool
 	hasSocketOwnership  bool
+	refreshInventory    func(context.Context) error
+}
+
+func (d *Daemon) SetInventoryRefresh(refresh func(context.Context) error) {
+	d.refreshInventory = refresh
 }
 
 func NewDaemon(config *core.Config) (*Daemon, error) {
@@ -232,6 +237,37 @@ func (d *Daemon) startBackgroundWorkers() {
 	go d.processEvents()
 	d.wg.Add(1)
 	go d.runPeriodicCleanup()
+	d.startInventoryRefresh()
+}
+
+func (d *Daemon) startInventoryRefresh() {
+	if d.refreshInventory == nil {
+		return
+	}
+	monitoring := d.config.Monitoring
+	interval := monitoring.Filesystem.ScanInterval
+	if interval <= 0 {
+		return
+	}
+	d.wg.Add(1)
+	go d.runInventoryRefresh(interval)
+}
+
+func (d *Daemon) runInventoryRefresh(interval time.Duration) {
+	defer d.wg.Done()
+	timer := time.NewTimer(0)
+	defer timer.Stop()
+	for {
+		select {
+		case <-d.ctx.Done():
+			return
+		case <-timer.C:
+			if err := d.refreshInventory(d.ctx); err != nil {
+				d.logger.Printf("Failed to refresh inventory: %v", err)
+			}
+			timer.Reset(interval)
+		}
+	}
 }
 
 func (d *Daemon) startConfiguredServices() error {

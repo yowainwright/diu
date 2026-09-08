@@ -2,36 +2,24 @@
 set -euo pipefail
 
 die() {
-  echo "error: $*" >&2
-  exit 1
+	echo "error: $*" >&2
+	exit 1
 }
 
-if [[ $# -ne 3 ]]; then
-  die "usage: $0 <version> <source-url> <sha256>"
-fi
+validate_formula_args() {
+	version_pattern='^[0-9]+[.][0-9]+[.][0-9]+([-+][0-9A-Za-z.-]+)?$'
+	sha_pattern='^[0-9a-f]{64}$'
+	[[ "$version" =~ $version_pattern ]] || die "invalid version: $1"
+	case "$source_url" in
+	https://* | file://*) ;;
+	*) die "invalid source URL: $source_url" ;;
+	esac
+	[[ "$source_url" != *\"* ]] || die "source URL must not contain quotes"
+	[[ "$sha256" =~ $sha_pattern ]] || die "invalid sha256: $sha256"
+}
 
-version="${1#v}"
-source_url="$2"
-sha256="$3"
-
-version_pattern='^[0-9]+[.][0-9]+[.][0-9]+([-+][0-9A-Za-z.-]+)?$'
-sha_pattern='^[0-9a-f]{64}$'
-valid_url=false
-
-if [[ "$source_url" == https://* ]]; then
-  valid_url=true
-fi
-
-if [[ "$source_url" == file://* ]]; then
-  valid_url=true
-fi
-
-[[ "$version" =~ $version_pattern ]] || die "invalid version: $1"
-[[ "$valid_url" == true ]] || die "invalid source URL: $source_url"
-[[ "$source_url" != *\"* ]] || die "source URL must not contain quotes"
-[[ "$sha256" =~ $sha_pattern ]] || die "invalid sha256: $sha256"
-
-cat <<FORMULA
+write_formula() {
+	cat <<FORMULA
 # frozen_string_literal: true
 
 class Diu < Formula
@@ -79,3 +67,16 @@ class Diu < Formula
   end
 end
 FORMULA
+} # noqa: LEG038 - keep the formula template together.
+
+main() {
+	[[ $# -eq 3 ]] || die "usage: $0 <version> <source-url> <sha256>"
+	version="${1-}"
+	version="${version#v}"
+	source_url="${2-}"
+	sha256="${3-}"
+	validate_formula_args "$@"
+	write_formula
+}
+
+main "$@"

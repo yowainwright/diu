@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -69,7 +70,10 @@ const (
 	fallbackRecordLockSuffix   = ".fallback.lock"
 	fallbackRecordLockAttempts = 5
 	fallbackRecordRetryDelay   = 10 * time.Millisecond
+	fallbackRecordLockWait     = fallbackRecordLockAttempts * fallbackRecordRetryDelay
 )
+
+var setupBackgroundTracking = installLaunchAgent
 
 const executableWrapperScriptTemplate = `#!/bin/bash
 %s
@@ -201,7 +205,10 @@ func runSetupProject(activity *dx.Activity) error {
 	if err := installExecutableWrappers(config); err != nil {
 		return err
 	}
-	return nil
+	if _, err := scanInventory(config, activity); err != nil {
+		return err
+	}
+	return setupBackgroundTracking(config)
 }
 
 func loadSetupConfig() (*core.Config, error) {
@@ -234,6 +241,9 @@ func uninstallProject(cmd *command, args []string) error {
 	defer activity.Stop()
 	paths, err := loadUninstallPaths()
 	if err != nil {
+		return err
+	}
+	if err := uninstallBackgroundTracking(); err != nil {
 		return err
 	}
 	if err := removeGeneratedWrappers(paths.wrapperDir); err != nil {
@@ -410,6 +420,69 @@ func removeGeneratedWrappers(wrapperDir string) error {
 	return nil
 }
 
+func removeMissingToolWrappers(wrapperDir string) error {
+	entries, err := os.ReadDir(wrapperDir)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if err := removeMissingToolWrapper(wrapperDir, entry); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func removeMissingToolWrapper(dir string, entry os.DirEntry) error {
+	if !entry.Type().IsRegular() {
+		return nil
+	}
+	path := filepath.Join(dir, entry.Name())
+	data, err := safefs.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	original := generatedWrapperOriginal(string(data))
+	if original == "" {
+		return nil
+	}
+	if _, err := os.Stat(original); os.IsNotExist(err) {
+		return os.Remove(path)
+	}
+	return nil
+}
+
+func generatedWrapperOriginal(content string) string {
+	if !isGeneratedWrapper(content) {
+		return ""
+	}
+	for _, line := range strings.Split(content, "\n") {
+		if strings.HasPrefix(line, `ORIGINAL="`) {
+			return unquoteWrapperPath(strings.TrimPrefix(line, "ORIGINAL="))
+		}
+		if strings.HasPrefix(line, `ORIGINAL_BINARY="`) {
+			return unquoteWrapperPath(strings.TrimPrefix(line, "ORIGINAL_BINARY="))
+		}
+	}
+	return ""
+}
+
+func unquoteWrapperPath(value string) string {
+	if !strings.HasSuffix(value, `"`) {
+		return ""
+	}
+	value = strings.TrimSuffix(strings.TrimPrefix(value, `"`), `"`)
+	replacer := strings.NewReplacer(`\\`, `\`, `\"`, `"`, `\$`, `$`, "\\`", "`")
+	path := replacer.Replace(value)
+	if !filepath.IsAbs(path) {
+		return ""
+	}
+	return path
+}
+
 func removeGeneratedWrapper(wrapperDir string, entry os.DirEntry) error {
 	if !entry.Type().IsRegular() {
 		return nil
@@ -567,17 +640,45 @@ func scanPackages(cmd *command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
+	if flagBool(cmd, "refresh-wrappers") {
+		if err := refreshCommandWrappers(config, activity); err != nil {
+			return err
+		}
+	}
+	total, err := scanInventory(config, activity)
+	if err != nil {
+		return err
+	}
+	activity.Success(fmt.Sprintf("%d packages scanned", total))
+	return nil
+}
 
+func scanInventory(config *core.Config, activity *dx.Activity) (int, error) {
 	store, err := storage.NewJSONStorage(config)
 	if err != nil {
-		return fmt.Errorf("failed to open storage: %w", err)
+		return 0, fmt.Errorf("failed to open storage: %w", err)
 	}
 	defer closeStoreDuringActivity(store, activity)
 	scanner, err := newPackageScanner(config, store, activity)
 	if err != nil {
+		return 0, err
+	}
+	err = scanner.run()
+	return scanner.total, err
+}
+
+func refreshCommandWrappers(config *core.Config, activity *dx.Activity) error {
+	if !config.Monitoring.Process.ShouldAutoInstallWrappers {
+		return nil
+	}
+	warn := func(message string) { activity.Notice(dx.Warning, message) }
+	if err := installWrappers(config, warn); err != nil {
 		return err
 	}
-	return scanner.run()
+	if err := installExecutableWrappers(config); err != nil {
+		return err
+	}
+	return removeMissingToolWrappers(config.Monitoring.Process.WrapperDir)
 }
 
 func newPackageScanner(config *core.Config, store storage.Storage, activity *dx.Activity) (*packageScanner, error) {
@@ -605,7 +706,6 @@ func (s *packageScanner) run() error {
 	if err := commitPackageScan(s.store, s.packages, s.scan); err != nil {
 		return err
 	}
-	s.activity.Success(fmt.Sprintf("%d packages scanned", s.total))
 	return nil
 }
 
@@ -999,12 +1099,12 @@ func recordExecution(cmd *command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
-	return withFallbackRecordLock(config, func() error {
-		return storeFallbackExecution(config)
+	return withFallbackRecordLock(config, func(wait time.Duration) error {
+		return storeFallbackExecution(config, wait)
 	})
 }
 
-func storeFallbackExecution(config *core.Config) error {
+func storeFallbackExecution(config *core.Config, wait time.Duration) error {
 	var record core.ExecutionRecord
 	if err := json.NewDecoder(cliOutput().Stdin()).Decode(&record); err != nil {
 		return fmt.Errorf("failed to decode execution record: %w", err)
@@ -1012,7 +1112,7 @@ func storeFallbackExecution(config *core.Config) error {
 
 	enrichExecutionRecord(config, &record)
 
-	store, err := storage.NewJSONStorage(config)
+	store, err := storage.NewJSONStorageWithLockWait(config, wait)
 	if err != nil {
 		return fmt.Errorf("failed to open storage: %w", err)
 	}
@@ -1025,35 +1125,45 @@ func storeFallbackExecution(config *core.Config) error {
 	return nil
 }
 
-func withFallbackRecordLock(config *core.Config, record func() error) (err error) {
-	lock, acquired, err := acquireFallbackRecordLock(config.Storage.JSONFile)
+func withFallbackRecordLock(config *core.Config, record func(time.Duration) error) (err error) {
+	lock, wait, err := acquireFallbackRecordLock(config.Storage.JSONFile)
 	if err != nil {
 		return err
 	}
-	if !acquired {
+	if lock == nil {
 		_ = observability.MarkFallbackContention(config.Daemon.DataDir)
 		return fmt.Errorf("fallback recorder remained busy after %d attempts", fallbackRecordLockAttempts)
 	}
 	defer func() {
+		if errors.Is(err, context.DeadlineExceeded) {
+			_ = observability.MarkFallbackContention(config.Daemon.DataDir)
+		}
 		err = errors.Join(err, releaseFallbackRecordLock(lock))
 	}()
-	return record()
+	return record(wait)
 }
 
-func acquireFallbackRecordLock(storagePath string) (*os.File, bool, error) {
+func acquireFallbackRecordLock(storagePath string) (*os.File, time.Duration, error) {
+	wait := fallbackRecordLockWait
 	for attempt := 0; attempt < fallbackRecordLockAttempts; attempt++ {
 		lock, acquired, err := tryAcquireFallbackRecordLock(storagePath)
-		if err != nil {
-			return lock, acquired, err
+		finished := err != nil || acquired
+		if finished {
+			return lock, wait, err
 		}
-		if acquired {
-			return lock, acquired, err
+		canRetry := attempt+1 < fallbackRecordLockAttempts && wait > 0
+		if !canRetry {
+			return nil, 0, nil
 		}
-		if attempt+1 < fallbackRecordLockAttempts {
-			time.Sleep(fallbackRecordRetryDelay)
-		}
+		wait = waitForFallbackRecordRetry(wait)
 	}
-	return nil, false, nil
+	return nil, 0, nil
+}
+
+func waitForFallbackRecordRetry(wait time.Duration) time.Duration {
+	started := time.Now()
+	time.Sleep(min(fallbackRecordRetryDelay, wait))
+	return max(0, wait-time.Since(started))
 }
 
 func tryAcquireFallbackRecordLock(storagePath string) (*os.File, bool, error) {

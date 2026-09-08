@@ -298,17 +298,20 @@ func newStatusCommand() *command {
 func newSetupCommand() *command {
 	return &command{
 		Use:   "setup",
-		Short: "Install wrappers and initialize local storage",
+		Short: "Enable background tracking and automatic inventory refresh",
 		RunE:  setupProject,
 	}
 }
 
 func newScanCommand() *command {
-	return &command{
+	var shouldRefreshWrappers bool
+	cmd := &command{
 		Use:   "scan",
-		Short: "Scan installed packages into inventory",
+		Short: "Refresh the installed package inventory",
 		RunE:  scanPackages,
 	}
+	cmd.Flags().BoolVar(&shouldRefreshWrappers, "refresh-wrappers", defaultBoolFlagValue, "Refresh command wrappers too")
+	return cmd
 }
 
 func newRecordCommand() *command {
