@@ -3,7 +3,9 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -171,5 +173,77 @@ func assertFallbackCommandResult(t *testing.T, err error, stdout, stderr string)
 	hasOriginalOutput := stdout == "original output\n" && stderr == "original error\n"
 	if !hasOriginalOutput {
 		t.Fatalf("wrapper changed output: stdout=%q, stderr=%q", stdout, stderr)
+	}
+}
+
+func TestWrappersUseSystemNC(t *testing.T) {
+	socketDir := t.TempDir()
+	for _, template := range []string{"executable", "process"} {
+		t.Run(template, func(t *testing.T) {
+			config := setupTestHomeConfig(t)
+			config.Daemon.SocketPath = filepath.Join(socketDir, template)
+			listener := listenForWrapperEvent(t, config.Daemon.SocketPath)
+			marker := installTrackedNCProbe(t)
+			original := writeFallbackOriginal(t)
+			wrapper := installFallbackTestWrapper(t, config, original, template)
+			runContendedWrapper(t, wrapper)
+			record := readWrapperSocketRecord(t, listener)
+			assertWrapperUsedSystemNC(t, marker, record)
+		})
+	}
+}
+
+func listenForWrapperEvent(t *testing.T, path string) *net.UnixListener {
+	t.Helper()
+	if _, err := os.Stat("/usr/bin/nc"); err != nil {
+		t.Skipf("system nc unavailable: %v", err)
+	}
+	address := &net.UnixAddr{Name: path, Net: "unix"}
+	listener, err := net.ListenUnix("unix", address)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	if err := listener.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	return listener
+}
+
+func installTrackedNCProbe(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "nc-calls")
+	script := "#!/bin/sh\nprintf 'called\\n' >> \"$DIU_TEST_NC_CALLS\"\nexec /usr/bin/nc \"$@\"\n"
+	writeExecutableForTest(t, filepath.Join(dir, "nc"), script)
+	t.Setenv("DIU_TEST_NC_CALLS", marker)
+	t.Setenv("PATH", dir+":/usr/bin:/bin")
+	return marker
+}
+
+func readWrapperSocketRecord(t *testing.T, listener *net.UnixListener) core.ExecutionRecord {
+	t.Helper()
+	conn, err := listener.AcceptUnix()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close() }()
+	if err := conn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	var record core.ExecutionRecord
+	if err := json.NewDecoder(conn).Decode(&record); err != nil {
+		t.Fatal(err)
+	}
+	return record
+}
+
+func assertWrapperUsedSystemNC(t *testing.T, marker string, record core.ExecutionRecord) {
+	t.Helper()
+	if record.ExitCode != 7 {
+		t.Fatalf("recorded exit code = %d, want 7", record.ExitCode)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("event delivery invoked nc from PATH: %v", err)
 	}
 }

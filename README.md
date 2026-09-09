@@ -6,11 +6,7 @@
 
 > See which global development tools you actually use.
 
-Set up DIU, use your tools normally, and come back when you want to know what you use and what you might no longer need. DIU records supported command usage locally on your Mac.
-
-```text
-set up DIU -> work as usual -> check your usage
-```
+DIU records supported command usage locally on your Mac. Set it up, work as usual, and check which tools you use and which you might no longer need.
 
 ## Get Started
 
@@ -21,10 +17,10 @@ brew install yowainwright/tap/diu
 diu setup
 ```
 
-Open a new terminal window to activate tracking. Then carry on with your usual work. There is no daily command to run or usage to log by hand.
+Open a new terminal window to activate tracking. DIU records usage as you work.
 
 <!-- Setup and inventory behavior derived from cmd/diu/diu_setup.go and cmd/diu/diu_daemon.go -->
-`setup` discovers your installed tools, starts background tracking, and registers it to start when you log in to your Mac. Usage history begins when tracking is active, so give it time to reflect your habits.
+`setup` discovers installed tools and starts background tracking, including at future logins. History begins when tracking starts; give it time to reflect your habits.
 
 ## Get Insights
 
@@ -36,7 +32,7 @@ Open a new terminal window to activate tracking. Then carry on with your usual w
 | Which tools have no recorded use in the last 90 days? | `diu packages --unused 90d` |
 | What do I use most? | `diu stats` |
 
-`diu check` opens a searchable package browser in your terminal. Use `/` to search and `q` to quit. Add `--tool npm` or `--tool homebrew` to narrow a check to one package manager.
+`diu check` opens a package browser in your terminal. Use `/` to search and `q` to quit. Add `--tool npm` or `--tool homebrew` to list one manager's packages.
 
 <!-- Package row format derived from cmd/diu/diu_packages.go -->
 For example, `diu check jq` might show:
@@ -46,12 +42,12 @@ For example, `diu check jq` might show:
 ```
 
 <!-- Unused filtering derived from cmd/diu/diu_packages.go and cmd/diu/diu_helpers.go -->
-“Unused” means DIU has no recorded use in that period, including tools with no history yet. It cannot recover usage from before setup or see uses that bypass its command wrappers, such as a library loaded by another program. Use the history to guide your decisions; DIU does not remove packages automatically.
+“Unused” means no recorded use in that period, including tools with no history. DIU cannot recover earlier usage or see uses that bypass its wrappers, such as a library loaded by another program. Review this history before removing a package. DIU never removes packages automatically.
 
 ## When Your Tools Change
 
 <!-- Automatic refresh derived from internal/daemon/daemon.go, internal/core/core_config.go, and cmd/diu/diu_setup.go -->
-DIU refreshes its inventory and command wrappers in the background as you install, upgrade, or remove tools. By default, it checks again 30 seconds after each refresh finishes. You do not need to rerun setup or scan during normal use.
+DIU refreshes its inventory and wrappers in the background to find installed, upgraded, or removed tools. By default, each refresh starts 30 seconds after the last one finishes.
 
 Rerun `diu setup` if you move the DIU binary or change where your shell finds package managers.
 
@@ -82,7 +78,7 @@ command -> DIU wrapper -> original tool -> output to your terminal
                `--> return the original exit code
 ```
 
-Setup starts the background recorder. These commands pause or resume it:
+Stop or start the background recorder:
 
 ```bash
 diu daemon stop
@@ -90,13 +86,13 @@ diu daemon start
 ```
 
 <!-- Daemon lifecycle derived from cmd/diu/diu_daemon.go -->
-The recorder starts again at your next login, including after a Mac restart. It refreshes tools in a separate process so scans do not block event recording. Refreshes run one at a time and have a two-minute limit. Command wrappers can still record while the daemon is stopped; automatic refresh resumes when it starts again.
+The recorder starts again at your next login. Inventory scans run in a separate process, one at a time, with a two-minute limit. Wrappers still record while the daemon is stopped, but automatic refresh pauses.
 
 <!-- Fallback wait policy derived from cmd/diu/diu_setup.go and internal/storage/storage_json.go -->
-Without the daemon, recording waits for locks for up to 50 ms in total and drops events if locks remain busy. Metadata discovery and disk work take additional time. `diu status` reports detected contention. A failed send to the daemon also falls back to `diu record`.
+Without the daemon, `diu record` waits up to 50 ms in total for locks, then drops the event if they remain busy. Metadata discovery and disk work take additional time. `diu status` reports lock contention. Failed sends to the daemon also fall back to `diu record`.
 
 <!-- DIU event and storage flow derived from cmd/diu/diu_setup.go and internal/storage -->
-Execution history is stored in a size-bounded NDJSON file; inventory and statistics live in a JSON manifest. Both stay local, subject to configured retention and storage limits.
+Execution history stays in a local NDJSON file with configurable size and retention limits. A separate JSON file holds inventory and statistics.
 
 </details>
 
@@ -109,7 +105,7 @@ To review packages for removal, open the interactive manager:
 diu manage
 ```
 
-Or preview one uninstall command before confirming it:
+Preview an uninstall command:
 
 ```bash
 diu manage --uninstall jq --tool homebrew --dry-run
@@ -124,7 +120,7 @@ To stop using DIU:
 diu uninstall
 ```
 
-This stops background tracking and removes the login service, wrappers, and shell PATH entries while preserving your configuration and usage history. Remove the DIU binary separately with the method you used to install it.
+This stops the recorder and removes the login service, wrappers, and shell PATH entries. It keeps your configuration and history. Remove the binary with the method you used to install it.
 
 </details>
 
@@ -187,13 +183,14 @@ If expected usage is missing, open a new terminal window, run a tool normally, a
 diu status
 ```
 
-For a bug report, generate a redacted diagnostic file:
+For a bug report, create a diagnostic file:
 
 ```bash
 diu diagnostics --output diu-diagnostics.json
 ```
 
-Diagnostics remain local and are never uploaded by DIU. They include recording and storage health, but exclude command history, package names, environment variables, usernames, hostnames, and absolute managed paths.
+<!-- Diagnostic fields and redaction derived from cmd/diu/diu_diagnostics.go and internal/observability/observability_local.go -->
+Diagnostics include recording and storage health plus recent daemon logs. DIU redacts known user, host, and managed-path values and never uploads the file. Review it before sharing; log messages may contain other details.
 
 </details>
 
@@ -201,7 +198,7 @@ Diagnostics remain local and are never uploaded by DIU. They include recording a
 <summary>Terminal output and ASCII styles</summary>
 
 <!-- ASCII output derived from cmd/diu/diu_styleguide.go and internal/dx -->
-DIU uses plain ASCII status markers and progress bars. Run `diu --styleguide` to preview the terminal styles. Selected output:
+Run `diu --styleguide` to preview DIU's ASCII status markers and progress bars:
 
 ```text
 [ok] setup complete
@@ -213,12 +210,12 @@ DIU uses plain ASCII status markers and progress bars. Run `diu --styleguide` to
 
 The activity indicator cycles through `-`, `\`, `|`, and `/`.
 
-Results and structured data are written to stdout. Prompts, progress, warnings,
-and errors are written to stderr. Color and activity stop automatically for
+Results go to stdout. Prompts, progress, warnings, and errors go to stderr.
+Color and animation stop automatically for
 redirected output, `TERM=dumb`, and CI. `NO_COLOR` always disables color.
 
 Use `DIU_COLOR=always|never` or `DIU_ACTIVITY=always|never` to override automatic
-color and loader detection.
+color and animation detection.
 
 </details>
 
@@ -255,7 +252,7 @@ mise run build
 ```
 
 <!-- Development checks derived from .mise.toml and .custom-gcl.yml -->
-Setup installs Bash for shell legibility. Lint runs Go vet, golangci-lint with legibility, shfmt, ShellCheck, and shell legibility. Use `mise run lint-shell` for shell checks alone.
+Setup installs Bash. Lint runs Go vet, golangci-lint with legibility, shfmt, ShellCheck, and shell legibility. Use `mise run lint-shell` for shell checks alone.
 
 Release checks:
 
@@ -265,11 +262,10 @@ mise run release-preview
 mise run release
 ```
 
-The version and release tasks refresh tags before `svu` calculates the next
-version from conventional commits. The release task requires a clean,
-synchronized `main`, runs the complete preview, and pushes an annotated `v*` tag
-after confirmation. The tag workflow publishes the GitHub Release, GoReleaser
-artifacts, and Homebrew formula.
+The version and release tasks fetch tags before `svu` calculates the next version
+from conventional commits. Release requires a clean `main` synchronized with
+origin. It asks for confirmation, runs the preview, then pushes an annotated
+`v*` tag. The tag workflow publishes the GitHub Release, binaries, and Homebrew formula.
 
 `HOMEBREW_TAP_GITHUB_TOKEN` is required by the tag workflow.
 

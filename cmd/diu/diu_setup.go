@@ -139,10 +139,11 @@ record_fallback() {
     fi
 }
 
-if [ -S "$DIU_SOCKET" ] && command -v nc >/dev/null 2>&1; then
+# Use system nc so event delivery cannot enter a tracked wrapper.
+if [ -S "$DIU_SOCKET" ] && [ -x /usr/bin/nc ]; then
     {
         sent=false
-        if printf '%%s\n' "$payload" | nc -w 1 -U "$DIU_SOCKET" 2>/dev/null; then
+        if printf '%%s\n' "$payload" | /usr/bin/nc -w 1 -U "$DIU_SOCKET" 2>/dev/null; then
             sent=true
         fi
 
