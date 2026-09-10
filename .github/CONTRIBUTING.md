@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for taking the time to improve DIU. This project is intentionally small, local-first, and built with the Go standard library only.
+DIU tracks tool usage locally and uses only the Go standard library.
 
 ## Project Direction
 
@@ -12,11 +12,8 @@ Thanks for taking the time to improve DIU. This project is intentionally small, 
 
 ## Development Setup
 
-Requirements:
-
-- macOS 10.15 or later for the primary supported environment.
-- Go 1.25 or later.
-- mise, Docker, GoReleaser, svu, golangci-lint, and gosec are optional development or release tools.
+<!-- Development requirements derived from go.mod, .mise.toml, and .github/workflows/ci.yml -->
+Use Go 1.25.12 or later. `mise install` selects Go 1.26.6 and the configured build tools. Go 1.25 and 1.26 require macOS 12 or later; see [Go's platform requirements](https://go.dev/wiki/MinimumRequirements). Docker is needed for Docker E2E tests.
 
 Common commands:
 
@@ -26,28 +23,29 @@ go vet ./...
 go build -o diu ./cmd/diu
 ```
 
-The CI workflow also runs race-enabled tests, linting, builds, and security scanning.
+<!-- Validation tasks derived from .mise.toml and .github/workflows/ci.yml -->
+Run `mise run lint` and `mise run test` for the configured linters and race tests. CI also checks both Mac architectures, Docker E2E tests, security, and the Homebrew formula.
 
 ## Pull Requests
 
 Before opening a pull request:
 
 - Open or reference an issue for non-trivial behavior changes.
-- Keep the patch scoped to one problem.
+- Keep the patch focused on one problem.
 - Add tests for new behavior and regressions.
-- Update README or docs when user-facing behavior changes.
+- Update docs when user-facing behavior changes.
 - Confirm `go test ./...` passes locally when practical.
 
-For changes that touch wrappers, command execution, filesystem access, Unix sockets, or the HTTP API, include a short note about the security impact in the pull request.
+If you change wrappers, command execution, filesystem access, Unix sockets, or the HTTP API, describe the security impact in the pull request.
 
 ## Coding Guidelines
 
 - Use clear names and simple control flow.
-- Prefer standard library APIs over custom parsing when available.
+- Use standard library parsers when available.
 - Keep comments sparse and useful.
-- Preserve existing JSON field names and CLI flags unless the change is intentionally breaking.
+- Preserve JSON field names and CLI flags unless you intend a breaking change.
 - Keep generated files, local binaries, coverage, and build artifacts out of commits.
 
 ## Reporting Security Issues
 
-Do not report vulnerabilities in public issues. See `SECURITY.md` for private reporting guidance.
+Report vulnerabilities privately. See [SECURITY.md](SECURITY.md).

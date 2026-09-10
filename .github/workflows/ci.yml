@@ -225,7 +225,6 @@ jobs:
           tar -C "$GITHUB_WORKSPACE" \
             --exclude ".git" \
             --exclude "dist" \
-            --exclude ".beads" \
             -czf "$SOURCE_ARCHIVE" .
 
           shasum -a 256 "$SOURCE_ARCHIVE" > "$SHA_FILE"
