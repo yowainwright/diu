@@ -190,7 +190,7 @@ diu diagnostics --output diu-diagnostics.json
 ```
 
 <!-- Diagnostic fields and redaction derived from cmd/diu/diu_diagnostics.go and internal/observability/observability_local.go -->
-Diagnostics include recording and storage health plus recent daemon logs. DIU redacts known user, host, and managed-path values and never uploads the file. Review it before sharing; log messages may contain other details.
+Diagnostics include recording and storage health plus recent daemon logs. DIU redacts known home-directory and managed-path values and never uploads the file. Review it before sharing; log messages may contain other details.
 
 </details>
 
