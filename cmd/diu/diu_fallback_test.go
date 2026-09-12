@@ -5,13 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
-	"strings"
 	"sync"
 	"syscall"
 	"testing"
@@ -107,130 +104,36 @@ func TestWrapperDiscoveryPrefersPATHOrder(t *testing.T) {
 	}
 }
 
-func TestFallbackBurstNearStorageLimit(t *testing.T) {
-	binDir := buildFallbackTestBinary(t)
+func TestWrappersSkipPreviousWrapperDirectory(t *testing.T) {
 	for _, template := range []string{"executable", "process"} {
 		t.Run(template, func(t *testing.T) {
 			config := setupTestHomeConfig(t)
-			seedNearLimitHistory(t, config)
-			pidLog := installRecorderProbe(t, binDir)
-			wrapper := installFallbackTestWrapper(t, config, writeFallbackOriginal(t), template)
-			runFallbackBurst(t, wrapper)
-			assertRecordersExited(t, pidLog)
-			assertBurstHistory(t, config)
+			original := writeFallbackOriginal(t)
+			previous := installFallbackTestWrapper(t, config, original, template)
+			config.Monitoring.Process.WrapperDir = t.TempDir()
+			current := installFallbackTestWrapper(t, config, original, template)
+			preferred := t.TempDir()
+			name := filepath.Base(current)
+			writeExecutableForTest(t, filepath.Join(preferred, name), "#!/bin/sh\nprintf 'preferred\\n'\nexit 7\n")
+			path := filepath.Dir(current) + ":" + filepath.Dir(previous) + ":" + preferred + ":/usr/bin:/bin"
+			t.Setenv("PATH", path)
+			assertSelectedCommand(t, name, "preferred\n", 7)
 		})
 	}
 }
 
-func seedNearLimitHistory(t *testing.T, config *core.Config) {
-	t.Helper()
-	store := openTestStore(t, config)
-	defer closeTestStore(t, store)
-	const count = 16063
-	records := make([]*core.ExecutionRecord, count)
-	for index := range records {
-		records[index] = &core.ExecutionRecord{ID: fmt.Sprintf("seed-%05d", index), Tool: "seed", Command: strings.Repeat("x", 480), Timestamp: time.Now()}
+func TestWrappersRejectGeneratedOriginalWithoutPATH(t *testing.T) {
+	for _, template := range []string{"executable", "process"} {
+		t.Run(template, func(t *testing.T) {
+			config := setupTestHomeConfig(t)
+			previous := installFallbackTestWrapper(t, config, writeFallbackOriginal(t), template)
+			config.Monitoring.Process.WrapperDir = t.TempDir()
+			current := installFallbackTestWrapper(t, config, previous, template)
+			path := filepath.Dir(current) + ":" + filepath.Dir(previous) + ":/usr/bin:/bin"
+			t.Setenv("PATH", path)
+			assertSelectedCommand(t, filepath.Base(current), "", 127)
+		})
 	}
-	batchStore := store.(*storage.JSONStorage)
-	if err := batchStore.AddExecutions(records); err != nil {
-		t.Fatal(err)
-	}
-	assertNearLimitHistory(t, config, count)
-}
-
-func assertNearLimitHistory(t *testing.T, config *core.Config, count int) {
-	t.Helper()
-	info, err := os.Stat(storage.ExecutionLogPath(config.Storage.JSONFile))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Logf("seeded %d records, %d bytes", count, info.Size())
-	limit := config.Storage.MaxStorageBytes
-	outsideTarget := info.Size() < limit*95/100 || info.Size() > limit
-	if outsideTarget {
-		t.Fatalf("fixture size %d is not near storage limit %d", info.Size(), limit)
-	}
-}
-
-func installRecorderProbe(t *testing.T, binDir string) string {
-	t.Helper()
-	probeDir := t.TempDir()
-	pidLog := filepath.Join(probeDir, "recorders")
-	t.Setenv("DIU_TEST_RECORDERS", pidLog)
-	t.Setenv("DIU_TEST_RECORDER", filepath.Join(binDir, "diu"))
-	script := "#!/bin/sh\nprintf '%s\\n' \"$$\" >> \"$DIU_TEST_RECORDERS\"\nexec \"$DIU_TEST_RECORDER\" \"$@\"\n"
-	writeExecutableForTest(t, filepath.Join(probeDir, "diu"), script)
-	t.Setenv("PATH", probeDir+":/usr/bin:/bin")
-	return pidLog
-}
-
-func runFallbackBurst(t *testing.T, wrapper string) {
-	t.Helper()
-	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
-	defer cancel()
-	started := time.Now()
-	results := make(chan error, 32)
-	for range cap(results) {
-		go func() { results <- runBurstWrapper(ctx, wrapper) }()
-	}
-	for range cap(results) {
-		if err := <-results; err != nil {
-			t.Error(err)
-		}
-	}
-	t.Logf("32 wrappers completed in %s", time.Since(started))
-}
-
-func runBurstWrapper(ctx context.Context, wrapper string) error {
-	cmd := exec.CommandContext(ctx, wrapper)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
-	output, err := cmd.CombinedOutput()
-	var exitErr *exec.ExitError
-	correctExit := errors.As(err, &exitErr) && exitErr.ExitCode() == 7
-	correctOutput := string(output) == "original output\noriginal error\n"
-	changedBehavior := !correctExit || !correctOutput
-	if changedBehavior {
-		return fmt.Errorf("wrapper changed output or exit: %q, %v", output, err)
-	}
-	return nil
-}
-
-func assertRecordersExited(t *testing.T, path string) {
-	t.Helper()
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	pids := strings.Fields(string(data))
-	if len(pids) != 32 {
-		t.Fatalf("started %d recorders, want 32", len(pids))
-	}
-	for _, value := range pids {
-		pid, err := strconv.Atoi(value)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := syscall.Kill(pid, 0); !errors.Is(err, syscall.ESRCH) {
-			t.Errorf("recorder %d still exists: %v", pid, err)
-		}
-	}
-}
-
-func assertBurstHistory(t *testing.T, config *core.Config) {
-	t.Helper()
-	store := openTestStore(t, config)
-	defer closeTestStore(t, store)
-	records, err := store.GetExecutions(storage.QueryOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, record := range records {
-		if record.Tool != "seed" {
-			return
-		}
-	}
-	t.Fatal("burst recorded no executions")
 }
 
 func assertNoFallbackContention(t *testing.T, config *core.Config) {

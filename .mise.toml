@@ -31,6 +31,10 @@ run = "go test -v -short ./..."
 description = "Run E2E tests"
 run = "go test -tags=e2e -v ./tests/e2e/..."
 
+[tasks.test-stress]
+description = "Run the near-limit fallback recorder stress test"
+run = "go test -tags=stress -run '^TestFallbackBurstNearStorageLimit$' -count=1 -v ./cmd/diu"
+
 [tasks.test-coverage]
 description = "Run tests with coverage report"
 run = """
