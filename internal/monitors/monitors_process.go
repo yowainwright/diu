@@ -33,6 +33,9 @@ ORIGINAL="%s"
 DIU_BINARY="%s"
 DIU_SOCKET="%s"
 DIU_TOOL="%s"
+DIU_COMMAND="${0##*/}"
+DIU_ORIGINAL="$ORIGINAL"
+%s
 START_TIME=$(date +%%s)
 
 "$ORIGINAL" "$@"
@@ -297,7 +300,7 @@ func generateProcessWrapperScript(originalPath, diuPath, socketPath, tool string
 	diu := core.ShellEscapeString(diuPath)
 	socket := core.ShellEscapeString(socketPath)
 	escapedTool := core.ShellEscapeString(tool)
-	return fmt.Sprintf(processWrapperScriptTemplate, marker, original, diu, socket, escapedTool)
+	return fmt.Sprintf(processWrapperScriptTemplate, marker, original, diu, socket, escapedTool, core.WrapperCommandGuard)
 }
 
 func (m *ProcessMonitor) updateShellConfig() error {

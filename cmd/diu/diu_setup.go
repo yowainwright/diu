@@ -83,6 +83,9 @@ ORIGINAL_BINARY="%s"
 DIU_TOOL="%s"
 DIU_PACKAGE="%s"
 DIU_EXECUTABLE="%s"
+DIU_COMMAND="$DIU_EXECUTABLE"
+DIU_ORIGINAL="$ORIGINAL_BINARY"
+%s
 START_TIME=$(date +%%s)
 
 "$ORIGINAL_BINARY" "$@"
@@ -1312,7 +1315,7 @@ func addExecutableEntry(targets map[string]executableWrapper, tool, dir, name st
 	if !usableExecutableInfo(info, err) {
 		return
 	}
-	if _, exists := targets[name]; exists {
+	if preferExistingExecutable(targets[name], path) {
 		return
 	}
 	targets[name] = executableWrapper{
@@ -1321,6 +1324,24 @@ func addExecutableEntry(targets map[string]executableWrapper, tool, dir, name st
 		Tool:         tool,
 		Package:      packageNameForExecutable(tool, path, name),
 	}
+}
+
+func preferExistingExecutable(existing executableWrapper, path string) bool {
+	if existing.OriginalPath == "" {
+		return false
+	}
+	return executablePathPriority(existing.OriginalPath) <= executablePathPriority(path)
+}
+
+func executablePathPriority(path string) int {
+	paths := filepath.SplitList(os.Getenv("PATH"))
+	for index, dir := range paths {
+		candidate := filepath.Join(dir, filepath.Base(path))
+		if sameExecutable(candidate, path) {
+			return index
+		}
+	}
+	return len(paths)
 }
 
 func usableExecutableInfo(info os.FileInfo, err error) bool {
@@ -1349,5 +1370,5 @@ func executableWrapperScript(config *core.Config, target executableWrapper) stri
 	tool := core.ShellEscapeString(target.Tool)
 	pkg := core.ShellEscapeString(target.Package)
 	name := core.ShellEscapeString(target.Name)
-	return fmt.Sprintf(executableWrapperScriptTemplate, marker, socket, "diu", original, tool, pkg, name)
+	return fmt.Sprintf(executableWrapperScriptTemplate, marker, socket, "diu", original, tool, pkg, name, core.WrapperCommandGuard)
 }
