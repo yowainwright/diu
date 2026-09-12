@@ -37,6 +37,105 @@ func TestRecordExecutionPreservesSlowNPMEnrichment(t *testing.T) {
 	assertNoFallbackContention(t, config)
 }
 
+func TestExecutableWrapperPreservesCommandSelection(t *testing.T) {
+	config := setupTestHomeConfig(t)
+	preferredDir, managedDir := t.TempDir(), t.TempDir()
+	name := "node"
+	original := filepath.Join(managedDir, name)
+	writeExecutableForTest(t, original, "#!/bin/sh\nprintf 'managed\\n'\n")
+	writeExecutableForTest(t, filepath.Join(preferredDir, name), "#!/bin/sh\nprintf 'preferred\\n'\nexit 7\n")
+	config.Monitoring.EnabledTools = []string{core.ToolHomebrew}
+	config.Monitoring.Filesystem.WatchPaths = map[string][]string{core.ToolHomebrew: {managedDir}}
+	if err := os.MkdirAll(config.Monitoring.Process.WrapperDir, core.OwnerDirectoryMode); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", preferredDir+":"+managedDir+":/usr/bin:/bin")
+	if err := installExecutableWrappers(config); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", config.Monitoring.Process.WrapperDir+":"+os.Getenv("PATH"))
+	assertSelectedCommand(t, name, "preferred\n", 7)
+}
+
+func assertSelectedCommand(t *testing.T, name, want string, exitCode int) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, name)
+	output, err := cmd.Output()
+	if string(output) != want {
+		t.Fatalf("selected command output = %q, want %q (error: %v)", output, want, err)
+	}
+	if cmd.ProcessState.ExitCode() != exitCode {
+		t.Fatalf("exit code = %d, want %d", cmd.ProcessState.ExitCode(), exitCode)
+	}
+}
+
+func TestWrappersFollowChangedPATH(t *testing.T) {
+	for _, template := range []string{"executable", "process"} {
+		t.Run(template, func(t *testing.T) {
+			config := setupTestHomeConfig(t)
+			original := writeFallbackOriginal(t)
+			wrapper := installFallbackTestWrapper(t, config, original, template)
+			preferred := t.TempDir()
+			name := filepath.Base(wrapper)
+			writeExecutableForTest(t, filepath.Join(preferred, name), "#!/bin/sh\nprintf 'preferred\\n'\nexit 7\n")
+			alias := filepath.Join(t.TempDir(), "wrapper alias")
+			if err := os.Symlink(filepath.Dir(wrapper), alias); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("PATH", alias+":"+filepath.Dir(wrapper)+":"+preferred+":/usr/bin:/bin")
+			assertSelectedCommand(t, name, "preferred\n", 7)
+		})
+	}
+}
+
+func TestWrapperDiscoveryPrefersPATHOrder(t *testing.T) {
+	preferred, other := t.TempDir(), t.TempDir()
+	name := "tool"
+	writeExecutableForTest(t, filepath.Join(preferred, name), "#!/bin/sh\nexit 0\n")
+	writeExecutableForTest(t, filepath.Join(other, name), "#!/bin/sh\nexit 0\n")
+	t.Setenv("PATH", preferred+":"+other)
+	targets := make(map[string]executableWrapper)
+	addExecutableDir(targets, core.ToolHomebrew, other)
+	addExecutableDir(targets, core.ToolGoBinary, preferred)
+	if targets[name].Tool != core.ToolGoBinary {
+		t.Fatalf("selected %s, want Go binary first in PATH", targets[name].Tool)
+	}
+}
+
+func TestWrappersSkipPreviousWrapperDirectory(t *testing.T) {
+	for _, template := range []string{"executable", "process"} {
+		t.Run(template, func(t *testing.T) {
+			config := setupTestHomeConfig(t)
+			original := writeFallbackOriginal(t)
+			previous := installFallbackTestWrapper(t, config, original, template)
+			config.Monitoring.Process.WrapperDir = t.TempDir()
+			current := installFallbackTestWrapper(t, config, original, template)
+			preferred := t.TempDir()
+			name := filepath.Base(current)
+			writeExecutableForTest(t, filepath.Join(preferred, name), "#!/bin/sh\nprintf 'preferred\\n'\nexit 7\n")
+			path := filepath.Dir(current) + ":" + filepath.Dir(previous) + ":" + preferred + ":/usr/bin:/bin"
+			t.Setenv("PATH", path)
+			assertSelectedCommand(t, name, "preferred\n", 7)
+		})
+	}
+}
+
+func TestWrappersRejectGeneratedOriginalWithoutPATH(t *testing.T) {
+	for _, template := range []string{"executable", "process"} {
+		t.Run(template, func(t *testing.T) {
+			config := setupTestHomeConfig(t)
+			previous := installFallbackTestWrapper(t, config, writeFallbackOriginal(t), template)
+			config.Monitoring.Process.WrapperDir = t.TempDir()
+			current := installFallbackTestWrapper(t, config, previous, template)
+			path := filepath.Dir(current) + ":" + filepath.Dir(previous) + ":/usr/bin:/bin"
+			t.Setenv("PATH", path)
+			assertSelectedCommand(t, filepath.Base(current), "", 127)
+		})
+	}
+}
+
 func assertNoFallbackContention(t *testing.T, config *core.Config) {
 	t.Helper()
 	_, contended, err := observability.ReadFallbackContention(config.Daemon.DataDir)

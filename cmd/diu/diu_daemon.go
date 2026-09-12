@@ -428,7 +428,7 @@ func installedDaemonExecutable() (string, error) {
 }
 
 func sameExecutable(first, second string) bool {
-	firstInfo, err := os.Stat(first)
+	firstInfo, err := os.Stat(first) // #nosec G703 -- Inspect caller-selected PATH entries for file identity; no file contents are read or written.
 	if err != nil {
 		return false
 	}

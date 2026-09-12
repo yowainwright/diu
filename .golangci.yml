@@ -16,7 +16,7 @@ linters:
           comment-matchers:
             - '^// #nosec\b'
             - '^//nolint:'
-            - '^#nosec\b'
+            - '^\s*#nosec\b'
             - '^nolint:'
           max-expression-operators: 4
           max-if-operators: 0

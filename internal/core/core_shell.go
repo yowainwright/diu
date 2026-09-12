@@ -7,6 +7,43 @@ const (
 	ShellPathMarker        = "# DIU path configuration"
 )
 
+const WrapperCommandGuard = `
+# Delegate a different PATH selection without recording it as this package.
+diu_generated_wrapper() {
+    local shebang='' marker=''
+    {
+        IFS= read -r -n 128 shebang
+        IFS= read -r -n 128 marker
+    } 2>/dev/null < "$1"
+    [ "$shebang" = '#!/bin/bash' ] && [ "$marker" = '` + GeneratedWrapperMarker + `' ]
+}
+
+diu_selected_command() {
+    local remaining="${PATH}:" directory candidate
+    while [ -n "$remaining" ]; do
+        directory="${remaining%%:*}"
+        remaining="${remaining#*:}"
+        candidate="${directory:-.}/$DIU_COMMAND"
+        if [ -f "$candidate" ] && [ -x "$candidate" ] && ! [ "$candidate" -ef "$0" ]; then
+            if diu_generated_wrapper "$candidate"; then
+                continue
+            fi
+            printf '%s' "$candidate"
+            return
+        fi
+    done
+}
+
+DIU_SELECTED_COMMAND="$(diu_selected_command)"
+if [ -z "$DIU_SELECTED_COMMAND" ] && diu_generated_wrapper "$DIU_ORIGINAL"; then
+    printf 'diu: no original executable found for %s\n' "$DIU_COMMAND" >&2
+    exit 127
+fi
+if [ -n "$DIU_SELECTED_COMMAND" ] && ! [ "$DIU_SELECTED_COMMAND" -ef "$DIU_ORIGINAL" ]; then
+    exec "$DIU_SELECTED_COMMAND" "$@"
+fi
+`
+
 func PosixPathLine(wrapperDir string) string {
 	quotedWrapperDir := ShellEscapeString(wrapperDir)
 	return fmt.Sprintf("export PATH=\"%s:$PATH\"", quotedWrapperDir)
