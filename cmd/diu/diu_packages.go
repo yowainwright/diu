@@ -141,6 +141,9 @@ func printTrackedPackage(out *dx.Out, pkg *core.PackageInfo) {
 }
 
 func checkPackages(cmd *command, args []string) error {
+	if err := validateListFlags(cmd); err != nil {
+		return err
+	}
 	opts := checkPackageOptions(cmd, args)
 	if shouldUseInteractive(cmd, args) {
 		canUninstall := false
@@ -327,8 +330,10 @@ func printPackageList(packages []*core.PackageInfo, format string) error {
 		return printPackageJSON(out, packages)
 	case formatCSV:
 		return printPackageCSV(out, packages)
-	default:
+	case formatTable:
 		return printPackageTable(out, packages)
+	default:
+		return validateOutputFormat(format, formatTable, formatJSON, formatCSV)
 	}
 }
 

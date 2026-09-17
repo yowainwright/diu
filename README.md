@@ -130,7 +130,8 @@ This stops the recorder and removes the login service, wrappers, and shell PATH 
 <details>
 <summary>History, exports, and the local API</summary>
 
-Use `diu --help` or `diu <command> --help` for the full command reference.
+<!-- Command help and argument parsing derived from internal/dx/dx_cmd.go -->
+Use `diu --help`, `diu help <command>`, or `diu <command> --help` for the command reference. Nested help works too: `diu help config get`. Use `--` before arguments that start with a dash, such as `diu check -- --help`.
 
 Review individual executions or export a package list:
 
@@ -138,6 +139,9 @@ Review individual executions or export a package list:
 diu query --last 7d --limit 10
 diu check --tool npm --format json --limit 0
 ```
+
+<!-- Reporting flag validation derived from cmd/diu/diu_cli.go, cmd/diu/diu_query.go, and cmd/diu/diu_packages.go -->
+`query` and `check` accept `--format table`, `json`, or `csv`. Unknown formats and negative result counts return errors. `--limit 0` returns all matching results; `stats --top 0` omits the package ranking.
 
 The daemon also serves a local HTTP API at `http://127.0.0.1:8081/api/v1`:
 

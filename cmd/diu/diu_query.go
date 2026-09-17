@@ -27,12 +27,19 @@ type statsCommandOptions struct {
 }
 
 func queryExecutions(cmd *command, args []string) error {
+	if err := validateListFlags(cmd); err != nil {
+		return err
+	}
 	store, err := openStore()
 	if err != nil {
 		return err
 	}
 	defer closeStore(store)
 
+	return printQueriedExecutions(cmd, store)
+}
+
+func printQueriedExecutions(cmd *command, store storage.Storage) error {
 	opts, err := executionQueryOptions(cmd)
 	if err != nil {
 		return err
@@ -73,9 +80,11 @@ func printExecutions(cmd *command, executions []*core.ExecutionRecord) error {
 		return printExecutionsJSON(executions)
 	case "csv":
 		return printExecutionsCSV(executions)
-	default:
+	case formatTable:
 		printExecutionsTable(executions)
 		return nil
+	default:
+		return validateOutputFormat(format, formatTable, formatJSON, formatCSV)
 	}
 }
 
@@ -168,6 +177,9 @@ func printExecutionExitCode(out *dx.Out, exec *core.ExecutionRecord) {
 }
 
 func showStats(cmd *command, args []string) error {
+	if err := validateResultCount("top", flagInt(cmd, "top")); err != nil {
+		return err
+	}
 	store, err := openStore()
 	if err != nil {
 		return err

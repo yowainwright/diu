@@ -20,6 +20,75 @@ func TestNewUninstallCommand(t *testing.T) {
 	}
 }
 
+func TestCLIRejectsInvalidReportingFlags(t *testing.T) {
+	setupTestHomeConfig(t)
+	cases := [][]string{
+		{"query", "--format", "yaml"},
+		{"check", "--format", "yaml"},
+		{"query", "--format="},
+		{"check", "--format="},
+		{"query", "--limit", "-1"},
+		{"check", "--limit", "-1"},
+		{"stats", "--top", "-1"},
+	}
+	for _, args := range cases {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			assertInvalidReportingFlags(t, args)
+		})
+	}
+}
+
+func assertInvalidReportingFlags(t *testing.T, args []string) {
+	t.Helper()
+	var err error
+	output := captureStdout(t, func() {
+		err = newRootCommand().Execute(args)
+	})
+	if err == nil {
+		t.Fatal("invalid flags succeeded")
+	}
+	if output != "" {
+		t.Fatalf("invalid flags printed a report: %q", output)
+	}
+}
+
+func TestCLIAllowsZeroResultCounts(t *testing.T) {
+	setupTestHomeConfig(t)
+	for _, args := range [][]string{{"query", "--limit", "0"}, {"check", "--limit", "0"}, {"stats", "--top", "0"}} {
+		captureStdout(t, func() {
+			if err := newRootCommand().Execute(args); err != nil {
+				t.Fatalf("%v: %v", args, err)
+			}
+		})
+	}
+}
+
+func TestCLICommandHelpFormsMatch(t *testing.T) {
+	for _, path := range [][]string{{"query"}, {"check"}, {"stats"}, {"status"}, {"packages"}, {"config", "get"}} {
+		helpArgs := append([]string{"help"}, path...)
+		flagArgs := append(append([]string{}, path...), "--help")
+		help := commandHelpOutput(t, helpArgs)
+		flagHelp := commandHelpOutput(t, flagArgs)
+		if help != flagHelp {
+			t.Fatalf("help forms differ for %v", path)
+		}
+	}
+}
+
+func commandHelpOutput(t *testing.T, args []string) string {
+	t.Helper()
+	var output bytes.Buffer
+	root := newRootCommand()
+	root.Output = &output
+	if err := root.Execute(args); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output.String(), "Usage:") {
+		t.Fatalf("missing usage: %q", output.String())
+	}
+	return output.String()
+}
+
 func TestExitStatusPreservesCommandExitCode(t *testing.T) {
 	commandErr := &dx.CommandError{Name: "tool", Code: 7, Err: errors.New("failed")}
 	if got := exitStatus(fmt.Errorf("wrapped: %w", commandErr)); got != 7 {
