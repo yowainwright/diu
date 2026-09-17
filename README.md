@@ -22,6 +22,8 @@ Open a new terminal window to activate tracking. DIU records usage as you work.
 <!-- Setup and inventory behavior derived from cmd/diu/diu_setup.go and cmd/diu/diu_daemon.go -->
 `setup` discovers installed tools and starts background tracking, including at future logins. History begins when tracking starts; give it time to reflect your habits.
 
+When re-running setup, DIU stops the recorder before updating storage. If a later step fails, it attempts to restart a recorder that was previously running and reports any restart failure alongside the setup error.
+
 ## Get Insights
 
 <!-- Insight commands and filters derived from cmd/diu/main.go and cmd/diu/diu_packages.go -->

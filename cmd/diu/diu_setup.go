@@ -198,6 +198,27 @@ func runSetupProject(activity *dx.Activity) error {
 	if err != nil {
 		return err
 	}
+	wasRunning := defaultDaemonChecker(config)
+	if err := stopExistingDaemon(config); err != nil {
+		return err
+	}
+	err = configureSetupProject(config, activity)
+	return restoreRecorderAfterSetupFailure(config, wasRunning, err)
+}
+
+func restoreRecorderAfterSetupFailure(config *core.Config, wasRunning bool, setupErr error) error {
+	shouldRestore := wasRunning && setupErr != nil
+	if !shouldRestore {
+		return setupErr
+	}
+	if err := startDaemonWithConfig(config); err != nil {
+		restoreErr := fmt.Errorf("failed to restore recorder after setup failure: %w", err)
+		return errors.Join(setupErr, restoreErr)
+	}
+	return setupErr
+}
+
+func configureSetupProject(config *core.Config, activity *dx.Activity) error {
 	if err := initializeSetupStorage(config); err != nil {
 		return err
 	}
@@ -230,9 +251,6 @@ func loadSetupConfig() (*core.Config, error) {
 }
 
 func initializeSetupStorage(config *core.Config) error {
-	if err := stopExistingDaemon(config); err != nil {
-		return err
-	}
 	store, err := storage.NewJSONStorage(config)
 	if err != nil {
 		return fmt.Errorf("failed to initialize storage: %w", err)
