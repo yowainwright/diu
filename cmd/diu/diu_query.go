@@ -187,7 +187,10 @@ func printStats(store storage.Storage, options statsCommandOptions) error {
 	}
 	printStatsSummary(out, summary)
 
-	stats, _ := store.Statistics()
+	stats, err := store.Statistics()
+	if err != nil {
+		return fmt.Errorf("failed to read statistics: %w", err)
+	}
 	printMostActiveDay(out, stats, options)
 	printToolCounts(out, summary.ToolCounts)
 	printTopPackages(store, out, options)

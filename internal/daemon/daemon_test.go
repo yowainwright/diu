@@ -1010,6 +1010,84 @@ func TestDaemonRejectsExecutionWhenQueueIsUnavailable(t *testing.T) {
 	assertStoppedDaemonRejectsExecution(t, d, body)
 }
 
+func TestDaemonRejectsEventsAfterFinalDrain(t *testing.T) {
+	d, mock := newEventDaemon(t, testConfig(t), 64)
+	done := startProcessEvents(d)
+	d.cancel()
+	assertProcessEventsDone(t, done, "event consumer did not stop")
+	body := `{"tool":"npm","command":"install"}`
+	for range 32 {
+		assertStoppedDaemonRejectsExecution(t, d, body)
+		d.admitSocketExecution(&core.ExecutionRecord{Tool: core.ToolNPM, Command: "install"})
+	}
+	if len(d.eventChan) != 0 {
+		t.Fatalf("%d socket events were admitted after the final drain", len(d.eventChan))
+	}
+	assertMockExecutionCount(t, mock, 0)
+}
+
+func TestDaemonRejectsCanceledHTTPRequestWithAvailableCapacity(t *testing.T) {
+	d, _ := newEventDaemon(t, testConfig(t), 64)
+	defer d.cancel()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	for range 32 {
+		request := httptest.NewRequest(http.MethodPost, "/api/v1/executions", strings.NewReader(`{"tool":"npm","command":"install"}`))
+		response := httptest.NewRecorder()
+		d.handleExecutions(response, request.WithContext(ctx))
+		assertResponseStatus(t, response, http.StatusRequestTimeout)
+	}
+	if len(d.eventChan) != 0 {
+		t.Fatal("canceled requests were admitted")
+	}
+}
+
+func TestDaemonCancellationPersistsAcceptedHTTPEvents(t *testing.T) {
+	d, mock := newEventDaemon(t, testConfig(t), 1)
+	body := `{"tool":"npm","command":"install"}`
+	first := handleExecutionAPIRequest(d, http.MethodPost, "/api/v1/executions", body)
+	assertResponseStatus(t, first, http.StatusAccepted)
+	responses := concurrentExecutionRequests(d, body, 32)
+	d.cancel()
+	done := startProcessEvents(d)
+	accepted := 1 + countAcceptedExecutionResponses(t, responses, 32)
+	assertProcessEventsDone(t, done, "event consumer did not stop")
+	assertMockExecutionCount(t, mock, accepted)
+	if len(d.eventChan) != 0 {
+		t.Fatal("shutdown stranded admitted events")
+	}
+}
+
+func countAcceptedExecutionResponses(t *testing.T, responses <-chan int, count int) int {
+	t.Helper()
+	accepted := 0
+	timeout := time.After(time.Second)
+	for range count {
+		select {
+		case status := <-responses:
+			if status == http.StatusAccepted {
+				accepted++
+			} else if status != http.StatusServiceUnavailable {
+				t.Fatalf("unexpected admission status: %d", status)
+			}
+		case <-timeout:
+			t.Fatal("admissions did not finish after cancellation")
+		}
+	}
+	return accepted
+}
+
+func concurrentExecutionRequests(d *Daemon, body string, count int) <-chan int {
+	responses := make(chan int, count)
+	for range count {
+		go func() {
+			response := handleExecutionAPIRequest(d, http.MethodPost, "/api/v1/executions", body)
+			responses <- response.Code
+		}()
+	}
+	return responses
+}
+
 func handleExecutionAPIRequestAsync(d *Daemon, body string) (*httptest.ResponseRecorder, chan struct{}) {
 	recorder := httptest.NewRecorder()
 	done := make(chan struct{})

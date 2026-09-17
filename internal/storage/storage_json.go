@@ -353,6 +353,9 @@ func (j *JSONStorage) applyExecution(record core.ExecutionRecord) {
 func (j *JSONStorage) applyPackageEffects(record core.ExecutionRecord) {
 	tool := packageToolForRecord(record)
 	if removesPackages(record) {
+		if record.ExitCode != 0 {
+			return
+		}
 		for _, pkg := range record.PackagesAffected {
 			j.deletePackageInternal(tool, pkg)
 		}
@@ -393,6 +396,9 @@ func (j *JSONStorage) shouldUpdateInventory(record core.ExecutionRecord) bool {
 	if skipInventoryTool(record.Tool) {
 		return false
 	}
+	if record.Tool == core.ToolUV {
+		return isUVToolExecution(record)
+	}
 	if !isJSManager(record.Tool) {
 		return true
 	}
@@ -400,6 +406,13 @@ func (j *JSONStorage) shouldUpdateInventory(record core.ExecutionRecord) bool {
 		return true
 	}
 	return executionWasGlobal(record)
+}
+
+func isUVToolExecution(record core.ExecutionRecord) bool {
+	executable, _ := record.Metadata["executable"].(string)
+	subcommand, _ := record.Metadata["subcommand"].(string)
+	isToolExecution := executable != "" || subcommand == "tool"
+	return isToolExecution
 }
 
 func skipInventoryTool(tool string) bool {
@@ -509,7 +522,9 @@ func packageUsageForUpdate(pkg core.PackageInfo, exists bool, tool, name string,
 			UsageCount:  1,
 		}
 	}
-	pkg.LastUsed = timestamp
+	if timestamp.After(pkg.LastUsed) {
+		pkg.LastUsed = timestamp
+	}
 	pkg.UsageCount++
 	return pkg
 }

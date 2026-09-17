@@ -46,3 +46,21 @@ func TestSummarizeExecutionsFallbackError(t *testing.T) {
 		t.Fatalf("summarizeExecutions error = %v", err)
 	}
 }
+
+type statisticsErrorStore struct {
+	queryExecutionStore
+	statsErr error
+}
+
+func (s statisticsErrorStore) Statistics() (*core.StorageStatistics, error) {
+	return nil, s.statsErr
+}
+
+func TestPrintStatsReturnsStatisticsError(t *testing.T) {
+	wantErr := errors.New("statistics unavailable")
+	store := statisticsErrorStore{statsErr: wantErr}
+	err := printStats(store, statsCommandOptions{})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("printStats error = %v, want wrapped %v", err, wantErr)
+	}
+}

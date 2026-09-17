@@ -58,13 +58,18 @@ var daemonProcessSignaler = func(pid int, signal os.Signal) error {
 
 var daemonSocketControlSender = sendSocketControl
 
-var ErrNotRunning = errors.New("daemon is not running")
+var (
+	ErrNotRunning     = errors.New("daemon is not running")
+	errDaemonStopping = errors.New("daemon stopping")
+	errEventQueueFull = errors.New("event queue full")
+)
 
 type Daemon struct {
 	config              *core.Config
 	storage             storage.Storage
 	registry            *monitors.MonitorRegistry
 	eventChan           chan *core.ExecutionRecord
+	admissionMu         sync.RWMutex
 	httpServer          *http.Server
 	socketListener      net.Listener
 	socketInfo          os.FileInfo
@@ -455,6 +460,8 @@ func (d *Daemon) processEvents() {
 }
 
 func (d *Daemon) drainQueuedEvents() {
+	d.admissionMu.Lock()
+	defer d.admissionMu.Unlock()
 	for {
 		select {
 		case event, ok := <-d.eventChan:
@@ -774,12 +781,33 @@ func decodeSocketExecution(raw json.RawMessage) (*core.ExecutionRecord, error) {
 }
 
 func (d *Daemon) admitSocketExecution(record *core.ExecutionRecord) {
+	if err := d.admitExecution(d.ctx, record); err != nil {
+		d.logger.Printf("Failed to admit socket event: %v", err)
+	}
+}
+
+func (d *Daemon) admitExecution(ctx context.Context, record *core.ExecutionRecord) error {
+	d.admissionMu.RLock()
+	defer d.admissionMu.RUnlock()
+	if d.ctx.Err() != nil {
+		return errDaemonStopping
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return d.enqueueExecution(ctx, record)
+}
+
+func (d *Daemon) enqueueExecution(ctx context.Context, record *core.ExecutionRecord) error {
 	select {
 	case d.eventChan <- record:
+		return nil
 	case <-d.ctx.Done():
-		d.logger.Printf("Daemon stopping, dropping socket event")
+		return errDaemonStopping
+	case <-ctx.Done():
+		return ctx.Err()
 	case <-time.After(eventAdmissionTimeout):
-		d.logger.Printf("Event queue full, rejecting socket event")
+		return errEventQueueFull
 	}
 }
 
@@ -914,15 +942,21 @@ func (d *Daemon) handlePostExecution(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	select {
-	case d.eventChan <- record:
-		w.WriteHeader(http.StatusAccepted)
-	case <-d.ctx.Done():
+	if err := d.admitExecution(r.Context(), record); err != nil {
+		writeAdmissionError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusAccepted)
+}
+
+func writeAdmissionError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, errDaemonStopping):
 		http.Error(w, "Daemon stopping", http.StatusServiceUnavailable)
-	case <-r.Context().Done():
-		http.Error(w, "Request canceled", http.StatusRequestTimeout)
-	case <-time.After(eventAdmissionTimeout):
+	case errors.Is(err, errEventQueueFull):
 		http.Error(w, "Event queue full", http.StatusServiceUnavailable)
+	default:
+		http.Error(w, "Request canceled", http.StatusRequestTimeout)
 	}
 }
 

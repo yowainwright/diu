@@ -230,6 +230,9 @@ func loadSetupConfig() (*core.Config, error) {
 }
 
 func initializeSetupStorage(config *core.Config) error {
+	if err := stopExistingDaemon(config); err != nil {
+		return err
+	}
 	store, err := storage.NewJSONStorage(config)
 	if err != nil {
 		return fmt.Errorf("failed to initialize storage: %w", err)

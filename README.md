@@ -60,6 +60,9 @@ Rerun `diu setup` if you move the DIU binary or change where your shell finds pa
 | Go | Go | Installed binaries in `GOBIN` or `GOPATH/bin`. |
 | Python | pip, uv, Poetry | pip packages, uv tools, and Poetry command/plugin usage. |
 
+<!-- UV inventory scope derived from internal/monitors/monitors_python_managers.go and internal/storage/storage_json.go -->
+UV inventory scans use `uv tool list`. Project commands such as `uv add`, `uv remove`, and `uv pip` remain in execution history without changing tool inventory.
+
 ## More Options
 
 <details>
