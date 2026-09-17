@@ -1702,10 +1702,7 @@ func queryCommandForTest(t *testing.T, args ...string) *command {
 
 func packagesCommandForTest(t *testing.T, args ...string) *command {
 	t.Helper()
-	cmd := &command{}
-	var tool, unused string
-	cmd.Flags().StringVarP(&tool, "tool", "t", "", "tool")
-	cmd.Flags().StringVarP(&unused, "unused", "u", "", "unused")
+	cmd := newPackagesCommand()
 	parseTestFlags(t, cmd, args...)
 	return cmd
 }
@@ -1742,16 +1739,7 @@ func manageCommandForTest(t *testing.T, args ...string) *command {
 
 func statsCommandForTest(t *testing.T, args ...string) *command {
 	t.Helper()
-	cmd := &command{}
-	var shouldShowDaily, shouldShowWeekly bool
-	var tool string
-	var top int
-	dailyDefault := false
-	weeklyDefault := false
-	cmd.Flags().BoolVarP(&shouldShowDaily, "daily", "d", dailyDefault, "daily")
-	cmd.Flags().BoolVarP(&shouldShowWeekly, "weekly", "w", weeklyDefault, "weekly")
-	cmd.Flags().StringVarP(&tool, "tool", "t", "", "tool")
-	cmd.Flags().IntVar(&top, "top", 10, "top")
+	cmd := newStatsCommand()
 	parseTestFlags(t, cmd, args...)
 	return cmd
 }

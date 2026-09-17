@@ -158,6 +158,7 @@ func newStatsCommand() *command {
 	statsCmd.Flags().BoolVarP(&shouldShowWeeklyStats, "weekly", "w", defaultBoolFlagValue, "Show weekly statistics")
 	statsCmd.Flags().StringVarP(&statsTool, "tool", "t", "", "Statistics for specific tool")
 	statsCmd.Flags().IntVar(&statsTop, "top", 10, "Show top N most used packages")
+	addReportFormatFlag(statsCmd)
 	return statsCmd
 }
 
@@ -174,6 +175,7 @@ func newPackagesCommand() *command {
 	}
 	packagesCmd.Flags().StringVarP(&packagesTool, "tool", "t", "", "Filter by tool")
 	packagesCmd.Flags().StringVarP(&packagesUnused, "unused", "u", "", "Show packages not used in duration")
+	addReportFormatFlag(packagesCmd)
 	return packagesCmd
 }
 
@@ -288,11 +290,13 @@ func newDiagnosticsCommand() *command {
 }
 
 func newStatusCommand() *command {
-	return &command{
+	statusCmd := &command{
 		Use:   "status",
 		Short: "Show DIU usage, activity, and local paths",
 		RunE:  showStatus,
 	}
+	addReportFormatFlag(statusCmd)
+	return statusCmd
 }
 
 func newSetupCommand() *command {

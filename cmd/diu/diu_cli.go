@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"slices"
 	"strings"
@@ -11,6 +12,21 @@ import (
 
 type command = dx.Command
 type flag = dx.Flag
+
+func addReportFormatFlag(cmd *command) {
+	var format string
+	cmd.Flags().StringVarP(&format, "format", "f", formatTable, "Output format (table, json)")
+}
+
+func printJSON(value any) error {
+	enc := json.NewEncoder(cliOutput().Stdout())
+	enc.SetIndent("", "  ")
+	return enc.Encode(value)
+}
+
+func validateReportFormat(cmd *command) error {
+	return validateOutputFormat(flagString(cmd, "format"), formatTable, formatJSON)
+}
 
 func validateOutputFormat(format string, allowed ...string) error {
 	if slices.Contains(allowed, format) {

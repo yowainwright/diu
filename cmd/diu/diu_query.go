@@ -3,7 +3,6 @@ package main
 import (
 	"cmp"
 	"encoding/csv"
-	"encoding/json"
 	"fmt"
 	"slices"
 	"strings"
@@ -24,6 +23,14 @@ type statsCommandOptions struct {
 	shouldShowWeekly bool
 	tool             string
 	top              int
+	format           string
+}
+
+type statsReport struct {
+	TotalExecutions int                 `json:"total_executions"`
+	ToolCounts      map[string]int      `json:"tool_counts"`
+	MostActiveDay   string              `json:"most_active_day,omitempty"`
+	TopPackages     []*core.PackageInfo `json:"top_packages"`
 }
 
 func queryExecutions(cmd *command, args []string) error {
@@ -89,9 +96,10 @@ func printExecutions(cmd *command, executions []*core.ExecutionRecord) error {
 }
 
 func printExecutionsJSON(executions []*core.ExecutionRecord) error {
-	enc := json.NewEncoder(cliOutput().Stdout())
-	enc.SetIndent("", "  ")
-	return enc.Encode(executions)
+	if executions == nil {
+		executions = []*core.ExecutionRecord{}
+	}
+	return printJSON(executions)
 }
 
 func printExecutionsCSV(executions []*core.ExecutionRecord) error {
@@ -177,7 +185,7 @@ func printExecutionExitCode(out *dx.Out, exec *core.ExecutionRecord) {
 }
 
 func showStats(cmd *command, args []string) error {
-	if err := validateResultCount("top", flagInt(cmd, "top")); err != nil {
+	if err := validateStatsFlags(cmd); err != nil {
 		return err
 	}
 	store, err := openStore()
@@ -190,23 +198,48 @@ func showStats(cmd *command, args []string) error {
 	return printStats(store, options)
 }
 
+func validateStatsFlags(cmd *command) error {
+	if err := validateReportFormat(cmd); err != nil {
+		return err
+	}
+	return validateResultCount("top", flagInt(cmd, "top"))
+}
+
 func printStats(store storage.Storage, options statsCommandOptions) error {
+	report, err := collectStatsReport(store, options)
+	if err != nil {
+		return err
+	}
+	if options.format == formatJSON {
+		return printJSON(report)
+	}
 	out := cliOutput()
 	printStatsHeading(out, options)
+	printStatsSummary(out, report.TotalExecutions)
+	printMostActiveDay(out, report.MostActiveDay)
+	printToolCounts(out, report.ToolCounts)
+	printTopPackages(out, report.TopPackages, options.top)
+	return nil
+}
+
+func collectStatsReport(store storage.Storage, options statsCommandOptions) (statsReport, error) {
 	summary, err := summarizeExecutions(store, options.query)
 	if err != nil {
-		return fmt.Errorf("failed to summarize executions: %w", err)
+		return statsReport{}, fmt.Errorf("failed to summarize executions: %w", err)
 	}
-	printStatsSummary(out, summary)
-
 	stats, err := store.Statistics()
 	if err != nil {
-		return fmt.Errorf("failed to read statistics: %w", err)
+		return statsReport{}, fmt.Errorf("failed to read statistics: %w", err)
 	}
-	printMostActiveDay(out, stats, options)
-	printToolCounts(out, summary.ToolCounts)
-	printTopPackages(store, out, options)
-	return nil
+	packages, err := topPackages(store, options)
+	if err != nil {
+		return statsReport{}, err
+	}
+	report := statsReport{TotalExecutions: summary.Total, ToolCounts: summary.ToolCounts, TopPackages: packages}
+	if shouldPrintMostActiveDay(stats, options) {
+		report.MostActiveDay = stats.MostActiveDay
+	}
+	return report, nil
 }
 
 func statsOptionsFromCommand(cmd *command) statsCommandOptions {
@@ -226,7 +259,8 @@ func statsOptionsFromCommand(cmd *command) statsCommandOptions {
 		since := time.Now().Add(-7 * 24 * time.Hour)
 		opts.Since = &since
 	}
-	return statsCommandOptions{query: opts, shouldShowDaily: shouldShowDaily, shouldShowWeekly: shouldShowWeekly, tool: toolFilter, top: top}
+	format := flagString(cmd, "format")
+	return statsCommandOptions{query: opts, shouldShowDaily: shouldShowDaily, shouldShowWeekly: shouldShowWeekly, tool: toolFilter, top: top, format: format}
 }
 
 func printStatsHeading(out *dx.Out, options statsCommandOptions) {
@@ -240,20 +274,20 @@ func printStatsHeading(out *dx.Out, options statsCommandOptions) {
 	out.Println()
 }
 
-func printStatsSummary(out *dx.Out, summary storage.ExecutionSummary) {
+func printStatsSummary(out *dx.Out, total int) {
 	out.Printf("%s %d\n",
 		out.StyleData(dx.Info, "Total executions:"),
-		summary.Total,
+		total,
 	)
 }
 
-func printMostActiveDay(out *dx.Out, stats *core.StorageStatistics, options statsCommandOptions) {
-	if !shouldPrintMostActiveDay(stats, options) {
+func printMostActiveDay(out *dx.Out, mostActiveDay string) {
+	if mostActiveDay == "" {
 		return
 	}
 	out.Printf("%s %s\n",
 		out.StyleData(dx.Info, "Most active day:"),
-		stats.MostActiveDay,
+		mostActiveDay,
 	)
 }
 
@@ -286,18 +320,29 @@ func sortedToolCountKeys(toolCounts map[string]int) []string {
 	return tools
 }
 
-func printTopPackages(store storage.Storage, out *dx.Out, options statsCommandOptions) {
+func topPackages(store storage.Storage, options statsCommandOptions) ([]*core.PackageInfo, error) {
 	if options.top <= 0 {
+		return []*core.PackageInfo{}, nil
+	}
+	packages, err := packageListForTool(store, options.tool)
+	if err != nil {
+		return nil, err
+	}
+	if packages == nil {
+		packages = []*core.PackageInfo{}
+	}
+	slices.SortFunc(packages, comparePackageUsage)
+	limit := min(options.top, len(packages))
+	return packages[:limit], nil
+}
+
+func printTopPackages(out *dx.Out, packages []*core.PackageInfo, top int) {
+	if top <= 0 {
 		return
 	}
-	packages, _ := store.GetPackages(core.NormalizeToolName(options.tool))
-	slices.SortFunc(packages, comparePackageUsage)
 	out.Println()
-	out.Printf(out.StyleData(dx.Muted, "Top %d packages:\n"), options.top)
+	out.Printf(out.StyleData(dx.Muted, "Top %d packages:\n"), top)
 	for i, pkg := range packages {
-		if i >= options.top {
-			break
-		}
 		printTopPackage(out, i, pkg)
 	}
 }

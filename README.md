@@ -141,7 +141,20 @@ diu check --tool npm --format json --limit 0
 ```
 
 <!-- Reporting flag validation derived from cmd/diu/diu_cli.go, cmd/diu/diu_query.go, and cmd/diu/diu_packages.go -->
-`query` and `check` accept `--format table`, `json`, or `csv`. Unknown formats and negative result counts return errors. `--limit 0` returns all matching results; `stats --top 0` omits the package ranking.
+`query` and `check` accept `--format table`, `json`, or `csv`. `packages`, `stats`, and `status` accept `table` or `json`. Tables are the default; `-f` is shorthand for `--format`. Unknown formats and negative result counts return errors. `--limit 0` returns all matching results; `stats --top 0` omits the package ranking.
+
+<!-- JSON report shapes derived from cmd/diu/diu_query.go, cmd/diu/diu_packages.go, and cmd/diu/diu_status.go -->
+JSON output contains only data, without headings or color codes. Empty execution and package lists are `[]`.
+
+```bash
+diu packages --tool npm --unused 30d --format json
+diu stats --daily --top 5 --format json
+diu status --format json
+```
+
+`stats` exports `total_executions`, `tool_counts`, and `top_packages`. Daily and weekly filters apply to execution counts; package rankings use lifetime usage counts. With no time filter, `most_active_day`, when present, describes all recorded tools and dates. `--top 0` produces an empty ranking array.
+
+`status` exports recorder and storage health, counts, activity, and configured paths. `last_activity` is an RFC 3339 timestamp or `null` before any activity. Paths retain their full values instead of the table's `~` abbreviation.
 
 The daemon also serves a local HTTP API at `http://127.0.0.1:8081/api/v1`:
 

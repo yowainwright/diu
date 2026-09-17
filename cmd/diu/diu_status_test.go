@@ -66,7 +66,7 @@ func showStatusOutput(t *testing.T) string {
 	t.Helper()
 
 	return captureStdout(t, func() {
-		if err := showStatus(&command{}, nil); err != nil {
+		if err := showStatus(newStatusCommand(), nil); err != nil {
 			t.Fatalf("showStatus failed: %v", err)
 		}
 	})
@@ -86,7 +86,7 @@ func TestShowStatusBeforeInitialization(t *testing.T) {
 	t.Setenv("DIU_COLOR", "never")
 	setupTestHomeConfig(t)
 	output := captureStdout(t, func() {
-		if err := showStatus(&command{}, nil); err != nil {
+		if err := showStatus(newStatusCommand(), nil); err != nil {
 			t.Fatalf("showStatus failed: %v", err)
 		}
 	})
@@ -112,12 +112,11 @@ func TestRenderUsageStatusUsesSemanticColors(t *testing.T) {
 
 func coloredUsageStatus() usageStatus {
 	return usageStatus{
-		daemonState:        "running",
-		storageState:       "unreadable: invalid JSON",
-		lastActivity:       "never",
-		lastTool:           "npm",
-		lastLocation:       "~/projects/app",
-		fallbackContention: "detected now",
+		DaemonState:        "running",
+		StorageState:       "unreadable: invalid JSON",
+		LastTool:           "npm",
+		LastLocation:       "~/projects/app",
+		FallbackContention: "detected now",
 	}
 }
 

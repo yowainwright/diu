@@ -64,3 +64,43 @@ func TestPrintStatsReturnsStatisticsError(t *testing.T) {
 		t.Fatalf("printStats error = %v, want wrapped %v", err, wantErr)
 	}
 }
+
+type statsReportErrorStore struct {
+	queryExecutionStore
+	statsErr    error
+	packagesErr error
+}
+
+func (s statsReportErrorStore) Statistics() (*core.StorageStatistics, error) {
+	return &core.StorageStatistics{}, s.statsErr
+}
+
+func (s statsReportErrorStore) GetPackages(string) ([]*core.PackageInfo, error) {
+	return nil, s.packagesErr
+}
+
+func TestStatsJSONStorageFailuresLeaveOutputEmpty(t *testing.T) {
+	wantErr := errors.New("storage unavailable")
+	stores := []statsReportErrorStore{
+		{queryExecutionStore: queryExecutionStore{err: wantErr}},
+		{statsErr: wantErr},
+		{packagesErr: wantErr},
+	}
+	for _, store := range stores {
+		assertStatsJSONFailure(t, store, wantErr)
+	}
+}
+
+func assertStatsJSONFailure(t *testing.T, store storage.Storage, wantErr error) {
+	t.Helper()
+	var err error
+	output := captureStdout(t, func() {
+		err = printStats(store, statsCommandOptions{top: 5, format: formatJSON})
+	})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("error = %v, want wrapped %v", err, wantErr)
+	}
+	if output != "" {
+		t.Fatalf("failed stats printed a report: %q", output)
+	}
+}
