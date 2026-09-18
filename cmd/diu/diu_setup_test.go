@@ -1,11 +1,18 @@
 package main
 
 import (
+	"bufio"
+	"context"
 	"errors"
+	"fmt"
 	"os"
+	"os/exec"
+	"os/signal"
 	"path/filepath"
+	"strconv"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/yowainwright/diu/internal/core"
 	"github.com/yowainwright/diu/internal/daemon"
@@ -170,6 +177,83 @@ func writeSetupFallbackPID(t *testing.T, config *core.Config) {
 	t.Setenv("PATH", t.TempDir())
 	requireConfigDirectories(t, config)
 	if err := os.WriteFile(config.Daemon.PIDFile, []byte("999999999"), core.PrivateFileMode); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSetupRecoversAfterSlowPIDFallbackStop(t *testing.T) {
+	config := setupTestHomeConfig(t)
+	requireConfigDirectories(t, config)
+	t.Setenv("PATH", t.TempDir())
+	state := stubSetupRecorder(t)
+	state.isRunning = false
+	daemonStopRequester = daemon.RequestStop
+	stopped := startSlowSetupRecorder(t, config.Daemon.PIDFile)
+	wantErr := errors.New("background setup failed after slow stop")
+	setupBackgroundTracking = func(*core.Config) error { return wantErr }
+	err := setupProject(&command{}, nil)
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("setup error = %v, want %v", err, wantErr)
+	}
+	assertSetupRecorderRestored(t, state)
+	if err := <-stopped; err != nil {
+		t.Fatalf("recorder process failed: %v", err)
+	}
+}
+
+func startSlowSetupRecorder(t *testing.T, pidPath string) <-chan error {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	t.Cleanup(cancel)
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestSlowSetupRecorderHelper$")
+	cmd.Env = append(os.Environ(), "DIU_TEST_SLOW_RECORDER_PID="+pidPath)
+	startAndWaitForRecorderReady(t, cmd)
+	stopped := make(chan error, 1)
+	go func() { stopped <- cmd.Wait() }()
+	return stopped
+}
+
+func startAndWaitForRecorderReady(t *testing.T, cmd *exec.Cmd) {
+	t.Helper()
+	ready, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	reader := bufio.NewReader(ready)
+	if _, err := reader.ReadString('\n'); err != nil {
+		_ = cmd.Wait()
+		t.Fatal(err)
+	}
+}
+
+func TestSlowSetupRecorderHelper(t *testing.T) {
+	pidPath := os.Getenv("DIU_TEST_SLOW_RECORDER_PID")
+	if pidPath == "" {
+		return
+	}
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, syscall.SIGTERM)
+	defer signal.Stop(signals)
+	lockSlowSetupRecorderPID(t, pidPath)
+	fmt.Println("ready")
+	<-signals
+	time.Sleep(daemonStopTimeout + 2*daemonStopPollInterval)
+}
+
+func lockSlowSetupRecorderPID(t *testing.T, path string) {
+	t.Helper()
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|os.O_TRUNC, core.PrivateFileMode)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = file.Close() })
+	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.WriteString(strconv.Itoa(os.Getpid())); err != nil {
 		t.Fatal(err)
 	}
 }

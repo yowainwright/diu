@@ -167,11 +167,11 @@ const daemonStopTimeout = 10 * time.Second
 const daemonStopPollInterval = 100 * time.Millisecond
 
 func stopDaemonWithConfig(config *core.Config) error {
-	_, err := stopDaemonWithState(config)
+	_, err := stopDaemonWithState(config, waitForDaemonExit)
 	return err
 }
 
-func stopDaemonWithState(config *core.Config) (bool, error) {
+func stopDaemonWithState(config *core.Config, waitForExit func(*core.Config, int, error) error) (bool, error) {
 	isRunning := defaultDaemonChecker(config)
 	pid, pidErr := daemon.ReadPID(config)
 	if daemonAlreadyStopped(isRunning, pidErr) {
@@ -184,15 +184,15 @@ func stopDaemonWithState(config *core.Config) (bool, error) {
 	if stopRequestFinished {
 		return false, err
 	}
-	return true, waitForDaemonStopActivity(config, pid, pidErr)
+	return true, waitForDaemonStopActivity(config, pid, pidErr, waitForExit)
 }
 
-func waitForDaemonStopActivity(config *core.Config, pid int, pidErr error) error {
+func waitForDaemonStopActivity(config *core.Config, pid int, pidErr error, waitForExit func(*core.Config, int, error) error) error {
 	out := cliOutput()
 	activity := out.StartActivity("Stopping DIU daemon")
 	defer activity.Stop()
 
-	if err := waitForDaemonExit(config, pid, pidErr); err != nil {
+	if err := waitForExit(config, pid, pidErr); err != nil {
 		return err
 	}
 

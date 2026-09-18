@@ -198,12 +198,21 @@ func runSetupProject(activity *dx.Activity) error {
 	if err != nil {
 		return err
 	}
-	wasRunning, err := stopDaemonWithState(config)
+	wasRunning, err := stopDaemonWithState(config, waitForSetupDaemonExit)
 	if err != nil {
 		return err
 	}
 	err = configureSetupProject(config, activity)
 	return restoreRecorderAfterSetupFailure(config, wasRunning, err)
+}
+
+func waitForSetupDaemonExit(config *core.Config, pid int, pidErr error) error {
+	for {
+		if err := waitForDaemonExit(config, pid, pidErr); err == nil {
+			return nil
+		}
+		cliOutput().Status(dx.Info, "Waiting for recorder to finish stopping before setup can continue")
+	}
 }
 
 func restoreRecorderAfterSetupFailure(config *core.Config, wasRunning bool, setupErr error) error {
