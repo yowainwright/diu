@@ -10,12 +10,14 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
 
 	"github.com/yowainwright/diu/internal/core"
 	"github.com/yowainwright/diu/internal/daemon"
+	"github.com/yowainwright/diu/internal/storage"
 )
 
 type setupRecorderState struct {
@@ -189,28 +191,96 @@ func TestSetupRecoversAfterSlowPIDFallbackStop(t *testing.T) {
 	state.isRunning = false
 	daemonStopRequester = daemon.RequestStop
 	stopped := startSlowSetupRecorder(t, config.Daemon.PIDFile)
-	wantErr := errors.New("background setup failed after slow stop")
-	setupBackgroundTracking = func(*core.Config) error { return wantErr }
+	rejectSetupAfterStopTimeout(t)
 	err := setupProject(&command{}, nil)
-	if !errors.Is(err, wantErr) {
-		t.Fatalf("setup error = %v, want %v", err, wantErr)
+	if err == nil {
+		t.Fatal("setup should report the original stop timeout")
 	}
+	assertOutputContains(t, err.Error(), "timed out")
 	assertSetupRecorderRestored(t, state)
+	assertFileMissing(t, storage.ExecutionLogPath(config.Storage.JSONFile))
 	if err := <-stopped; err != nil {
 		t.Fatalf("recorder process failed: %v", err)
 	}
 }
 
+func rejectSetupAfterStopTimeout(t *testing.T) {
+	t.Helper()
+	setupBackgroundTracking = func(*core.Config) error {
+		t.Fatal("setup continued after the stop timeout")
+		return nil
+	}
+}
+
 func startSlowSetupRecorder(t *testing.T, pidPath string) <-chan error {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	return startSetupRecorderProcess(t, pidPath, "TestSlowSetupRecorderHelper")
+}
+
+func startSetupRecorderProcess(t *testing.T, pidPath, helper string) <-chan error {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 40*time.Second)
 	t.Cleanup(cancel)
-	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestSlowSetupRecorderHelper$")
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^"+helper+"$")
 	cmd.Env = append(os.Environ(), "DIU_TEST_SLOW_RECORDER_PID="+pidPath)
 	startAndWaitForRecorderReady(t, cmd)
 	stopped := make(chan error, 1)
 	go func() { stopped <- cmd.Wait() }()
 	return stopped
+}
+
+func TestSetupAbortsWhenRecorderIgnoresStop(t *testing.T) {
+	config := setupTestHomeConfig(t)
+	requireConfigDirectories(t, config)
+	state := stubSetupRecorder(t)
+	state.isRunning = false
+	daemonStopRequester = daemon.RequestStop
+	startSetupRecorderProcess(t, config.Daemon.PIDFile, "TestHungSetupRecorderHelper")
+	rejectSetupAfterStopTimeout(t)
+	started := time.Now()
+	err := setupProject(&command{}, nil)
+	assertHungRecorderSetupError(t, err, time.Since(started))
+	if state.starts != 0 {
+		t.Fatal("setup tried to restart while the original recorder was still alive")
+	}
+	assertFileMissing(t, config.Storage.JSONFile)
+	assertFileMissing(t, storage.ExecutionLogPath(config.Storage.JSONFile))
+	assertSetupRecorderStillAlive(t, config)
+}
+
+func assertSetupRecorderStillAlive(t *testing.T, config *core.Config) {
+	t.Helper()
+	pid, err := daemon.ReadPID(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !daemon.ProcessRunning(pid) {
+		t.Fatal("setup killed the recorder instead of returning a bounded error")
+	}
+}
+
+func assertHungRecorderSetupError(t *testing.T, err error, elapsed time.Duration) {
+	t.Helper()
+	if err == nil {
+		t.Fatal("setup accepted a recorder that ignored shutdown")
+	}
+	if elapsed > 3*daemonStopTimeout {
+		t.Fatalf("setup exceeded its stop and recovery deadlines: %s", elapsed)
+	}
+	if !strings.Contains(err.Error(), "diu daemon start") {
+		t.Fatalf("setup error has no recovery instructions: %v", err)
+	}
+}
+
+func TestHungSetupRecorderHelper(t *testing.T) {
+	pidPath := os.Getenv("DIU_TEST_SLOW_RECORDER_PID")
+	if pidPath == "" {
+		return
+	}
+	signal.Ignore(syscall.SIGTERM)
+	lockSlowSetupRecorderPID(t, pidPath)
+	fmt.Println("ready")
+	time.Sleep(time.Minute)
 }
 
 func startAndWaitForRecorderReady(t *testing.T, cmd *exec.Cmd) {

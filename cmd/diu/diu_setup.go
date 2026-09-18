@@ -207,12 +207,21 @@ func runSetupProject(activity *dx.Activity) error {
 }
 
 func waitForSetupDaemonExit(config *core.Config, pid int, pidErr error) error {
-	for {
-		if err := waitForDaemonExit(config, pid, pidErr); err == nil {
-			return nil
-		}
-		cliOutput().Status(dx.Info, "Waiting for recorder to finish stopping before setup can continue")
+	stopErr := waitForDaemonExit(config, pid, pidErr)
+	if stopErr == nil {
+		return nil
 	}
+	cliOutput().Status(dx.Warning, "Setup aborted; waiting once more for recorder shutdown before recovery")
+	return recoverRecorderAfterStopTimeout(config, pid, pidErr, stopErr)
+}
+
+func recoverRecorderAfterStopTimeout(config *core.Config, pid int, pidErr, stopErr error) error {
+	if err := waitForDaemonExit(config, pid, pidErr); err != nil {
+		recoveryErr := fmt.Errorf("recorder shutdown is unconfirmed; once it exits, run 'diu daemon start' to restore recording, then retry 'diu setup': %w", err)
+		return errors.Join(stopErr, recoveryErr)
+	}
+	wasRunning := true
+	return restoreRecorderAfterSetupFailure(config, wasRunning, stopErr)
 }
 
 func restoreRecorderAfterSetupFailure(config *core.Config, wasRunning bool, setupErr error) error {

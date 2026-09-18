@@ -22,7 +22,7 @@ Open a new terminal window to activate tracking. DIU records usage as you work.
 <!-- Setup and inventory behavior derived from cmd/diu/diu_setup.go and cmd/diu/diu_daemon.go -->
 `setup` discovers installed tools and starts background tracking, including at future logins. History begins when tracking starts; give it time to reflect your habits.
 
-When re-running setup, DIU stops the recorder before updating storage and waits for it to exit, even if shutdown takes longer than the normal ten-second daemon-stop timeout. While waiting, it reports progress every ten seconds. If a later step fails, it attempts to restart a recorder that was previously running and reports any restart failure alongside the setup error.
+When re-running setup, DIU stops the recorder before updating storage. If shutdown exceeds ten seconds, setup aborts configuration and allows one additional ten-second wait for recovery. If the recorder exits during that wait, DIU attempts to restart it and returns the original timeout error. If exit cannot be confirmed, DIU returns recovery instructions without migrating storage or starting a second recorder. If a later setup step fails, DIU also attempts to restart a recorder that was previously running and reports any restart failure alongside the setup error.
 
 ## Get Insights
 
