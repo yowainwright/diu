@@ -175,18 +175,10 @@ func applyUVSubcommand(record *core.ExecutionRecord, subcommand string, args []s
 //nolint:legibility // Monitor interface requires this method name.
 func (m *UVMonitor) GetInstalledPackages() ([]*core.PackageInfo, error) {
 	output, err := exec.Command(uvCommandName, "tool", "list").Output()
-	if err == nil && len(output) > 0 {
-		return parseUVToolList(string(output)), nil
+	if err != nil {
+		return nil, fmt.Errorf("failed to list uv tools: %w", err)
 	}
-
-	output, err = exec.Command(uvCommandName, "pip", "list", pythonListFormat).Output()
-	if err != nil && len(output) == 0 {
-		return nil, fmt.Errorf("failed to list uv packages: %w", err)
-	}
-	if packages, parseErr := parsePythonPackageJSON(core.ToolUV, output); parseErr == nil {
-		return packages, nil
-	}
-	return parsePythonPackageLines(core.ToolUV, string(output)), nil
+	return parseUVToolList(string(output)), nil
 }
 
 func (m *UVMonitor) Start(ctx context.Context, eventChan chan<- *core.ExecutionRecord) error {

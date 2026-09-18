@@ -22,6 +22,8 @@ Open a new terminal window to activate tracking. DIU records usage as you work.
 <!-- Setup and inventory behavior derived from cmd/diu/diu_setup.go and cmd/diu/diu_daemon.go -->
 `setup` discovers installed tools and starts background tracking, including at future logins. History begins when tracking starts; give it time to reflect your habits.
 
+When re-running setup, DIU stops the recorder before updating storage. If shutdown exceeds ten seconds, setup aborts configuration and allows one additional ten-second wait for recovery. If the recorder exits during that wait, DIU attempts to restart it and returns the original timeout error. If exit cannot be confirmed, DIU returns recovery instructions without migrating storage or starting a second recorder. If a later setup step fails, DIU also attempts to restart a recorder that was previously running and reports any restart failure alongside the setup error.
+
 ## Get Insights
 
 <!-- Insight commands and filters derived from cmd/diu/main.go and cmd/diu/diu_packages.go -->
@@ -59,6 +61,9 @@ Rerun `diu setup` if you move the DIU binary or change where your shell finds pa
 | JavaScript | npm, pnpm, Bun | Global packages and their command usage. |
 | Go | Go | Installed binaries in `GOBIN` or `GOPATH/bin`. |
 | Python | pip, uv, Poetry | pip packages, uv tools, and Poetry command/plugin usage. |
+
+<!-- UV inventory scope derived from internal/monitors/monitors_python_managers.go and internal/storage/storage_json.go -->
+UV inventory scans use `uv tool list`. Project commands such as `uv add`, `uv remove`, and `uv pip` remain in execution history without changing tool inventory.
 
 ## More Options
 
@@ -127,7 +132,8 @@ This stops the recorder and removes the login service, wrappers, and shell PATH 
 <details>
 <summary>History, exports, and the local API</summary>
 
-Use `diu --help` or `diu <command> --help` for the full command reference.
+<!-- Command help and argument parsing derived from internal/dx/dx_cmd.go -->
+Use `diu --help`, `diu help <command>`, or `diu <command> --help` for the command reference. Nested help works too: `diu help config get`. Use `--` before arguments that start with a dash, such as `diu check -- --help`.
 
 Review individual executions or export a package list:
 
@@ -135,6 +141,22 @@ Review individual executions or export a package list:
 diu query --last 7d --limit 10
 diu check --tool npm --format json --limit 0
 ```
+
+<!-- Reporting flag validation derived from cmd/diu/diu_cli.go, cmd/diu/diu_query.go, and cmd/diu/diu_packages.go -->
+`query` and `check` accept `--format table`, `json`, or `csv`. `packages`, `stats`, and `status` accept `table` or `json`. Tables are the default; `-f` is shorthand for `--format`. Unknown formats and negative result counts return errors. `--limit 0` returns all matching results; `stats --top 0` omits the package ranking.
+
+<!-- JSON report shapes derived from cmd/diu/diu_query.go, cmd/diu/diu_packages.go, and cmd/diu/diu_status.go -->
+JSON output contains only data, without headings or color codes. Empty execution and package lists are `[]`.
+
+```bash
+diu packages --tool npm --unused 30d --format json
+diu stats --daily --top 5 --format json
+diu status --format json
+```
+
+`stats` exports `total_executions`, `tool_counts`, and `top_packages`. Daily and weekly filters apply to execution counts; package rankings use lifetime usage counts. With no time filter, `most_active_day`, when present, describes all recorded tools and dates. `--top 0` produces an empty ranking array.
+
+`status` exports recorder and storage health, counts, activity, and configured paths. `last_activity` is an RFC 3339 timestamp or `null` before any activity. Paths retain their full values instead of the table's `~` abbreviation.
 
 The daemon also serves a local HTTP API at `http://127.0.0.1:8081/api/v1`:
 

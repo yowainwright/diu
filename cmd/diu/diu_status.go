@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/yowainwright/diu/internal/core"
 	"github.com/yowainwright/diu/internal/daemon"
@@ -15,26 +16,32 @@ import (
 )
 
 type usageStatus struct {
-	daemonState        string
-	storageState       string
-	executionCount     int
-	packageCount       int
-	lastActivity       string
-	lastTool           string
-	lastLocation       string
-	fallbackContention string
-	storagePath        string
-	historyPath        string
-	logPath            string
-	wrapperPath        string
+	DaemonState        string     `json:"daemon_state"`
+	StorageState       string     `json:"storage_state"`
+	ExecutionCount     int        `json:"execution_count"`
+	PackageCount       int        `json:"package_count"`
+	LastActivity       *time.Time `json:"last_activity"`
+	LastTool           string     `json:"last_tool"`
+	LastLocation       string     `json:"last_location"`
+	FallbackContention string     `json:"fallback_contention"`
+	StoragePath        string     `json:"storage_path"`
+	HistoryPath        string     `json:"history_path"`
+	LogPath            string     `json:"log_path"`
+	WrapperPath        string     `json:"wrapper_path"`
 }
 
 func showStatus(cmd *command, args []string) error {
+	if err := validateReportFormat(cmd); err != nil {
+		return err
+	}
 	config, err := core.LoadConfig("")
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
 	status := collectUsageStatus(config)
+	if flagString(cmd, "format") == formatJSON {
+		return printJSON(status)
+	}
 	renderUsageStatus(status)
 	return nil
 }
@@ -42,10 +49,10 @@ func showStatus(cmd *command, args []string) error {
 func collectUsageStatus(config *core.Config) usageStatus {
 	snapshot, storageErr := readLocalStorage(config.Storage.JSONFile)
 	status := baseUsageStatus(config, snapshot.HasFile, storageErr)
-	status.executionCount = snapshot.ExecutionCount
-	status.packageCount = snapshot.PackageCount
+	status.ExecutionCount = snapshot.ExecutionCount
+	status.PackageCount = snapshot.PackageCount
 	applyLatestUsage(&status, snapshot.LatestExecution)
-	status.fallbackContention = fallbackContentionStatus(config.Daemon.DataDir)
+	status.FallbackContention = fallbackContentionStatus(config.Daemon.DataDir)
 	return status
 }
 
@@ -58,15 +65,14 @@ func baseUsageStatus(config *core.Config, hasStorage bool, storageErr error) usa
 		storageState = "unreadable: " + storageErr.Error()
 	}
 	return usageStatus{
-		daemonState:  daemonState(config),
-		storageState: storageState,
-		lastActivity: "never",
-		lastTool:     "none",
-		lastLocation: "none",
-		storagePath:  displayLocalPath(config.Storage.JSONFile),
-		historyPath:  displayLocalPath(storage.ExecutionLogPath(config.Storage.JSONFile)),
-		logPath:      displayLocalPath(observability.LogPath(config.Daemon.DataDir)),
-		wrapperPath:  displayLocalPath(config.Monitoring.Process.WrapperDir),
+		DaemonState:  daemonState(config),
+		StorageState: storageState,
+		LastTool:     "none",
+		LastLocation: "none",
+		StoragePath:  config.Storage.JSONFile,
+		HistoryPath:  storage.ExecutionLogPath(config.Storage.JSONFile),
+		LogPath:      observability.LogPath(config.Daemon.DataDir),
+		WrapperPath:  config.Monitoring.Process.WrapperDir,
 	}
 }
 
@@ -81,10 +87,10 @@ func applyLatestUsage(status *usageStatus, latest *core.ExecutionRecord) {
 	if latest == nil {
 		return
 	}
-	status.lastActivity = latest.Timestamp.Local().Format("2006-01-02 15:04:05 MST")
-	status.lastTool = latest.Tool
+	status.LastActivity = &latest.Timestamp
+	status.LastTool = latest.Tool
 	if latest.WorkingDir != "" {
-		status.lastLocation = displayLocalPath(latest.WorkingDir)
+		status.LastLocation = latest.WorkingDir
 	}
 }
 
@@ -139,19 +145,26 @@ func renderUsageStatus(status usageStatus) {
 
 func usageStatusRows(out *dx.Out, status usageStatus) [][]string {
 	return [][]string{
-		statusStateRow(out, "Daemon", status.daemonState),
-		statusStateRow(out, "Storage health", status.storageState),
-		statusRow(out, "Executions", dx.Info, strconv.Itoa(status.executionCount)),
-		statusRow(out, "Tracked packages", dx.Info, strconv.Itoa(status.packageCount)),
-		statusRow(out, "Last recorded", dx.Info, status.lastActivity),
-		statusRow(out, "Last tool", dx.Accent, status.lastTool),
-		statusRow(out, "Last location", dx.Accent, status.lastLocation),
-		statusStateRow(out, "Fallback contention", status.fallbackContention),
-		statusRow(out, "Storage manifest", dx.Muted, status.storagePath),
-		statusRow(out, "Execution history", dx.Muted, status.historyPath),
-		statusRow(out, "Logs", dx.Muted, status.logPath),
-		statusRow(out, "Wrappers", dx.Muted, status.wrapperPath),
+		statusStateRow(out, "Daemon", status.DaemonState),
+		statusStateRow(out, "Storage health", status.StorageState),
+		statusRow(out, "Executions", dx.Info, strconv.Itoa(status.ExecutionCount)),
+		statusRow(out, "Tracked packages", dx.Info, strconv.Itoa(status.PackageCount)),
+		statusRow(out, "Last recorded", dx.Info, lastActivityLabel(status.LastActivity)),
+		statusRow(out, "Last tool", dx.Accent, status.LastTool),
+		statusRow(out, "Last location", dx.Accent, displayLocalPath(status.LastLocation)),
+		statusStateRow(out, "Fallback contention", status.FallbackContention),
+		statusRow(out, "Storage manifest", dx.Muted, displayLocalPath(status.StoragePath)),
+		statusRow(out, "Execution history", dx.Muted, displayLocalPath(status.HistoryPath)),
+		statusRow(out, "Logs", dx.Muted, displayLocalPath(status.LogPath)),
+		statusRow(out, "Wrappers", dx.Muted, displayLocalPath(status.WrapperPath)),
 	}
+}
+
+func lastActivityLabel(timestamp *time.Time) string {
+	if timestamp == nil {
+		return "never"
+	}
+	return timestamp.Local().Format("2006-01-02 15:04:05 MST")
 }
 
 func statusStateRow(out *dx.Out, label, value string) []string {

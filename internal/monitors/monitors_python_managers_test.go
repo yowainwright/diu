@@ -3,6 +3,7 @@ package monitors
 import (
 	"context"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/yowainwright/diu/internal/core"
@@ -206,12 +207,24 @@ func TestUVGetInstalledPackagesWithFakeUV(t *testing.T) {
 	assertPythonPackage(t, packages, 2, "ruff", "v0.5.0")
 }
 
-func TestUVGetInstalledPackagesFallsBackToPipList(t *testing.T) {
+func TestUVGetInstalledPackagesPreservesToolListError(t *testing.T) {
 	prependFakeCommand(t, uvCommandName, fakeUVPipListFallbackScript)
 	monitor := initializedUVMonitor(t)
 
+	if _, err := monitor.GetInstalledPackages(); err == nil {
+		t.Fatal("failed tool scan returned project packages instead of an error")
+	}
+}
+
+func TestUVGetInstalledPackagesPreservesEmptyToolList(t *testing.T) {
+	script := strings.Replace(fakeUVPipListFallbackScript, "exit 2\nfi", "exit 0\nfi", 1)
+	prependFakeCommand(t, uvCommandName, script)
+	monitor := initializedUVMonitor(t)
+
 	packages := installedPythonPackages(t, monitor)
-	assertPythonPackage(t, packages, 1, "httpx", "0.27.0")
+	if len(packages) != 0 {
+		t.Fatalf("empty tool scan returned project packages: %+v", packages)
+	}
 }
 
 func TestPoetryParseCommand(t *testing.T) {

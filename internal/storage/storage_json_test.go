@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/yowainwright/diu/internal/core"
+	"github.com/yowainwright/diu/internal/monitors"
 )
 
 func closeStorage(t *testing.T, store Storage) {
@@ -219,6 +220,62 @@ func TestAddExecutionsStoresBatch(t *testing.T) {
 	}
 }
 
+func TestDelayedExecutionsPreserveLastUsed(t *testing.T) {
+	store := newTestStorage(t)
+	defer closeStorage(t, store)
+	records := outOfOrderPackageExecutions()
+	for _, record := range records {
+		addExecution(t, store, record)
+	}
+	assertLatestPackageUsage(t, store, records[1].Timestamp, len(records))
+}
+
+func TestOutOfOrderExecutionBatchPreservesLastUsed(t *testing.T) {
+	store := newTestStorage(t)
+	defer closeStorage(t, store)
+	records := outOfOrderPackageExecutions()
+	if err := store.AddExecutions(records); err != nil {
+		t.Fatal(err)
+	}
+	assertLatestPackageUsage(t, store, records[1].Timestamp, len(records))
+}
+
+func outOfOrderPackageExecutions() []*core.ExecutionRecord {
+	newest := time.Now().UTC()
+	older := newest.Add(-48 * time.Hour)
+	var records []*core.ExecutionRecord
+	for _, timestamp := range []time.Time{older, newest, newest, older} {
+		record := &core.ExecutionRecord{
+			Tool:             core.ToolHomebrew,
+			Timestamp:        timestamp,
+			PackagesAffected: []string{"jq"},
+		}
+		records = append(records, record)
+	}
+	return records
+}
+
+func assertLatestPackageUsage(t *testing.T, store Storage, newest time.Time, count int) {
+	t.Helper()
+	pkg, err := store.GetPackage(core.ToolHomebrew, "jq")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !pkg.LastUsed.Equal(newest) {
+		t.Errorf("last used = %s, want %s", pkg.LastUsed, newest)
+	}
+	if pkg.UsageCount != count {
+		t.Errorf("usage count = %d, want %d", pkg.UsageCount, count)
+	}
+	records, err := store.GetExecutions(QueryOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != count {
+		t.Errorf("history count = %d, want %d", len(records), count)
+	}
+}
+
 func TestAddExecutionRejectsNilRecord(t *testing.T) {
 	store := newTestStorage(t)
 	defer closeStorage(t, store)
@@ -356,6 +413,132 @@ func TestUninstallExecutionRemovesPackage(t *testing.T) {
 	addExecution(t, store, record)
 	if _, err := store.GetPackage(core.ToolHomebrew, "jq"); err == nil {
 		t.Fatal("uninstall execution left the package in inventory")
+	}
+}
+
+func TestFailedUninstallPreservesPackageAndExecution(t *testing.T) {
+	for _, action := range []string{"uninstall", "remove", "pip_uninstall", "tool_uninstall"} {
+		t.Run(action, func(t *testing.T) {
+			store := newTestStorage(t)
+			defer closeStorage(t, store)
+			now := time.Now().UTC()
+			lastUsed := now.Add(-time.Hour)
+			pkg := &core.PackageInfo{Name: "jq", Tool: core.ToolHomebrew, UsageCount: 42, LastUsed: lastUsed}
+			updatePackage(t, store, pkg)
+			record := failedUninstallRecord(action)
+			addExecution(t, store, record)
+			assertFailedUninstallState(t, store, pkg)
+		})
+	}
+}
+
+func failedUninstallRecord(action string) *core.ExecutionRecord {
+	return &core.ExecutionRecord{
+		Tool:             core.ToolHomebrew,
+		Timestamp:        time.Now(),
+		ExitCode:         1,
+		PackagesAffected: []string{"jq"},
+		Metadata:         map[string]interface{}{"action": action},
+	}
+}
+
+func assertFailedUninstallState(t *testing.T, store Storage, original *core.PackageInfo) {
+	t.Helper()
+	pkg, err := store.GetPackage(original.Tool, original.Name)
+	if err != nil {
+		t.Fatalf("failed uninstall removed inventory: %v", err)
+	}
+	countPreserved := pkg.UsageCount == original.UsageCount
+	usagePreserved := countPreserved && pkg.LastUsed.Equal(original.LastUsed)
+	if !usagePreserved {
+		t.Fatalf("failed uninstall changed package usage: %+v", pkg)
+	}
+	executions, err := store.GetExecutions(QueryOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hasFailedExecution := len(executions) == 1 && executions[0].ExitCode == 1
+	if !hasFailedExecution {
+		t.Fatalf("failed uninstall was not retained in history: %+v", executions)
+	}
+}
+
+func TestUVProjectExecutionsPreserveToolInventory(t *testing.T) {
+	commands := [][]string{
+		{"add", "ruff", "django"},
+		{"remove", "ruff"},
+		{"pip", "install", "ruff", "django"},
+		{"pip", "uninstall", "ruff"},
+	}
+	for _, args := range commands {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			store := newTestStorage(t)
+			defer closeStorage(t, store)
+			updatePackage(t, store, &core.PackageInfo{Name: "ruff", Tool: core.ToolUV, UsageCount: 42})
+			record := uvExecutionRecord(t, args)
+			addExecution(t, store, record)
+			assertUVProjectInventory(t, store)
+		})
+	}
+}
+
+func uvExecutionRecord(t *testing.T, args []string) *core.ExecutionRecord {
+	t.Helper()
+	record, err := monitors.NewUVMonitor().ParseCommand("uv", args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record.Timestamp = time.Now()
+	return record
+}
+
+func assertUVProjectInventory(t *testing.T, store Storage) {
+	t.Helper()
+	packages, err := store.GetPackages(core.ToolUV)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(packages) != 1 {
+		t.Fatalf("project command changed tool inventory: %+v", packages)
+	}
+	pkg := packages[0]
+	usagePreserved := pkg.Name == "ruff" && pkg.UsageCount == 42 && pkg.LastUsed.IsZero()
+	if !usagePreserved {
+		t.Fatalf("project command changed tool usage: %+v", pkg)
+	}
+	records, err := store.GetExecutions(QueryOptions{})
+	hasExecution := err == nil && len(records) == 1
+	if !hasExecution {
+		t.Fatalf("project command missing from history: %v, %v", records, err)
+	}
+}
+
+func TestUVToolExecutionsUpdateInventory(t *testing.T) {
+	store := newTestStorage(t)
+	defer closeStorage(t, store)
+	install := uvExecutionRecord(t, []string{"tool", "install", "ruff"})
+	addExecution(t, store, install)
+	assertUVToolUsage(t, store, 1)
+	wrapped := uvExecutionRecord(t, []string{"--version"})
+	wrapped.PackagesAffected = []string{"ruff"}
+	wrapped.Metadata["executable"] = "ruff"
+	addExecution(t, store, wrapped)
+	assertUVToolUsage(t, store, 2)
+	uninstall := uvExecutionRecord(t, []string{"tool", "uninstall", "ruff"})
+	addExecution(t, store, uninstall)
+	if _, err := store.GetPackage(core.ToolUV, "ruff"); err == nil {
+		t.Fatal("tool uninstall left ruff in inventory")
+	}
+}
+
+func assertUVToolUsage(t *testing.T, store Storage, count int) {
+	t.Helper()
+	pkg, err := store.GetPackage(core.ToolUV, "ruff")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pkg.UsageCount != count {
+		t.Fatalf("tool usage count = %d, want %d", pkg.UsageCount, count)
 	}
 }
 

@@ -25,23 +25,47 @@ type packageListOptions struct {
 }
 
 func listPackages(cmd *command, _ []string) error {
+	if err := validateReportFormat(cmd); err != nil {
+		return err
+	}
 	packages, err := loadTrackedPackages(cmd)
 	if err != nil {
 		return err
 	}
-	if len(packages) == 0 {
-		printNoTrackedPackages()
-		return nil
-	}
-	packages, done, err := filterTrackedUnused(cmd, packages)
+	filtered, err := filterTrackedUnused(cmd, packages)
 	if err != nil {
 		return err
 	}
-	if done {
-		return nil
+	if flagString(cmd, "format") == formatJSON {
+		return printPackageJSON(cliOutput(), filtered)
 	}
-	printTrackedPackages(packages)
+	printTrackedPackageList(packages, filtered)
 	return nil
+}
+
+func printTrackedPackageList(packages, filtered []*core.PackageInfo) {
+	if len(packages) == 0 {
+		printNoTrackedPackages()
+		return
+	}
+	if len(filtered) == 0 {
+		printNoUnusedPackages()
+		return
+	}
+	printTrackedPackages(filtered)
+}
+
+func filterTrackedUnused(cmd *command, packages []*core.PackageInfo) ([]*core.PackageInfo, error) {
+	unusedStr := flagString(cmd, "unused")
+	if unusedStr == "" {
+		return packages, nil
+	}
+	duration, err := parseDuration(unusedStr)
+	if err != nil {
+		return nil, fmt.Errorf("invalid duration: %w", err)
+	}
+	cutoff := time.Now().Add(-duration)
+	return trackedPackagesUnusedBefore(packages, cutoff), nil
 }
 
 func loadTrackedPackages(cmd *command) ([]*core.PackageInfo, error) {
@@ -72,25 +96,6 @@ func packageListForTool(store storage.Storage, tool string) ([]*core.PackageInfo
 func printNoTrackedPackages() {
 	out := cliOutput()
 	out.Println(out.StyleData(dx.Info, "No packages tracked"))
-}
-
-func filterTrackedUnused(cmd *command, packages []*core.PackageInfo) ([]*core.PackageInfo, bool, error) {
-	unusedStr, _ := cmd.Flags().GetString("unused")
-	if unusedStr == "" {
-		return packages, false, nil
-	}
-	duration, err := parseDuration(unusedStr)
-	if err != nil {
-		return nil, false, fmt.Errorf("invalid duration: %w", err)
-	}
-
-	cutoff := time.Now().Add(-duration)
-	filtered := trackedPackagesUnusedBefore(packages, cutoff)
-	if len(filtered) == 0 {
-		printNoUnusedPackages()
-		return filtered, true, nil
-	}
-	return filtered, false, nil
 }
 
 func trackedPackagesUnusedBefore(packages []*core.PackageInfo, cutoff time.Time) []*core.PackageInfo {
@@ -141,6 +146,9 @@ func printTrackedPackage(out *dx.Out, pkg *core.PackageInfo) {
 }
 
 func checkPackages(cmd *command, args []string) error {
+	if err := validateListFlags(cmd); err != nil {
+		return err
+	}
 	opts := checkPackageOptions(cmd, args)
 	if shouldUseInteractive(cmd, args) {
 		canUninstall := false
@@ -327,12 +335,17 @@ func printPackageList(packages []*core.PackageInfo, format string) error {
 		return printPackageJSON(out, packages)
 	case formatCSV:
 		return printPackageCSV(out, packages)
-	default:
+	case formatTable:
 		return printPackageTable(out, packages)
+	default:
+		return validateOutputFormat(format, formatTable, formatJSON, formatCSV)
 	}
 }
 
 func printPackageJSON(out *dx.Out, packages []*core.PackageInfo) error {
+	if packages == nil {
+		packages = []*core.PackageInfo{}
+	}
 	enc := json.NewEncoder(out.Stdout())
 	enc.SetIndent("", "  ")
 	return enc.Encode(packages)

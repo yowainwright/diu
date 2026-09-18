@@ -1,6 +1,7 @@
 package dx
 
 import (
+	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -85,12 +86,12 @@ func (c *Command) child(args []string) *Command {
 
 func (c *Command) run(args []string) error {
 	remaining, err := c.Flags().Parse(args)
-	if err != nil {
-		return err
-	}
-	if hasHelpFlag(remaining) {
+	if err == flag.ErrHelp {
 		c.printUsage(c.stdout())
 		return nil
+	}
+	if err != nil {
+		return err
 	}
 	return c.runHandler(remaining)
 }
@@ -105,16 +106,6 @@ func (c *Command) runHandler(args []string) error {
 	}
 	c.printUsage(c.stdout())
 	return nil
-}
-
-func hasHelpFlag(args []string) bool {
-	for _, arg := range args {
-		isHelpFlag := arg == "-h" || arg == "--help"
-		if isHelpFlag {
-			return true
-		}
-	}
-	return false
 }
 
 func (c *Command) Flags() *FlagSet {
@@ -341,7 +332,7 @@ func (s *FlagSet) parseArgument(args []string, index int) (int, bool, []string, 
 	}
 	isHelpFlag := arg == "-h" || arg == "--help"
 	if isHelpFlag {
-		return 0, false, nil, nil
+		return 0, true, nil, flag.ErrHelp
 	}
 	return s.parseFlagArgument(args, index, arg)
 }

@@ -39,6 +39,53 @@ func TestCommandParsesSupportedFlagForms(t *testing.T) {
 	assertSupportedFlags(t, state)
 }
 
+func TestCommandPreservesLiteralHelpArguments(t *testing.T) {
+	for _, help := range []string{"-h", "--help"} {
+		t.Run(help, func(t *testing.T) {
+			state := &supportedFlagState{}
+			command := supportedFlagCommand(state)
+			var output bytes.Buffer
+			command.Output = &output
+			if err := command.Execute([]string{"--tool", "go", "--", help}); err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Equal(state.remaining, []string{help}) {
+				t.Fatalf("literal arguments = %v, want %q", state.remaining, help)
+			}
+			if output.Len() != 0 {
+				t.Fatalf("literal argument printed help: %s", output.String())
+			}
+		})
+	}
+}
+
+func TestCommandDistinguishesHelpFromFlagValues(t *testing.T) {
+	state := &supportedFlagState{}
+	command := supportedFlagCommand(state)
+	if err := command.Execute([]string{"--tool", "--help", "value"}); err != nil {
+		t.Fatal(err)
+	}
+	if state.tool != "--help" {
+		t.Fatalf("tool = %q, want literal --help", state.tool)
+	}
+	if !slices.Equal(state.remaining, []string{"value"}) {
+		t.Fatalf("arguments = %v, want [value]", state.remaining)
+	}
+}
+
+func TestCommandRecognizesHelpAfterFlags(t *testing.T) {
+	state := &supportedFlagState{}
+	command := supportedFlagCommand(state)
+	var output bytes.Buffer
+	command.Output = &output
+	if err := command.Execute([]string{"--tool", "go", "--help"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output.String(), "Usage: check") {
+		t.Fatalf("help output = %q", output.String())
+	}
+}
+
 type supportedFlagState struct {
 	tool      string
 	limit     int

@@ -198,6 +198,45 @@ func runSetupProject(activity *dx.Activity) error {
 	if err != nil {
 		return err
 	}
+	wasRunning, err := stopDaemonWithState(config, waitForSetupDaemonExit)
+	if err != nil {
+		return err
+	}
+	err = configureSetupProject(config, activity)
+	return restoreRecorderAfterSetupFailure(config, wasRunning, err)
+}
+
+func waitForSetupDaemonExit(config *core.Config, pid int, pidErr error) error {
+	stopErr := waitForDaemonExit(config, pid, pidErr)
+	if stopErr == nil {
+		return nil
+	}
+	cliOutput().Status(dx.Warning, "Setup aborted; waiting once more for recorder shutdown before recovery")
+	return recoverRecorderAfterStopTimeout(config, pid, pidErr, stopErr)
+}
+
+func recoverRecorderAfterStopTimeout(config *core.Config, pid int, pidErr, stopErr error) error {
+	if err := waitForDaemonExit(config, pid, pidErr); err != nil {
+		recoveryErr := fmt.Errorf("recorder shutdown is unconfirmed; once it exits, run 'diu daemon start' to restore recording, then retry 'diu setup': %w", err)
+		return errors.Join(stopErr, recoveryErr)
+	}
+	wasRunning := true
+	return restoreRecorderAfterSetupFailure(config, wasRunning, stopErr)
+}
+
+func restoreRecorderAfterSetupFailure(config *core.Config, wasRunning bool, setupErr error) error {
+	shouldRestore := wasRunning && setupErr != nil
+	if !shouldRestore {
+		return setupErr
+	}
+	if err := startDaemonWithConfig(config); err != nil {
+		restoreErr := fmt.Errorf("failed to restore recorder after setup failure: %w", err)
+		return errors.Join(setupErr, restoreErr)
+	}
+	return setupErr
+}
+
+func configureSetupProject(config *core.Config, activity *dx.Activity) error {
 	if err := initializeSetupStorage(config); err != nil {
 		return err
 	}

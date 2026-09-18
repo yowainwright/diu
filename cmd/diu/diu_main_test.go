@@ -1702,10 +1702,7 @@ func queryCommandForTest(t *testing.T, args ...string) *command {
 
 func packagesCommandForTest(t *testing.T, args ...string) *command {
 	t.Helper()
-	cmd := &command{}
-	var tool, unused string
-	cmd.Flags().StringVarP(&tool, "tool", "t", "", "tool")
-	cmd.Flags().StringVarP(&unused, "unused", "u", "", "unused")
+	cmd := newPackagesCommand()
 	parseTestFlags(t, cmd, args...)
 	return cmd
 }
@@ -1742,16 +1739,7 @@ func manageCommandForTest(t *testing.T, args ...string) *command {
 
 func statsCommandForTest(t *testing.T, args ...string) *command {
 	t.Helper()
-	cmd := &command{}
-	var shouldShowDaily, shouldShowWeekly bool
-	var tool string
-	var top int
-	dailyDefault := false
-	weeklyDefault := false
-	cmd.Flags().BoolVarP(&shouldShowDaily, "daily", "d", dailyDefault, "daily")
-	cmd.Flags().BoolVarP(&shouldShowWeekly, "weekly", "w", weeklyDefault, "weekly")
-	cmd.Flags().StringVarP(&tool, "tool", "t", "", "tool")
-	cmd.Flags().IntVar(&top, "top", 10, "top")
+	cmd := newStatsCommand()
 	parseTestFlags(t, cmd, args...)
 	return cmd
 }
@@ -2386,6 +2374,111 @@ func TestSetupScansInventoryBeforeEnablingBackgroundTracking(t *testing.T) {
 	}
 	if err := setupProject(&command{}, nil); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestSetupDrainsLegacyDaemonBeforeMigratingHistory(t *testing.T) {
+	config := setupLegacySetupHistory(t)
+	t.Cleanup(SetDaemonChecker(isDaemonRunning))
+	previous := daemonStopRequester
+	t.Cleanup(func() { daemonStopRequester = previous })
+	daemonStopRequester = func(*core.Config) error {
+		flushLegacySetupHistory(t, config.Storage.JSONFile)
+		return nil
+	}
+	setupBackgroundTracking = func(*core.Config) error {
+		assertMigratedSetupHistory(t, config)
+		return nil
+	}
+	if err := setupProject(&command{}, nil); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSetupPreservesLegacyHistoryWhenDaemonStopFails(t *testing.T) {
+	config := setupLegacySetupHistory(t)
+	before := readLegacySetupHistory(t, config.Storage.JSONFile)
+	stopErr := errors.New("daemon stop failed")
+	t.Cleanup(SetDaemonChecker(isDaemonRunning))
+	t.Cleanup(stubDaemonStopRequest(stopErr))
+	setupBackgroundTracking = func(*core.Config) error {
+		t.Fatal("setup started background tracking after stop failed")
+		return nil
+	}
+	if err := setupProject(&command{}, nil); !errors.Is(err, stopErr) {
+		t.Fatalf("setup error = %v, want %v", err, stopErr)
+	}
+	after := readLegacySetupHistory(t, config.Storage.JSONFile)
+	if string(after) != string(before) {
+		t.Fatal("setup changed legacy history after stop failed")
+	}
+	assertFileMissing(t, storage.ExecutionLogPath(config.Storage.JSONFile))
+}
+
+func setupLegacySetupHistory(t *testing.T) *core.Config {
+	t.Helper()
+	config := setupTestHomeConfig(t)
+	t.Setenv("PATH", t.TempDir())
+	requireConfigDirectories(t, config)
+	record := core.ExecutionRecord{ID: "before-upgrade", Tool: core.ToolGo, Timestamp: time.Now()}
+	writeLegacySetupHistory(t, config.Storage.JSONFile, []core.ExecutionRecord{record})
+	if err := os.WriteFile(config.Daemon.PIDFile, []byte("999999999"), core.PrivateFileMode); err != nil {
+		t.Fatal(err)
+	}
+	return config
+}
+
+func writeLegacySetupHistory(t *testing.T, path string, records []core.ExecutionRecord) {
+	t.Helper()
+	legacy := core.StorageData{Version: "1.0.0", Executions: records}
+	data, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, core.PrivateFileMode); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func readLegacySetupHistory(t *testing.T, path string) []byte {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
+func flushLegacySetupHistory(t *testing.T, path string) {
+	t.Helper()
+	data := readLegacySetupHistory(t, path)
+	var legacy core.StorageData
+	if err := json.Unmarshal(data, &legacy); err != nil {
+		t.Fatal(err)
+	}
+	if legacy.ExecutionLogFormat != "" {
+		t.Fatal("storage migrated before the old daemon drained")
+	}
+	record := core.ExecutionRecord{ID: "drained-on-stop", Tool: core.ToolGo, Timestamp: time.Now()}
+	records := append(legacy.Executions, record)
+	writeLegacySetupHistory(t, path, records)
+}
+
+func assertMigratedSetupHistory(t *testing.T, config *core.Config) {
+	t.Helper()
+	store := openTestStore(t, config)
+	defer closeTestStore(t, store)
+	records, err := store.GetExecutions(storage.QueryOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for _, record := range records {
+		ids = append(ids, record.ID)
+	}
+	slices.Sort(ids)
+	if !slices.Equal(ids, []string{"before-upgrade", "drained-on-stop"}) {
+		t.Fatalf("migrated history IDs = %v", ids)
 	}
 }
 
