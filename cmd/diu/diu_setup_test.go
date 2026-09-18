@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/yowainwright/diu/internal/core"
+	"github.com/yowainwright/diu/internal/daemon"
 )
 
 type setupRecorderState struct {
@@ -130,5 +131,45 @@ func TestSuccessfulSetupDoesNotRestartRecorderTwice(t *testing.T) {
 	}
 	if state.starts != 0 {
 		t.Fatalf("successful setup restarted the recorder %d extra times", state.starts)
+	}
+}
+
+func TestSetupRestoresRecorderAfterPIDFallback(t *testing.T) {
+	config := setupTestHomeConfig(t)
+	writeSetupFallbackPID(t, config)
+	state := stubSetupRecorder(t)
+	state.isRunning = false
+	wantErr := errors.New("background setup failed")
+	setupBackgroundTracking = func(*core.Config) error { return wantErr }
+	err := setupProject(&command{}, nil)
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("setup error = %v, want %v", err, wantErr)
+	}
+	assertSetupRecorderRestored(t, state)
+}
+
+func TestSetupDoesNotRestoreStalePID(t *testing.T) {
+	config := setupTestHomeConfig(t)
+	writeSetupFallbackPID(t, config)
+	state := stubSetupRecorder(t)
+	state.isRunning = false
+	daemonStopRequester = func(*core.Config) error { return daemon.ErrNotRunning }
+	wantErr := errors.New("background setup failed")
+	setupBackgroundTracking = func(*core.Config) error { return wantErr }
+	err := setupProject(&command{}, nil)
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("setup error = %v, want %v", err, wantErr)
+	}
+	if state.starts != 0 {
+		t.Fatalf("stale PID caused %d recorder starts", state.starts)
+	}
+}
+
+func writeSetupFallbackPID(t *testing.T, config *core.Config) {
+	t.Helper()
+	t.Setenv("PATH", t.TempDir())
+	requireConfigDirectories(t, config)
+	if err := os.WriteFile(config.Daemon.PIDFile, []byte("999999999"), core.PrivateFileMode); err != nil {
+		t.Fatal(err)
 	}
 }

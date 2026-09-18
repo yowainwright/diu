@@ -198,8 +198,8 @@ func runSetupProject(activity *dx.Activity) error {
 	if err != nil {
 		return err
 	}
-	wasRunning := defaultDaemonChecker(config)
-	if err := stopExistingDaemon(config); err != nil {
+	wasRunning, err := stopDaemonWithState(config)
+	if err != nil {
 		return err
 	}
 	err = configureSetupProject(config, activity)
