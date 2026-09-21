@@ -1350,18 +1350,19 @@ func addExecutableEntry(targets map[string]executableWrapper, tool, dir, name st
 		return
 	}
 	path := filepath.Join(dir, name)
-	info, err := os.Stat(path)
-	if !usableExecutableInfo(info, err) {
+	if !usableExecutablePath(path) {
 		return
 	}
-	if preferExistingExecutable(targets[name], path) {
+	pkg := packageNameForExecutable(tool, path, name)
+	skipTarget := pkg == "" || preferExistingExecutable(targets[name], path)
+	if skipTarget {
 		return
 	}
 	targets[name] = executableWrapper{
 		Name:         name,
 		OriginalPath: path,
 		Tool:         tool,
-		Package:      packageNameForExecutable(tool, path, name),
+		Package:      pkg,
 	}
 }
 
@@ -1383,7 +1384,8 @@ func executablePathPriority(path string) int {
 	return len(paths)
 }
 
-func usableExecutableInfo(info os.FileInfo, err error) bool {
+func usableExecutablePath(path string) bool {
+	info, err := os.Stat(path)
 	if err != nil {
 		return false
 	}

@@ -405,7 +405,9 @@ func (j *JSONStorage) shouldUpdateInventory(record core.ExecutionRecord) bool {
 	if j.tracksLocalNPM(record.Tool) {
 		return true
 	}
-	return executionWasGlobal(record)
+	executable, _ := record.Metadata["executable"].(string)
+	tracksExecutable := executable != "" || executionWasGlobal(record)
+	return tracksExecutable
 }
 
 func isUVToolExecution(record core.ExecutionRecord) bool {

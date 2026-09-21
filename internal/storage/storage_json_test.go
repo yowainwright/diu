@@ -400,6 +400,42 @@ func TestGlobalJavaScriptExecutionCreatesPackage(t *testing.T) {
 	}
 }
 
+func TestJavaScriptExecutableUsageUpdatesInventory(t *testing.T) {
+	managers := []monitors.Monitor{monitors.NewNPMMonitor(), monitors.NewPNPMMonitor(), monitors.NewBunMonitor()}
+	for _, monitor := range managers {
+		t.Run(monitor.Name(), func(t *testing.T) {
+			assertJavaScriptExecutableUsage(t, monitor)
+		})
+	}
+}
+
+func assertJavaScriptExecutableUsage(t *testing.T, monitor monitors.Monitor) {
+	t.Helper()
+	store := newGlobalOnlyNPMStorage(t)
+	defer closeStorage(t, store)
+	for index, args := range [][]string{nil, {"--version"}, {"remove", "something", "-g"}} {
+		record := javascriptExecutableRecord(monitor.Name(), args)
+		monitors.EnrichExecutionRecord(monitor, record)
+		addExecution(t, store, record)
+		pkg, err := store.GetPackage(monitor.Name(), "example-cli")
+		if err != nil {
+			t.Fatal(err)
+		}
+		correctUsage := pkg.UsageCount == index+1 && pkg.LastUsed.Equal(record.Timestamp)
+		if !correctUsage {
+			t.Fatalf("executable usage = %+v, want count %d and timestamp %v", pkg, index+1, record.Timestamp)
+		}
+	}
+}
+
+func javascriptExecutableRecord(tool string, args []string) *core.ExecutionRecord {
+	return &core.ExecutionRecord{
+		Tool: tool, Command: "example-cli", Args: args, Timestamp: time.Now(),
+		PackagesAffected: []string{"example-cli"},
+		Metadata:         map[string]interface{}{"executable": "example-cli", "original_path": "/bin/example-cli"},
+	}
+}
+
 func TestUninstallExecutionRemovesPackage(t *testing.T) {
 	store := newTestStorage(t)
 	defer closeStorage(t, store)
