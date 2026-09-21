@@ -167,11 +167,10 @@ func shouldSkipExecutableWrapper(name string) bool {
 }
 
 func packageNameForExecutable(tool, path, name string) string {
-	resolved, err := filepath.EvalSymlinks(path)
-	if err != nil {
-		resolved = path
+	slashPath := resolvedExecutablePath(path)
+	if !executableMatchesManager(tool, slashPath) {
+		return ""
 	}
-	slashPath := filepath.ToSlash(resolved)
 
 	switch tool {
 	case core.ToolHomebrew:
@@ -185,6 +184,28 @@ func packageNameForExecutable(tool, path, name string) string {
 	}
 
 	return name
+}
+
+func resolvedExecutablePath(path string) string {
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		resolved = path
+	}
+	return filepath.ToSlash(resolved)
+}
+
+func executableMatchesManager(tool, resolvedPath string) bool {
+	jsPackage := npmPackageFromPath(resolvedPath)
+	brewPackage := pathSegmentAfter(resolvedPath, "/Cellar/")
+	switch tool {
+	case core.ToolHomebrew:
+		matches := brewPackage != "" || jsPackage == ""
+		return matches
+	case core.ToolNPM, core.ToolPNPM, core.ToolBun:
+		return brewPackage == ""
+	default:
+		return true
+	}
 }
 
 func pathSegmentAfter(path, marker string) string {

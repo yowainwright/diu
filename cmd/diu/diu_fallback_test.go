@@ -104,6 +104,61 @@ func TestWrapperDiscoveryPrefersPATHOrder(t *testing.T) {
 	}
 }
 
+func TestWrapperDiscoveryResolvesSharedBinOwnership(t *testing.T) {
+	for _, tools := range [][]string{{core.ToolHomebrew, core.ToolNPM}, {core.ToolNPM, core.ToolHomebrew}} {
+		t.Run(tools[0], func(t *testing.T) {
+			bin := sharedWrapperBin(t)
+			t.Setenv("PATH", bin)
+			targets := make(map[string]executableWrapper)
+			for _, tool := range tools {
+				addExecutableDir(targets, tool, bin)
+			}
+			for name, want := range map[string]executableWrapper{
+				"tsc":      {Tool: core.ToolNPM, Package: "typescript"},
+				"scoped":   {Tool: core.ToolNPM, Package: "@scope/cli"},
+				"jq":       {Tool: core.ToolHomebrew, Package: "jq"},
+				"brew-tsc": {Tool: core.ToolHomebrew, Package: "typescript"},
+			} {
+				got := targets[name]
+				wrongOwner := got.Tool != want.Tool || got.Package != want.Package
+				if wrongOwner {
+					t.Errorf("%s owner = %s/%s, want %s/%s", name, got.Tool, got.Package, want.Tool, want.Package)
+				}
+			}
+		})
+	}
+}
+
+func sharedWrapperBin(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	bin := filepath.Join(root, "bin")
+	if err := os.MkdirAll(bin, core.OwnerDirectoryMode); err != nil {
+		t.Fatal(err)
+	}
+	for name, target := range map[string]string{
+		"tsc":      "lib/node_modules/typescript/bin/tsc",
+		"scoped":   "lib/node_modules/@scope/cli/bin/scoped",
+		"jq":       "Cellar/jq/1.8/bin/jq",
+		"brew-tsc": "Cellar/typescript/5/libexec/lib/node_modules/typescript/bin/tsc",
+	} {
+		original := filepath.Join(root, target)
+		writeSharedBinExecutable(t, original, filepath.Join(bin, name))
+	}
+	return bin
+}
+
+func writeSharedBinExecutable(t *testing.T, original, link string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(original), core.OwnerDirectoryMode); err != nil {
+		t.Fatal(err)
+	}
+	writeExecutableForTest(t, original, "#!/bin/sh\nexit 0\n")
+	if err := os.Symlink(original, link); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestWrappersSkipPreviousWrapperDirectory(t *testing.T) {
 	for _, template := range []string{"executable", "process"} {
 		t.Run(template, func(t *testing.T) {

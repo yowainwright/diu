@@ -65,6 +65,8 @@ Rerun `diu setup` if you move the DIU binary or change where your shell finds pa
 <!-- UV inventory scope derived from internal/monitors/monitors_python_managers.go and internal/storage/storage_json.go -->
 UV inventory scans use `uv tool list`. Project commands such as `uv add`, `uv remove`, and `uv pip` remain in execution history without changing tool inventory.
 
+For `uv tool run`, DIU attributes usage to the command's package, or the package specified by `--from`. Arguments passed to the tool are not recorded as package names.
+
 ## More Options
 
 <details>
@@ -72,6 +74,8 @@ UV inventory scans use `uv tool list`. Project commands such as `uv add`, `uv re
 
 <!-- Wrapper execution sequence derived from cmd/diu/diu_setup.go and internal/monitors/monitors_process.go -->
 `diu setup` places command wrappers in `~/.local/bin/diu-wrappers` and adds that directory to existing shell config files when possible. Each wrapper runs the original tool and preserves its output and exit code.
+
+Executables installed globally through npm, pnpm, or Bun count toward their package's usage without a `--global` flag. When Homebrew and JavaScript managers share a bin directory, DIU uses the resolved executable path to distinguish their packages.
 
 ```text
 command -> DIU wrapper -> original tool -> output to your terminal

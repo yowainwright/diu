@@ -100,6 +100,10 @@ func (r *MonitorRegistry) StopAll() error {
 }
 
 func EnrichExecutionRecord(monitor Monitor, record *core.ExecutionRecord) {
+	executable, _ := record.Metadata["executable"].(string)
+	if executable != "" {
+		return
+	}
 	parsed, err := monitor.ParseCommand(record.Command, record.Args)
 	if err != nil {
 		return

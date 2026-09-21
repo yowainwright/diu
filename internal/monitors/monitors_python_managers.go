@@ -330,10 +330,82 @@ func parseUVToolCommand(record *core.ExecutionRecord, args []string) {
 		record.PackagesAffected = extractPythonPackages(args[1:])
 		record.Metadata["action"] = "tool_uninstall"
 	case "run":
-		record.PackagesAffected = extractPythonPackages(args[1:])
+		record.PackagesAffected = uvToolRunPackages(args[1:])
 		record.Metadata["action"] = "tool_run"
 	case "list":
 		record.Metadata["action"] = "tool_list"
+	}
+}
+
+func uvToolRunPackages(args []string) []string {
+	command, from := uvToolRunTarget(args)
+	if command == "" {
+		return nil
+	}
+	spec, _, _ := strings.Cut(command, "@")
+	if from != "" {
+		spec = from
+	}
+	pkg := cleanPythonPackageSpec(spec)
+	if pkg == "" {
+		return nil
+	}
+	return []string{pkg}
+}
+
+func uvToolRunTarget(args []string) (string, string) {
+	from := ""
+	for len(args) > 0 {
+		arg := args[0]
+		args = args[1:]
+		if arg == "--" {
+			return firstToolRunArgument(args), from
+		}
+		if !strings.HasPrefix(arg, "-") {
+			return arg, from
+		}
+		flag, value, remaining := uvToolRunOption(arg, args)
+		args = remaining
+		if flag == "--from" {
+			from = value
+		}
+	}
+	return "", from
+}
+
+func firstToolRunArgument(args []string) string {
+	if len(args) == 0 {
+		return ""
+	}
+	return args[0]
+}
+
+func uvToolRunOption(arg string, args []string) (string, string, []string) {
+	flag, value, hasValue := strings.Cut(arg, "=")
+	if hasValue {
+		return flag, value, args
+	}
+	consumesNext := uvToolRunValueFlag(flag) && len(args) > 0
+	if consumesNext {
+		return flag, args[0], args[1:]
+	}
+	return flag, "", args
+}
+
+func uvToolRunValueFlag(flag string) bool {
+	switch flag {
+	case "-w", "--with-editable", "--with-requirements", "--constraints", "-b", "--build-constraints", "--build-constraint", "--overrides", "--env-file":
+		return true
+	case "--python-platform", "--torch-backend", "--index", "--default-index", "--index-strategy", "--keyring-provider":
+		return true
+	case "-P", "--upgrade-package", "--resolution", "--prerelease", "--fork-strategy", "--exclude-newer", "--exclude-newer-package", "--no-sources-package":
+		return true
+	case "--reinstall-package", "--link-mode", "-C", "--config-setting", "--config-settings", "--config-settings-package", "--no-build-isolation-package", "--no-build-package", "--no-binary-package":
+		return true
+	case "--cache-dir", "--refresh-package", "-p", "--color", "--allow-insecure-host", "--directory", "--project", "--config-file":
+		return true
+	default:
+		return pythonPackageValueFlags[flag]
 	}
 }
 

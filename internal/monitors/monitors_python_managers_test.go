@@ -199,6 +199,44 @@ func TestUVParseCommandVariants(t *testing.T) {
 	assertPythonParseCommandCases(t, monitor, "uv", uvParseCommandCases)
 }
 
+func TestUVToolRunTracksOnlyTheProvidingPackage(t *testing.T) {
+	cases := []pythonParseCase{
+		{name: "command arguments", args: []string{"ruff", "check", "."}, wantPackage: "ruff"},
+		{name: "from package", args: []string{"--from", "httpie", "http", "GET", "example.com"}, wantPackage: "httpie"},
+		{name: "from equals", args: []string{"--from=httpie>=3", "http", "GET"}, wantPackage: "httpie"},
+		{name: "version", args: []string{"ruff@0.5.0", "check"}, wantPackage: "ruff"},
+		{name: "tool flags", args: []string{"--python", "3.12", "--with", "plugin", "ruff", "check"}, wantPackage: "ruff"},
+		{name: "global flags", args: []string{"--color", "always", "--directory", "workspace", "-p", "3.12", "ruff", "check"}, wantPackage: "ruff"},
+		{name: "index flag", args: []string{"--index", "https://example.com/simple", "--from", "httpie", "http", "GET"}, wantPackage: "httpie"},
+		{name: "boolean flags", args: []string{"--isolated", "--offline", "ruff", "check"}, wantPackage: "ruff"},
+		{name: "argument named from", args: []string{"ruff", "--from", "other"}, wantPackage: "ruff"},
+		{name: "separator", args: []string{"--", "ruff", "check"}, wantPackage: "ruff"},
+		{name: "empty separator", args: []string{"--"}},
+		{name: "missing command", args: []string{"--python", "3.12"}},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			assertUVToolRunPackage(t, tt)
+		})
+	}
+}
+
+func assertUVToolRunPackage(t *testing.T, tt pythonParseCase) {
+	t.Helper()
+	args := append([]string{"tool", "run"}, tt.args...)
+	record, err := NewUVMonitor().ParseCommand("uv", args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var want []string
+	if tt.wantPackage != "" {
+		want = []string{tt.wantPackage}
+	}
+	if !slices.Equal(record.PackagesAffected, want) {
+		t.Fatalf("packages = %v, want %v", record.PackagesAffected, want)
+	}
+}
+
 func TestUVGetInstalledPackagesWithFakeUV(t *testing.T) {
 	prependFakeCommand(t, uvCommandName, fakeUVToolListScript)
 	monitor := initializedUVMonitor(t)
