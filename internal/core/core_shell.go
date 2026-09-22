@@ -19,10 +19,6 @@ diu_generated_wrapper() {
 }
 
 diu_selected_command() {
-    # A shim may return through exec or a child process; both inherit this marker.
-    if [ "${DIU_DELEGATED_COMMAND:-}" = "$DIU_COMMAND" ]; then
-        return
-    fi
     local remaining="${PATH}:" directory candidate
     while [ -n "$remaining" ]; do
         directory="${remaining%%:*}"
@@ -38,16 +34,32 @@ diu_selected_command() {
     done
 }
 
+diu_delegation_path() {
+    local remaining="${PATH}:" directory candidate selected_path='' separator=''
+    while [ -n "$remaining" ]; do
+        directory="${remaining%%:*}"
+        remaining="${remaining#*:}"
+        candidate="${directory:-.}/$DIU_COMMAND"
+        if [ -f "$candidate" ] && [ -x "$candidate" ] && diu_generated_wrapper "$candidate"; then
+            continue
+        fi
+        selected_path="$selected_path$separator$directory"
+        separator=':'
+    done
+    printf '%s' "$selected_path"
+}
+
 DIU_SELECTED_COMMAND="$(diu_selected_command)"
-if [ -z "$DIU_SELECTED_COMMAND" ] && diu_generated_wrapper "$DIU_ORIGINAL"; then
+DIU_DELEGATION_PATH="$(diu_delegation_path)"
+# Only delegate when a wrapper was on PATH. A shim returning directly with the
+# filtered PATH runs the original, while nested PATH lookups bypass wrappers.
+if [ -n "$DIU_SELECTED_COMMAND" ] && [ "$DIU_DELEGATION_PATH" != "$PATH" ] && ! [ "$DIU_SELECTED_COMMAND" -ef "$DIU_ORIGINAL" ]; then
+    PATH="$DIU_DELEGATION_PATH" exec "$DIU_SELECTED_COMMAND" "$@"
+fi
+if diu_generated_wrapper "$DIU_ORIGINAL"; then
     printf 'diu: no original executable found for %s\n' "$DIU_COMMAND" >&2
     exit 127
 fi
-if [ -n "$DIU_SELECTED_COMMAND" ] && ! [ "$DIU_SELECTED_COMMAND" -ef "$DIU_ORIGINAL" ]; then
-    export DIU_DELEGATED_COMMAND="$DIU_COMMAND"
-    exec "$DIU_SELECTED_COMMAND" "$@"
-fi
-unset DIU_DELEGATED_COMMAND
 `
 
 func PosixPathLine(wrapperDir string) string {

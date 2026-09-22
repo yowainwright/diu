@@ -126,6 +126,28 @@ func assertReturningShim(t *testing.T, template, invocation string) {
 	runContendedWrapper(t, wrapper)
 }
 
+func TestWrappersPreserveNestedCommandSelection(t *testing.T) {
+	for _, template := range []string{"executable", "process"} {
+		t.Run(template, func(t *testing.T) {
+			assertNestedCommandSelection(t, template)
+		})
+	}
+}
+
+func assertNestedCommandSelection(t *testing.T, template string) {
+	t.Helper()
+	config := setupTestHomeConfig(t)
+	original := writeFallbackOriginal(t)
+	wrapper := installFallbackTestWrapper(t, config, original, template)
+	preferred := t.TempDir()
+	name := filepath.Base(wrapper)
+	script := "#!/bin/bash\nif [ \"${1:-}\" = inner ]; then printf 'preferred\\n'; exit 7; fi\n\"$DIU_TEST_COMMAND\" inner\nexit $?\n"
+	writeExecutableForTest(t, filepath.Join(preferred, name), script)
+	t.Setenv("DIU_TEST_COMMAND", name)
+	t.Setenv("PATH", filepath.Dir(wrapper)+":"+preferred+":/usr/bin:/bin")
+	assertSelectedCommand(t, name, "preferred\n", 7)
+}
+
 func TestWrapperDiscoveryPrefersPATHOrder(t *testing.T) {
 	preferred, other := t.TempDir(), t.TempDir()
 	name := "tool"
