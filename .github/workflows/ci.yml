@@ -110,10 +110,8 @@ jobs:
         env:
           GOOS: darwin
           GOARCH: ${{ matrix.arch }}
-          CGO_ENABLED: '0'
         run: |
-          go build -v -ldflags '-X main.version=0.0.0 -X github.com/yowainwright/diu/internal/core.Version=0.0.0' \
-            -o diu-darwin-${{ matrix.arch }} ./cmd/diu
+          go build -v -o diu-darwin-${{ matrix.arch }} ./cmd/diu
 
       - name: Test binary
         if: matrix.arch == 'arm64' && runner.arch == 'ARM64' || matrix.arch == 'amd64' && runner.arch == 'X64'
@@ -189,10 +187,7 @@ jobs:
 
   release-config:
     name: Release Config
-    strategy:
-      matrix:
-        runner: [macos-latest, macos-15-intel]
-    runs-on: ${{ matrix.runner }}
+    runs-on: macos-latest
     needs: build
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -206,51 +201,6 @@ jobs:
         run: |
           RELEASE_PACKAGE="github.com/goreleaser/goreleaser/v2@${GORELEASER_VERSION}"
           go run "$RELEASE_PACKAGE" check
-
-      - name: Download release test binaries
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          pattern: diu-darwin-*
-          path: dist/homebrew/bin
-          merge-multiple: true
-
-      - name: Check Homebrew formula
-        run: |
-          TMP_DIR="${GITHUB_WORKSPACE}/dist/homebrew"
-          FORMULA_PATH="${TMP_DIR}/diu.rb"
-          SHA_FILE="${TMP_DIR}/checksums.txt"
-          TEST_TAP="yowainwright/diu-check"
-          TEST_FORMULA="${TEST_TAP}/diu"
-
-          cleanup_formula() {
-            brew uninstall --force --ignore-dependencies diu || true
-            brew untap "$TEST_TAP" || true
-          }
-
-          trap cleanup_formula EXIT
-          brew untap "$TEST_TAP" || true
-
-          for ARCH in amd64 arm64; do
-            mkdir -p "$TMP_DIR/$ARCH"
-            cp "$TMP_DIR/bin/diu-darwin-$ARCH" "$TMP_DIR/$ARCH/diu"
-            chmod +x "$TMP_DIR/$ARCH/diu"
-            tar -C "$TMP_DIR/$ARCH" -czf "$TMP_DIR/diu_0.0.0_darwin_$ARCH.tar.gz" diu
-          done
-          (cd "$TMP_DIR" && shasum -a 256 diu_*.tar.gz) > "$SHA_FILE"
-
-          ops/scripts/render-homebrew-formula.sh \
-            "0.0.0" \
-            "file://$TMP_DIR" \
-            "$SHA_FILE" > "$FORMULA_PATH"
-
-          ruby -c "$FORMULA_PATH"
-          brew tap-new --no-git "$TEST_TAP"
-          TEST_TAP_REPO="$(brew --repository "$TEST_TAP")"
-          cp "$FORMULA_PATH" "$TEST_TAP_REPO/Formula/diu.rb"
-
-          test -z "$(brew deps "$TEST_FORMULA")"
-          brew install "$TEST_FORMULA"
-          brew test "$TEST_FORMULA"
 
   security:
     name: Security Scan

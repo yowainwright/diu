@@ -26,6 +26,9 @@ go build -o diu ./cmd/diu
 <!-- Validation tasks derived from .mise.toml and .github/workflows/ci.yml -->
 Run `mise run lint` and `mise run test` for the configured linters and race tests. CI also checks both Mac architectures, Docker E2E tests, security, and the Homebrew formula.
 
+Use `mise run test-unit` to skip the two slow recorder shutdown tests and
+`mise run test-slow` to run them separately. The full test suite and CI include both.
+
 ## Pull Requests
 
 Before opening a pull request:

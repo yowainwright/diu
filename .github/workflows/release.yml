@@ -81,59 +81,6 @@ jobs:
     needs: release
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-
-      - name: Render Homebrew formula
-        env:
-          TAG_NAME: ${{ github.ref_name }}
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          VERSION="${TAG_NAME#v}"
-          ARCHIVE_BASE_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG_NAME}"
-          ASSET_DIR="${GITHUB_WORKSPACE}/dist/homebrew"
-          FORMULA_PATH="${ASSET_DIR}/diu.rb"
-
-          mkdir -p "$ASSET_DIR"
-          gh release download "$TAG_NAME" --repo "$GITHUB_REPOSITORY" \
-            --pattern 'diu_*_darwin_*.tar.gz' --pattern checksums.txt --dir "$ASSET_DIR"
-          (cd "$ASSET_DIR" && shasum -a 256 -c checksums.txt)
-
-          ops/scripts/render-homebrew-formula.sh \
-            "$VERSION" "$ARCHIVE_BASE_URL" "$ASSET_DIR/checksums.txt" > "$FORMULA_PATH"
-          ruby -c "$FORMULA_PATH"
-
-          echo "FORMULA_PATH=$FORMULA_PATH" >> "$GITHUB_ENV"
-
-      - name: Test Homebrew formula
-        run: |
-          TEST_TAP="yowainwright/diu-check"
-          TEST_FORMULA="${TEST_TAP}/diu"
-
-          cleanup_formula() {
-            brew uninstall --force --ignore-dependencies diu || true
-            brew untap "$TEST_TAP" || true
-          }
-
-          trap cleanup_formula EXIT
-          brew untap "$TEST_TAP" || true
-
-          brew tap-new --no-git "$TEST_TAP"
-          TEST_TAP_REPO="$(brew --repository "$TEST_TAP")"
-          cp "$FORMULA_PATH" "$TEST_TAP_REPO/Formula/diu.rb"
-
-          brew audit --strict --online "$TEST_FORMULA"
-          test -z "$(brew deps "$TEST_FORMULA")"
-          brew install "$TEST_FORMULA"
-          brew test "$TEST_FORMULA"
-
-      - name: Save Homebrew formula
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: homebrew-formula
-          path: ${{ env.FORMULA_PATH }}
-          if-no-files-found: error
-          retention-days: 7
-
       - name: Check out Homebrew tap
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -143,10 +90,18 @@ jobs:
           persist-credentials: false
           path: homebrew-tap
 
-      - name: Prepare Homebrew formula
+      - name: Set up tap Ruby
         run: |
-          mkdir -p homebrew-tap/Formula
-          cp "$FORMULA_PATH" homebrew-tap/Formula/diu.rb
+          brew list ruby >/dev/null 2>&1 || brew install ruby
+          echo "$(brew --prefix ruby)/bin" >> "$GITHUB_PATH"
+
+      - name: Update Homebrew formula
+        working-directory: homebrew-tap
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          scripts/update-formula diu "${TAG_NAME#v}"
+          scripts/validate-tap --strict
 
       - name: Open Homebrew formula pull request
         uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8
@@ -154,7 +109,9 @@ jobs:
           # Requires Contents and Pull requests write permissions on the tap.
           token: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
           path: homebrew-tap
-          add-paths: Formula/diu.rb
+          add-paths: |
+            Formula/diu.rb
+            brews/diu.json
           base: main
           branch: diu-${{ github.ref_name }}
           commit-message: "diu ${{ github.ref_name }}"
@@ -164,5 +121,5 @@ jobs:
 
             Release: https://github.com/yowainwright/diu/releases/tag/${{ github.ref_name }}
 
-            The release workflow audited, installed, and tested this formula.
+            Generated from the published binaries by the tap's shared scripts/update-formula.
             Merge after the tap's required validation passes.

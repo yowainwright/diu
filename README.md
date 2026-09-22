@@ -17,7 +17,7 @@ brew install yowainwright/tap/diu
 diu setup
 ```
 
-<!-- Homebrew installation derived from ops/scripts/render-homebrew-formula.sh -->
+<!-- Homebrew installation derived from .goreleaser.yaml and the tap's Formula/diu.rb -->
 Homebrew installs the prebuilt binary for your Mac (Apple Silicon or Intel). Go is not required.
 
 Open a new terminal window to activate tracking. DIU records usage as you work.
@@ -285,6 +285,9 @@ mise run build
 <!-- Development checks derived from .mise.toml and .custom-gcl.yml -->
 Setup installs Bash. Lint runs Go vet, golangci-lint with legibility, shfmt, ShellCheck, and shell legibility. Use `mise run lint-shell` for shell checks alone.
 
+Use `mise run test-unit` to skip the two slow recorder shutdown tests and
+`mise run test-slow` to run them separately. `mise run test` and CI include both.
+
 Release checks:
 
 ```bash
@@ -297,8 +300,9 @@ The version and release tasks fetch tags before `svu` calculates the next versio
 from conventional commits. Release requires a clean `main` synchronized with
 origin. It asks for confirmation, runs the preview, then pushes an annotated
 `v*` tag. The tag workflow publishes the GitHub Release and binaries. A separate job
-verifies the published archive checksums, audits and tests the binary Homebrew formula,
-then opens a pull request in the tap. Merge that pull request to update Homebrew.
+runs the tap's shared `scripts/update-formula` to generate the binary formula and its
+checksums, then opens a pull request with the formula and package metadata.
+The tap's CI audits, installs, and tests the formula before that pull request is merged.
 
 `HOMEBREW_TAP_GITHUB_TOKEN` is required by the tag workflow.
 

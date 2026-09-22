@@ -184,12 +184,8 @@ func writeSetupFallbackPID(t *testing.T, config *core.Config) {
 }
 
 func TestSetupRecoversAfterSlowPIDFallbackStop(t *testing.T) {
-	config := setupTestHomeConfig(t)
-	requireConfigDirectories(t, config)
+	config, state := setupSlowRecorderTest(t)
 	t.Setenv("PATH", t.TempDir())
-	state := stubSetupRecorder(t)
-	state.isRunning = false
-	daemonStopRequester = daemon.RequestStop
 	stopped := startSlowSetupRecorder(t, config.Daemon.PIDFile)
 	rejectSetupAfterStopTimeout(t)
 	err := setupProject(&command{}, nil)
@@ -202,6 +198,19 @@ func TestSetupRecoversAfterSlowPIDFallbackStop(t *testing.T) {
 	if err := <-stopped; err != nil {
 		t.Fatalf("recorder process failed: %v", err)
 	}
+}
+
+func setupSlowRecorderTest(t *testing.T) (*core.Config, *setupRecorderState) {
+	t.Helper()
+	if testing.Short() {
+		t.Skip("uses real recorder shutdown deadlines; run mise run test-slow")
+	}
+	config := setupTestHomeConfig(t)
+	requireConfigDirectories(t, config)
+	state := stubSetupRecorder(t)
+	state.isRunning = false
+	daemonStopRequester = daemon.RequestStop
+	return config, state
 }
 
 func rejectSetupAfterStopTimeout(t *testing.T) {
@@ -230,11 +239,7 @@ func startSetupRecorderProcess(t *testing.T, pidPath, helper string) <-chan erro
 }
 
 func TestSetupAbortsWhenRecorderIgnoresStop(t *testing.T) {
-	config := setupTestHomeConfig(t)
-	requireConfigDirectories(t, config)
-	state := stubSetupRecorder(t)
-	state.isRunning = false
-	daemonStopRequester = daemon.RequestStop
+	config, state := setupSlowRecorderTest(t)
 	startSetupRecorderProcess(t, config.Daemon.PIDFile, "TestHungSetupRecorderHelper")
 	rejectSetupAfterStopTimeout(t)
 	started := time.Now()
