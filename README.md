@@ -78,7 +78,7 @@ For `uv tool run`, DIU attributes usage to the command's package, or the package
 <!-- Wrapper execution sequence derived from cmd/diu/diu_setup.go and internal/monitors/monitors_process.go -->
 `diu setup` places command wrappers in `~/.local/bin/diu-wrappers` and adds that directory to existing shell config files when possible. Each wrapper runs the original tool and preserves its output and exit code.
 
-When another installation takes precedence in `PATH`, DIU delegates to it with its wrapper directories removed from the child process's `PATH`. This prevents version-manager shim loops. Commands in that process tree bypass those wrappers.
+When another installation takes precedence in `PATH`, DIU delegates to it using a private `.diu-delegates` directory beside its wrappers. That directory forwards only the selected command; existing `PATH` entries keep their order, so unrelated personal scripts remain available. Nested calls use the selected installation, while version-manager shims that explicitly return to a DIU wrapper reach its configured original without looping.
 
 Executables installed globally through npm, pnpm, or Bun count toward their package's usage without a `--global` flag. When Homebrew and JavaScript managers share a bin directory, DIU uses the resolved executable path to distinguish their packages.
 

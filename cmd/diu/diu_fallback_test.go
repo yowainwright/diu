@@ -148,6 +148,51 @@ func assertNestedCommandSelection(t *testing.T, template string) {
 	assertSelectedCommand(t, name, "preferred\n", 7)
 }
 
+func TestWrappersPreserveDelegatedPATH(t *testing.T) {
+	for _, template := range []string{"executable", "process"} {
+		t.Run(template, func(t *testing.T) {
+			assertDelegatedPATH(t, template)
+		})
+	}
+}
+
+func assertDelegatedPATH(t *testing.T, template string) {
+	t.Helper()
+	config := setupTestHomeConfig(t)
+	wrapper := installFallbackTestWrapper(t, config, writeFallbackOriginal(t), template)
+	preferred := t.TempDir()
+	name := filepath.Base(wrapper)
+	writeExecutableForTest(t, filepath.Join(preferred, name), "#!/bin/sh\nexec custom-helper\n")
+	writeExecutableForTest(t, filepath.Join(filepath.Dir(wrapper), "custom-helper"), "#!/bin/sh\nprintf 'custom\\n'\nexit 7\n")
+	writeExecutableForTest(t, filepath.Join(preferred, "custom-helper"), "#!/bin/sh\nprintf 'wrong\\n'\nexit 99\n")
+	t.Setenv("PATH", filepath.Dir(wrapper)+":"+preferred+":/usr/bin:/bin")
+	assertSelectedCommand(t, name, "custom\n", 7)
+	assertSelectedCommand(t, name, "custom\n", 7)
+}
+
+func TestWrappersDelegateRelativePATH(t *testing.T) {
+	for _, template := range []string{"executable", "process"} {
+		t.Run(template, func(t *testing.T) { assertRelativeDelegation(t, template) })
+	}
+}
+
+func assertRelativeDelegation(t *testing.T, template string) {
+	t.Helper()
+	config := setupTestHomeConfig(t)
+	wrapper := installFallbackTestWrapper(t, config, writeFallbackOriginal(t), template)
+	t.Chdir(t.TempDir())
+	preferred := "a $directory with 'quotes'"
+	if err := os.Mkdir(preferred, core.OwnerDirectoryMode); err != nil {
+		t.Fatal(err)
+	}
+	name := filepath.Base(wrapper)
+	script := "#!/bin/bash\nif [ \"${1:-}\" = inner ]; then printf 'preferred\\n'; exit 7; fi\ncd / && \"$DIU_TEST_COMMAND\" inner\nexit $?\n"
+	writeExecutableForTest(t, filepath.Join(preferred, name), script)
+	t.Setenv("DIU_TEST_COMMAND", name)
+	t.Setenv("PATH", filepath.Dir(wrapper)+":"+preferred+":/usr/bin:/bin")
+	assertSelectedCommand(t, name, "preferred\n", 7)
+}
+
 func TestWrapperDiscoveryPrefersPATHOrder(t *testing.T) {
 	preferred, other := t.TempDir(), t.TempDir()
 	name := "tool"
