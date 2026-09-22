@@ -10,12 +10,22 @@ validate_formula_args() {
 	version_pattern='^[0-9]+[.][0-9]+[.][0-9]+([-+][0-9A-Za-z.-]+)?$'
 	sha_pattern='^[0-9a-f]{64}$'
 	[[ "$version" =~ $version_pattern ]] || die "invalid version: $1"
-	case "$source_url" in
-	https://* | file://*) ;;
-	*) die "invalid source URL: $source_url" ;;
-	esac
-	[[ "$source_url" != *\"* ]] || die "source URL must not contain quotes"
-	[[ "$sha256" =~ $sha_pattern ]] || die "invalid sha256: $sha256"
+	url_pattern='^(https://|file:///)[0-9A-Za-z._~:/%+-]+$'
+	[[ "$archive_base_url" =~ $url_pattern ]] || die "invalid archive base URL: $archive_base_url"
+	[[ -f "$checksums_file" ]] || die "checksums file not found: $checksums_file"
+}
+
+archive_checksum() {
+	local architecture="${1:?}"
+	local archive="diu_${version}_darwin_${architecture}.tar.gz"
+	local checksum filename matched=""
+	while read -r checksum filename; do
+		[[ "$filename" == "$archive" ]] || continue
+		[[ -z "$matched" && "$checksum" =~ $sha_pattern ]] || die "invalid or duplicate checksum for $archive"
+		matched="$checksum"
+	done <"$checksums_file"
+	[[ -n "$matched" ]] || die "missing checksum for $archive"
+	printf '%s' "$matched"
 }
 
 write_formula() {
@@ -25,26 +35,24 @@ write_formula() {
 class Diu < Formula
   desc "Track package-manager and global CLI usage"
   homepage "https://github.com/yowainwright/diu"
-  url "${source_url}"
-  sha256 "${sha256}"
   license "MIT"
-  head "https://github.com/yowainwright/diu.git", branch: "main"
 
-  depends_on "go" => :build
-  depends_on :macos
+  on_macos do
+    on_arm do
+      url "${archive_base_url}/diu_${version}_darwin_arm64.tar.gz"
+      sha256 "${arm64_sha256}"
+    end
+
+    on_intel do
+      url "${archive_base_url}/diu_${version}_darwin_amd64.tar.gz"
+      sha256 "${amd64_sha256}"
+    end
+  end
+
+  depends_on macos: :monterey
 
   def install
-    ENV["CGO_ENABLED"] = "0"
-    ENV["GOTOOLCHAIN"] = "local"
-
-    ldflags = [
-      "-s",
-      "-w",
-      "-X main.version=#{version}",
-      "-X github.com/yowainwright/diu/internal/core.Version=#{version}",
-    ].join(" ")
-
-    system "go", "build", *std_go_args(ldflags: ldflags), "./cmd/diu"
+    bin.install "diu"
   end
 
   def caveats
@@ -70,12 +78,15 @@ FORMULA
 } # noqa: LEG038 - keep the formula template together.
 
 main() {
-	[[ $# -eq 3 ]] || die "usage: $0 <version> <source-url> <sha256>"
+	[[ $# -eq 3 ]] || die "usage: $0 <version> <archive-base-url> <checksums-file>"
 	version="${1-}"
 	version="${version#v}"
-	source_url="${2-}"
-	sha256="${3-}"
+	archive_base_url="${2:?}"
+	archive_base_url="${archive_base_url%/}"
+	checksums_file="${3:?}"
 	validate_formula_args "$@"
+	arm64_sha256="$(archive_checksum arm64)"
+	amd64_sha256="$(archive_checksum amd64)"
 	write_formula
 }
 

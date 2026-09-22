@@ -17,6 +17,9 @@ brew install yowainwright/tap/diu
 diu setup
 ```
 
+<!-- Homebrew installation derived from ops/scripts/render-homebrew-formula.sh -->
+Homebrew installs the prebuilt binary for your Mac (Apple Silicon or Intel). Go is not required.
+
 Open a new terminal window to activate tracking. DIU records usage as you work.
 
 <!-- Setup and inventory behavior derived from cmd/diu/diu_setup.go and cmd/diu/diu_daemon.go -->
@@ -291,7 +294,9 @@ mise run release
 The version and release tasks fetch tags before `svu` calculates the next version
 from conventional commits. Release requires a clean `main` synchronized with
 origin. It asks for confirmation, runs the preview, then pushes an annotated
-`v*` tag. The tag workflow publishes the GitHub Release, binaries, and Homebrew formula.
+`v*` tag. The tag workflow publishes the GitHub Release and binaries. A separate job
+verifies the published archive checksums, audits and tests the binary Homebrew formula,
+then opens a pull request in the tap. Merge that pull request to update Homebrew.
 
 `HOMEBREW_TAP_GITHUB_TOKEN` is required by the tag workflow.
 

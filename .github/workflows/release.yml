@@ -70,26 +70,36 @@ jobs:
           VULN_PACKAGE="golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}"
           go run "$VULN_PACKAGE" ./...
 
-      - name: Build release targets
+      - name: Run GoReleaser
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          GOOS=darwin GOARCH=amd64 go build -v -o /tmp/diu-darwin-amd64 ./cmd/diu
-          GOOS=darwin GOARCH=arm64 go build -v -o /tmp/diu-darwin-arm64 ./cmd/diu
+          goreleaser release --clean
+
+  homebrew:
+    name: Publish Homebrew formula
+    needs: release
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Render Homebrew formula
         env:
           TAG_NAME: ${{ github.ref_name }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           VERSION="${TAG_NAME#v}"
-          SOURCE_URL="https://github.com/yowainwright/diu/archive/refs/tags/${TAG_NAME}.tar.gz"
-          SOURCE_ARCHIVE="${RUNNER_TEMP}/diu-${VERSION}.tar.gz"
-          FORMULA_PATH="${RUNNER_TEMP}/diu.rb"
-          SHA_FILE="${RUNNER_TEMP}/diu-source.sha256"
+          ARCHIVE_BASE_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG_NAME}"
+          ASSET_DIR="${GITHUB_WORKSPACE}/dist/homebrew"
+          FORMULA_PATH="${ASSET_DIR}/diu.rb"
 
-          curl -fsSL "$SOURCE_URL" -o "$SOURCE_ARCHIVE"
-          shasum -a 256 "$SOURCE_ARCHIVE" > "$SHA_FILE"
-          read -r SOURCE_SHA256 _ < "$SHA_FILE"
+          mkdir -p "$ASSET_DIR"
+          gh release download "$TAG_NAME" --repo "$GITHUB_REPOSITORY" \
+            --pattern 'diu_*_darwin_*.tar.gz' --pattern checksums.txt --dir "$ASSET_DIR"
+          (cd "$ASSET_DIR" && shasum -a 256 -c checksums.txt)
 
-          ops/scripts/render-homebrew-formula.sh "$VERSION" "$SOURCE_URL" "$SOURCE_SHA256" > "$FORMULA_PATH"
+          ops/scripts/render-homebrew-formula.sh \
+            "$VERSION" "$ARCHIVE_BASE_URL" "$ASSET_DIR/checksums.txt" > "$FORMULA_PATH"
           ruby -c "$FORMULA_PATH"
 
           echo "FORMULA_PATH=$FORMULA_PATH" >> "$GITHUB_ENV"
@@ -112,7 +122,8 @@ jobs:
           cp "$FORMULA_PATH" "$TEST_TAP_REPO/Formula/diu.rb"
 
           brew audit --strict --online "$TEST_FORMULA"
-          brew install --build-from-source "$TEST_FORMULA"
+          test -z "$(brew deps "$TEST_FORMULA")"
+          brew install "$TEST_FORMULA"
           brew test "$TEST_FORMULA"
 
       - name: Save Homebrew formula
@@ -122,23 +133,6 @@ jobs:
           path: ${{ env.FORMULA_PATH }}
           if-no-files-found: error
           retention-days: 7
-
-      - name: Run GoReleaser
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          goreleaser release --clean
-
-  homebrew:
-    name: Publish Homebrew formula
-    needs: release
-    runs-on: macos-latest
-    steps:
-      - name: Download Homebrew formula
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: homebrew-formula
-          path: ${{ runner.temp }}/homebrew-formula
 
       - name: Check out Homebrew tap
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -150,8 +144,6 @@ jobs:
           path: homebrew-tap
 
       - name: Prepare Homebrew formula
-        env:
-          FORMULA_PATH: ${{ runner.temp }}/homebrew-formula/diu.rb
         run: |
           mkdir -p homebrew-tap/Formula
           cp "$FORMULA_PATH" homebrew-tap/Formula/diu.rb

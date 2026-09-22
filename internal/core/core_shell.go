@@ -19,6 +19,10 @@ diu_generated_wrapper() {
 }
 
 diu_selected_command() {
+    # An exec-based shim may resolve back to this wrapper in the same process.
+    if [ "${DIU_DELEGATED_COMMAND:-}" = "$DIU_COMMAND:$$" ]; then
+        return
+    fi
     local remaining="${PATH}:" directory candidate
     while [ -n "$remaining" ]; do
         directory="${remaining%%:*}"
@@ -40,8 +44,10 @@ if [ -z "$DIU_SELECTED_COMMAND" ] && diu_generated_wrapper "$DIU_ORIGINAL"; then
     exit 127
 fi
 if [ -n "$DIU_SELECTED_COMMAND" ] && ! [ "$DIU_SELECTED_COMMAND" -ef "$DIU_ORIGINAL" ]; then
+    export DIU_DELEGATED_COMMAND="$DIU_COMMAND:$$"
     exec "$DIU_SELECTED_COMMAND" "$@"
 fi
+unset DIU_DELEGATED_COMMAND
 `
 
 func PosixPathLine(wrapperDir string) string {
