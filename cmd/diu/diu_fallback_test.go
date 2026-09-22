@@ -39,6 +39,7 @@ func TestRecordExecutionPreservesSlowNPMEnrichment(t *testing.T) {
 
 func TestExecutableWrapperPreservesCommandSelection(t *testing.T) {
 	config := setupTestHomeConfig(t)
+	config.Monitoring.Process.ShouldAutoInstallWrappers = true
 	preferredDir, managedDir := t.TempDir(), t.TempDir()
 	name := "node"
 	original := filepath.Join(managedDir, name)
@@ -326,10 +327,27 @@ func TestWrappersBoundStorageLockWait(t *testing.T) {
 			wrapper := installFallbackTestWrapper(t, config, original, template)
 			unlock := holdFallbackStorageLock(t, config)
 			runContendedWrapper(t, wrapper)
+			waitForFallbackContention(t, config)
 			unlock()
 			assertFallbackRecordDropped(t, config)
 		})
 	}
+}
+
+func waitForFallbackContention(t *testing.T, config *core.Config) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		_, contended, err := observability.ReadFallbackContention(config.Daemon.DataDir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if contended {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("background recorder did not report storage contention")
 }
 
 func buildFallbackTestBinary(t *testing.T) string {

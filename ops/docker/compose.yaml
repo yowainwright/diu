@@ -23,19 +23,45 @@ services:
       context: ../..
       dockerfile: ops/docker/Dockerfile.e2e
     container_name: diu-e2e
+    command: ["-test.v", "-test.timeout=2m", "-test.run=^TestE2E"]
+    init: true
+    read_only: true
+    cpus: 1.0
+    mem_limit: 256m
+    pids_limit: 128
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs:
+      - /tmp:rw,nosuid,size=256m
+      - /home/diu:rw,nosuid,size=16m,uid=1000,gid=1000
     depends_on:
       diu:
         condition: service_healthy
     environment:
       - DIU_API_URL=http://diu:8081
       - TEST_TIMEOUT=60s
-    volumes:
-      - ../../tests/e2e:/app/tests/e2e:ro
-      - ../../tmp/test-results:/app/test-results
     networks:
       - diu-network
     profiles:
       - e2e
+
+  cli-e2e:
+    build:
+      context: ../..
+      dockerfile: ops/docker/Dockerfile.e2e
+    init: true
+    read_only: true
+    network_mode: none
+    cpus: 1.0
+    mem_limit: 256m
+    pids_limit: 128
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs:
+      - /tmp:rw,nosuid,size=256m
+      - /home/diu:rw,nosuid,size=16m,uid=1000,gid=1000
+    profiles:
+      - cli-e2e
 
   # Simulated package managers for testing
   test-env:

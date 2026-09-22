@@ -93,6 +93,15 @@ if diu_generated_wrapper "$DIU_ORIGINAL"; then
     printf 'diu: no original executable found for %s\n' "$DIU_COMMAND" >&2
     exit 127
 fi
+
+# Orphaned wrappers and recorder subprocesses must run the tool directly.
+DIU_RECORD_BINARY="$(command -v "$DIU_BINARY" 2>/dev/null || true)"
+if [ "${DIU_RECORDING:-}" = 1 ]; then
+    exec "$DIU_ORIGINAL" "$@"
+fi
+if [ ! -x "$DIU_RECORD_BINARY" ] && [ ! -S "$DIU_SOCKET" ]; then
+    exec "$DIU_ORIGINAL" "$@"
+fi
 `
 
 func PosixPathLine(wrapperDir string) string {

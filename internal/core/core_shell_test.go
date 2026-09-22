@@ -16,3 +16,11 @@ func TestShellPathLines(t *testing.T) {
 		t.Fatalf("shell path lines = %q, %q", posix, fish)
 	}
 }
+
+func TestWrapperGuardBypassesRecordingForOrphansAndRecorderChildren(t *testing.T) {
+	for _, expected := range []string{`[ ! -x "$DIU_RECORD_BINARY" ]`, `[ "${DIU_RECORDING:-}" = 1 ]`, `exec "$DIU_ORIGINAL" "$@"`} {
+		if !strings.Contains(WrapperCommandGuard, expected) {
+			t.Errorf("wrapper guard missing %q", expected)
+		}
+	}
+}

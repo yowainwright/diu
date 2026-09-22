@@ -36,12 +36,14 @@ DIU_TOOL="%s"
 DIU_COMMAND="${0##*/}"
 DIU_ORIGINAL="$ORIGINAL"
 %s
-START_TIME=$(date +%%s)
+START_TIME=$(/bin/date +%%s)
 
 "$ORIGINAL" "$@"
 EXIT_CODE=$?
 
-END_TIME=$(date +%%s)
+# Recording must not delay the command or retain its input/output pipes.
+{
+END_TIME=$(/bin/date +%%s)
 DURATION=$(( (END_TIME - START_TIME) * 1000 ))
 
 json_escape() {
@@ -66,16 +68,16 @@ for arg in "$@"; do
 done
 args_json="$args_json]"
 
-payload=$(cat <<EOF
+payload=$(/bin/cat <<EOF
 {
     "tool": "$DIU_TOOL",
     "command": "$(json_escape "$DIU_TOOL $*")",
     "args": $args_json,
     "exit_code": $EXIT_CODE,
     "duration_ms": $DURATION,
-    "timestamp": "$(date -u +%%Y-%%m-%%dT%%H:%%M:%%SZ)",
+    "timestamp": "$(/bin/date -u +%%Y-%%m-%%dT%%H:%%M:%%SZ)",
     "working_dir": "$(json_escape "$(pwd)")",
-    "user": "$(json_escape "$(whoami)")",
+    "user": "$(json_escape "$(/usr/bin/whoami)")",
     "metadata": {
         "original_path": "$(json_escape "$ORIGINAL")"
     }
@@ -86,25 +88,19 @@ EOF
 record_fallback() {
     DIU_RECORD_BINARY="$(command -v "$DIU_BINARY" 2>/dev/null || true)"
     if [ -n "$DIU_RECORD_BINARY" ] && [ -x "$DIU_RECORD_BINARY" ]; then
-        printf '%%s\n' "$payload" | "$DIU_RECORD_BINARY" record >/dev/null 2>&1
+        printf '%%s\n' "$payload" | DIU_RECORDING=1 "$DIU_RECORD_BINARY" record >/dev/null 2>&1
     fi
 }
 
 # Use system nc so event delivery cannot enter a tracked wrapper.
 if [ -S "$DIU_SOCKET" ] && [ -x /usr/bin/nc ]; then
-    {
-        sent=false
-        if printf '%%s\n' "$payload" | /usr/bin/nc -w 1 -U "$DIU_SOCKET" 2>/dev/null; then
-            sent=true
-        fi
-
-        if [ "$sent" != true ]; then
-            record_fallback
-        fi
-    } &>/dev/null &
+    if ! printf '%%s\n' "$payload" | /usr/bin/nc -w 1 -U "$DIU_SOCKET" 2>/dev/null; then
+        record_fallback
+    fi
 else
-    record_fallback >/dev/null 2>&1
+    record_fallback
 fi
+} </dev/null >/dev/null 2>&1 &
 
 exit $EXIT_CODE
 `

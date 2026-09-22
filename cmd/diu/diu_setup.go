@@ -31,6 +31,7 @@ type executableWrapper struct {
 }
 
 type uninstallPaths struct {
+	config          *core.Config
 	homeDirs        []string
 	wrapperDir      string
 	shellWrapperDir string
@@ -86,12 +87,14 @@ DIU_EXECUTABLE="%s"
 DIU_COMMAND="$DIU_EXECUTABLE"
 DIU_ORIGINAL="$ORIGINAL_BINARY"
 %s
-START_TIME=$(date +%%s)
+START_TIME=$(/bin/date +%%s)
 
 "$ORIGINAL_BINARY" "$@"
 EXIT_CODE=$?
 
-END_TIME=$(date +%%s)
+# Recording must not delay the command or retain its input/output pipes.
+{
+END_TIME=$(/bin/date +%%s)
 DURATION=$(( (END_TIME - START_TIME) * 1000 ))
 
 json_escape() {
@@ -116,16 +119,16 @@ for arg in "$@"; do
 done
 args_json="$args_json]"
 
-payload=$(cat <<EOF
+payload=$(/bin/cat <<EOF
 {
         "tool": "$DIU_TOOL",
         "command": "$(json_escape "$DIU_EXECUTABLE $*")",
         "args": $args_json,
         "exit_code": $EXIT_CODE,
         "duration_ms": $DURATION,
-        "timestamp": "$(date -u +%%Y-%%m-%%dT%%H:%%M:%%SZ)",
+        "timestamp": "$(/bin/date -u +%%Y-%%m-%%dT%%H:%%M:%%SZ)",
         "working_dir": "$(json_escape "$(pwd)")",
-        "user": "$(json_escape "$(whoami)")",
+        "user": "$(json_escape "$(/usr/bin/whoami)")",
         "packages_affected": ["$(json_escape "$DIU_PACKAGE")"],
         "metadata": {
             "executable": "$(json_escape "$DIU_EXECUTABLE")",
@@ -138,25 +141,19 @@ EOF
 record_fallback() {
     DIU_RECORD_BINARY="$(command -v "$DIU_BINARY" 2>/dev/null || true)"
     if [ -n "$DIU_RECORD_BINARY" ] && [ -x "$DIU_RECORD_BINARY" ]; then
-        printf '%%s\n' "$payload" | "$DIU_RECORD_BINARY" record >/dev/null 2>&1
+        printf '%%s\n' "$payload" | DIU_RECORDING=1 "$DIU_RECORD_BINARY" record >/dev/null 2>&1
     fi
 }
 
 # Use system nc so event delivery cannot enter a tracked wrapper.
 if [ -S "$DIU_SOCKET" ] && [ -x /usr/bin/nc ]; then
-    {
-        sent=false
-        if printf '%%s\n' "$payload" | /usr/bin/nc -w 1 -U "$DIU_SOCKET" 2>/dev/null; then
-            sent=true
-        fi
-
-        if [ "$sent" != true ]; then
-            record_fallback
-        fi
-    } &>/dev/null &
+    if ! printf '%%s\n' "$payload" | /usr/bin/nc -w 1 -U "$DIU_SOCKET" 2>/dev/null; then
+        record_fallback
+    fi
 else
-    record_fallback >/dev/null 2>&1
+    record_fallback
 fi
+} </dev/null >/dev/null 2>&1 &
 
 exit $EXIT_CODE
 `
@@ -242,10 +239,7 @@ func configureSetupProject(config *core.Config, activity *dx.Activity) error {
 	}
 
 	warn := func(message string) { activity.Notice(dx.Warning, message) }
-	if err := installWrappers(config, warn); err != nil {
-		return err
-	}
-	if err := installExecutableWrappers(config); err != nil {
+	if err := configureCommandWrappers(config, warn); err != nil {
 		return err
 	}
 	if _, err := scanInventory(config, activity); err != nil {
@@ -286,16 +280,29 @@ func uninstallProject(cmd *command, args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := uninstallBackgroundTracking(); err != nil {
-		return err
-	}
-	if err := removeGeneratedWrappers(paths.wrapperDir); err != nil {
-		return err
-	}
-	if err := removeShellPathEntriesFromHomes(paths.homeDirs, paths.shellWrapperDir); err != nil {
+	if err := removeSetupArtifacts(paths, uninstallBackgroundTracking); err != nil {
 		return err
 	}
 	activity.Success("DIU setup removed; configuration and usage data preserved")
+	return nil
+}
+
+func removeSetupArtifacts(paths uninstallPaths, stopRecorder func() error) error {
+	configErr := disableWrapperInstallation(paths.config)
+	stopErr := stopRecorder()
+	wrapperErr := removeGeneratedWrappers(paths.wrapperDir)
+	shellErr := removeShellPathEntriesFromHomes(paths.homeDirs, paths.shellWrapperDir)
+	return errors.Join(configErr, stopErr, wrapperErr, shellErr)
+}
+
+func disableWrapperInstallation(config *core.Config) error {
+	if !config.Monitoring.Process.ShouldAutoInstallWrappers {
+		return nil
+	}
+	config.Monitoring.Process.ShouldAutoInstallWrappers = false
+	if err := config.Save(); err != nil {
+		return fmt.Errorf("failed to disable automatic wrapper installation: %w", err)
+	}
 	return nil
 }
 
@@ -313,7 +320,7 @@ func loadUninstallPaths() (uninstallPaths, error) {
 	if err != nil {
 		return uninstallPaths{}, err
 	}
-	return uninstallPaths{homeDirs: homeDirs, wrapperDir: wrapperDir, shellWrapperDir: shellWrapperDir}, nil
+	return uninstallPaths{config: config, homeDirs: homeDirs, wrapperDir: wrapperDir, shellWrapperDir: shellWrapperDir}, nil
 }
 
 func currentShellHomeDirs() ([]string, error) {
@@ -321,24 +328,10 @@ func currentShellHomeDirs() ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	legacyHome := ""
-	if currentUser, userErr := user.Current(); userErr == nil {
-		legacyHome = currentUser.HomeDir
+	if !filepath.IsAbs(activeHome) {
+		return nil, fmt.Errorf("home directory must be absolute: %s", activeHome)
 	}
-	return shellHomeDirs(activeHome, legacyHome), nil
-}
-
-func shellHomeDirs(activeHome, legacyHome string) []string {
-	activeHome = filepath.Clean(activeHome)
-	homeDirs := []string{activeHome}
-	if strings.TrimSpace(legacyHome) == "" {
-		return homeDirs
-	}
-	legacyHome = filepath.Clean(legacyHome)
-	if legacyHome != activeHome {
-		homeDirs = append(homeDirs, legacyHome)
-	}
-	return homeDirs
+	return []string{filepath.Clean(activeHome)}, nil
 }
 
 func validateWrapperDir(wrapperDir string, homeDirs []string) (string, error) {
@@ -455,12 +448,11 @@ func removeGeneratedWrappers(wrapperDir string) error {
 	if err != nil {
 		return fmt.Errorf("failed to read wrapper directory: %w", err)
 	}
+	var cleanupErr error
 	for _, entry := range entries {
-		if err := removeGeneratedWrapper(wrapperDir, entry); err != nil {
-			return err
-		}
+		cleanupErr = errors.Join(cleanupErr, removeGeneratedWrapper(wrapperDir, entry))
 	}
-	return nil
+	return errors.Join(cleanupErr, removeWrapperDelegates(wrapperDir))
 }
 
 func removeMissingToolWrappers(wrapperDir string) error {
@@ -583,12 +575,11 @@ func containsAll(content string, fields []string) bool {
 }
 
 func removeShellPathEntriesFromHomes(homeDirs []string, wrapperDir string) error {
+	var cleanupErr error
 	for _, homeDir := range homeDirs {
-		if err := removeShellPathEntries(homeDir, wrapperDir); err != nil {
-			return err
-		}
+		cleanupErr = errors.Join(cleanupErr, removeShellPathEntries(homeDir, wrapperDir))
 	}
-	return nil
+	return cleanupErr
 }
 
 func removeShellPathEntries(homeDir, wrapperDir string) error {
@@ -600,12 +591,11 @@ func removeShellPathEntries(homeDir, wrapperDir string) error {
 		{filepath.Join(homeDir, ".zshrc"), core.PosixPathLine(wrapperDir)},
 		{filepath.Join(homeDir, ".config", "fish", "config.fish"), core.FishPathLine(wrapperDir)},
 	}
+	var cleanupErr error
 	for _, entry := range entries {
-		if err := removeShellPathEntry(entry.path, entry.line); err != nil {
-			return err
-		}
+		cleanupErr = errors.Join(cleanupErr, removeShellPathEntry(entry.path, entry.line))
 	}
-	return nil
+	return cleanupErr
 }
 
 func removeShellPathEntry(path, line string) error {
@@ -711,17 +701,36 @@ func scanInventory(config *core.Config, activity *dx.Activity) (int, error) {
 }
 
 func refreshCommandWrappers(config *core.Config, activity *dx.Activity) error {
-	if !config.Monitoring.Process.ShouldAutoInstallWrappers {
-		return nil
-	}
 	warn := func(message string) { activity.Notice(dx.Warning, message) }
-	if err := installWrappers(config, warn); err != nil {
-		return err
-	}
-	if err := installExecutableWrappers(config); err != nil {
+	if err := configureCommandWrappers(config, warn); err != nil {
 		return err
 	}
 	return removeMissingToolWrappers(config.Monitoring.Process.WrapperDir)
+}
+
+func configureCommandWrappers(config *core.Config, warn func(string)) error {
+	if !config.Monitoring.Process.ShouldAutoInstallWrappers {
+		return removeDisabledWrappers(config)
+	}
+	if err := installWrappers(config, warn); err != nil {
+		return err
+	}
+	return installExecutableWrappers(config)
+}
+
+func removeDisabledWrappers(config *core.Config) error {
+	homes, err := currentShellHomeDirs()
+	if err != nil {
+		return err
+	}
+	configured := config.Monitoring.Process.WrapperDir
+	dir, err := validateWrapperDir(configured, homes)
+	if err != nil {
+		return err
+	}
+	wrapperErr := removeGeneratedWrappers(dir)
+	shellErr := removeShellPathEntriesFromHomes(homes, configured)
+	return errors.Join(wrapperErr, shellErr)
 }
 
 func newPackageScanner(config *core.Config, store storage.Storage, activity *dx.Activity) (*packageScanner, error) {
@@ -1275,6 +1284,9 @@ func installWrappers(config *core.Config, warn func(string)) error {
 }
 
 func installExecutableWrappers(config *core.Config) error {
+	if !config.Monitoring.Process.ShouldAutoInstallWrappers {
+		return nil
+	}
 	targets := discoverExecutableWrappers(config)
 	for _, target := range targets {
 		if err := writeExecutableWrapper(config, target); err != nil {

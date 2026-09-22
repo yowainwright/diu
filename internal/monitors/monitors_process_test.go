@@ -129,6 +129,10 @@ var requiredWrapperScriptParts = []string{
 	`"tool": "$DIU_TOOL"`,
 	`"args": $args_json`,
 	"exit $EXIT_CODE",
+	"} </dev/null >/dev/null 2>&1 &",
+	`DIU_RECORDING=1 "$DIU_RECORD_BINARY" record`,
+	"START_TIME=$(/bin/date",
+	"payload=$(/bin/cat",
 }
 
 func assertWrapperScriptContainsRequiredParts(t *testing.T, script string) {

@@ -741,16 +741,18 @@ func TestUninstallProjectRemovesSupportedShellEntries(t *testing.T) {
 	assertShellFixtures(t, files)
 }
 
-func TestShellHomeDirs(t *testing.T) {
-	distinct := shellHomeDirs("/active-home", "/legacy-home")
-	hasTwoHomes := len(distinct) == 2
-	hasLegacyHome := hasTwoHomes && distinct[1] == "/legacy-home"
-	if !hasLegacyHome {
-		t.Fatalf("Distinct homes = %v", distinct)
+func TestShellHomeDirsUseOnlyActiveHome(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dirs, err := currentShellHomeDirs()
+	if err != nil {
+		t.Fatal(err)
 	}
-	duplicate := shellHomeDirs("/active-home", "/active-home")
-	if len(duplicate) != 1 {
-		t.Fatalf("Duplicate homes = %v", duplicate)
+	if len(dirs) != 1 {
+		t.Fatalf("shell homes = %v, want only %s", dirs, home)
+	}
+	if dirs[0] != home {
+		t.Fatalf("shell homes = %v, %v; want only %s", dirs, err, home)
 	}
 }
 
@@ -834,13 +836,18 @@ func runUninstallForTest(t *testing.T) string {
 
 func assertUninstallFixture(t *testing.T, fixture uninstallFixture, output string) {
 	t.Helper()
+	assertUninstallArtifacts(t, fixture)
+	if !strings.Contains(output, "configuration and usage data preserved") {
+		t.Fatalf("Unexpected uninstall output: %q", output)
+	}
+}
+
+func assertUninstallArtifacts(t *testing.T, fixture uninstallFixture) {
+	t.Helper()
 	assertFileMissing(t, fixture.wrapperPath)
 	assertFileExists(t, fixture.unrelatedPath)
 	assertFileContent(t, fixture.zshPath, "before\nafter\n")
 	assertFileExists(t, fixture.config.Storage.JSONFile)
-	if !strings.Contains(output, "configuration and usage data preserved") {
-		t.Fatalf("Unexpected uninstall output: %q", output)
-	}
 }
 
 func assertFileExists(t *testing.T, path string) {

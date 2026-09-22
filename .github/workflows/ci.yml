@@ -185,6 +185,15 @@ jobs:
         if: always()
         run: docker compose -f ops/docker/compose.yaml --profile e2e down --volumes
 
+  cli-e2e:
+    name: Isolated CLI Lifecycle E2Es
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Test real commands and filesystem cleanup
+        run: docker compose -f ops/docker/compose.yaml --profile cli-e2e run --build --rm --no-deps cli-e2e
+
   release-config:
     name: Release Config
     runs-on: macos-latest

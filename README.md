@@ -54,7 +54,7 @@ For example, `diu check jq` might show:
 <!-- Automatic refresh derived from internal/daemon/daemon.go, internal/core/core_config.go, and cmd/diu/diu_setup.go -->
 DIU refreshes its inventory and wrappers in the background to find installed, upgraded, or removed tools. By default, each refresh starts 30 seconds after the last one finishes.
 
-Rerun `diu setup` if you move the DIU binary or change where your shell finds package managers.
+Rerun `diu setup` after upgrading DIU, moving its binary, or changing where your shell finds package managers. Upgrading the binary alone does not replace existing wrapper scripts.
 
 ## Supported Managers
 
@@ -87,10 +87,12 @@ command -> DIU wrapper -> original tool -> output to your terminal
                |
                +-- daemon available --> send event in the background
                |
-               +-- daemon absent ----> run diu record synchronously
+               +-- daemon absent ----> run diu record in the background
                |
                `--> return the original exit code
 ```
+
+Recording runs with detached input and output so it cannot hold a command's pipes open. Recorder subprocesses bypass tracking to avoid recording themselves. If both the recorder binary and socket are absent, wrappers run the original tool directly.
 
 Stop or start the background recorder:
 
@@ -128,13 +130,18 @@ diu manage --uninstall jq --tool homebrew --dry-run
 
 Remove `--dry-run` to run it after confirmation.
 
-To stop using DIU:
+To stop using DIU, run cleanup **before** removing the binary:
 
 ```bash
 diu uninstall
 ```
 
-This stops the recorder and removes the login service, wrappers, and shell PATH entries. It keeps your configuration and history. Remove the binary with the method you used to install it.
+<!-- Uninstall behavior derived from cmd/diu/diu_setup.go, cmd/diu/diu_uninstall.go, and cmd/diu/diu_daemon.go -->
+This disables automatic wrapper installation, stops the recorder, and removes the login service, generated wrappers, delegation cache, and shell PATH entries. Cleanup continues after individual failures and reports them; unrelated files and usage history are preserved. Open a new terminal afterward, or run `rehash` in zsh (`hash -r` in bash).
+
+For a Homebrew installation, then run `brew uninstall diu`. Removing only the binary does not clean up DIU's shell integration. If the binary was already removed, reinstall it to run `diu uninstall`, then remove it again.
+
+To deliberately enable tracking again after cleanup, run `diu config set monitoring.process.auto_install_wrappers true`, then `diu setup`.
 
 </details>
 
@@ -287,6 +294,9 @@ Setup installs Bash. Lint runs Go vet, golangci-lint with legibility, shfmt, She
 
 Use `mise run test-unit` to skip the two slow recorder shutdown tests and
 `mise run test-slow` to run them separately. `mise run test` and CI include both.
+
+<!-- Container CLI checks derived from tests/e2e, ops/docker/Dockerfile.e2e, and ops/docker/compose.yaml -->
+Run `mise run test-e2e` for the real CLI lifecycle tests in Docker. These execute setup, wrappers, recording, and uninstall as a non-root user with no host mounts or network and bounded CPU, memory, and process counts. The suite refuses to execute directly on the host. See [E2E coverage](tests/e2e/README.md) for the assertions and platform limits. Both CI and tag releases require this suite to pass.
 
 Release checks:
 

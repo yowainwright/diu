@@ -861,6 +861,7 @@ func TestScanPackagesDiscoversExecutableWrappers(t *testing.T) {
 
 func configureExecutableWrapperScan(t *testing.T, config *core.Config) string {
 	t.Helper()
+	config.Monitoring.Process.ShouldAutoInstallWrappers = true
 
 	t.Setenv("PATH", t.TempDir())
 
@@ -1186,6 +1187,7 @@ func TestInstallExecutableWrappersWritesScripts(t *testing.T) {
 
 func configureExecutableWrapperInstall(t *testing.T, config *core.Config) (string, string) {
 	t.Helper()
+	config.Monitoring.Process.ShouldAutoInstallWrappers = true
 
 	t.Setenv("PATH", t.TempDir())
 

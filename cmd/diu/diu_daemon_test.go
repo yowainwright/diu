@@ -61,6 +61,30 @@ func TestLaunchAgentSetupIsRepeatable(t *testing.T) {
 	}
 }
 
+func TestCleanupRemovesLoginFileAfterBootoutFailure(t *testing.T) {
+	config, state := setupLaunchAgentTest(t)
+	if err := writeLaunchAgent(config); err != nil {
+		t.Fatal(err)
+	}
+	state.isLoaded = true
+	stopErr := errors.New("bootout failed")
+	launchctlCommand = failingBootoutCommand(state, stopErr)
+	if err := uninstallBackgroundTracking(); !errors.Is(err, stopErr) {
+		t.Fatalf("uninstall error = %v, want bootout failure", err)
+	}
+	path, _ := launchAgentPath()
+	assertFileMissing(t, path)
+}
+
+func failingBootoutCommand(state *launchAgentTestState, stopErr error) func(...string) ([]byte, error) {
+	return func(args ...string) ([]byte, error) {
+		if args[0] == "bootout" {
+			return nil, stopErr
+		}
+		return state.command(args...)
+	}
+}
+
 func TestLaunchAgentReportsBootstrapFailure(t *testing.T) {
 	config, state := setupLaunchAgentTest(t)
 	state.bootstrapErr = errors.New("no GUI session")
