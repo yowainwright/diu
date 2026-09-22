@@ -53,6 +53,9 @@ func TestHomebrewFormulaAcceptsLocalArchives(t *testing.T) {
 	if !strings.Contains(formula, "file:///workspace/dist/diu_0.2.3_darwin_arm64.tar.gz") {
 		t.Fatal("local archive URL was not preserved")
 	}
+	if !strings.Contains(formula, `version "0.2.3"`) {
+		t.Fatal("formula must declare the release version instead of inferring it from the architecture")
+	}
 }
 
 func TestHomebrewFormulaRejectsInvalidReleaseInputs(t *testing.T) {

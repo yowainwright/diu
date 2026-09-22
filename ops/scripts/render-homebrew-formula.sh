@@ -35,6 +35,7 @@ write_formula() {
 class Diu < Formula
   desc "Track package-manager and global CLI usage"
   homepage "https://github.com/yowainwright/diu"
+  version "${version}"
   license "MIT"
 
   on_macos do

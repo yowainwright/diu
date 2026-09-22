@@ -93,17 +93,37 @@ func TestWrappersFollowChangedPATH(t *testing.T) {
 func TestWrappersHandleReturningShim(t *testing.T) {
 	for _, template := range []string{"executable", "process"} {
 		t.Run(template, func(t *testing.T) {
-			config := setupTestHomeConfig(t)
-			original := writeFallbackOriginal(t)
-			wrapper := installFallbackTestWrapper(t, config, original, template)
-			shimDir := t.TempDir()
-			shim := filepath.Join(shimDir, filepath.Base(wrapper))
-			writeExecutableForTest(t, shim, "#!/bin/bash\nexec \"$DIU_TEST_WRAPPER\" \"$@\"\n")
-			t.Setenv("DIU_TEST_WRAPPER", wrapper)
-			t.Setenv("PATH", filepath.Dir(wrapper)+":"+shimDir+":/usr/bin:/bin")
-			runContendedWrapper(t, wrapper)
+			assertReturningShims(t, template)
 		})
 	}
+}
+
+func assertReturningShims(t *testing.T, template string) {
+	t.Helper()
+	shims := map[string]string{
+		"exec": `exec "$DIU_TEST_WRAPPER" "$@"`,
+		"child": `"$DIU_TEST_WRAPPER" "$@"
+exit $?`,
+	}
+	for name, invocation := range shims {
+		t.Run(name, func(t *testing.T) {
+			assertReturningShim(t, template, invocation)
+		})
+	}
+}
+
+func assertReturningShim(t *testing.T, template, invocation string) {
+	t.Helper()
+	config := setupTestHomeConfig(t)
+	original := writeFallbackOriginal(t)
+	wrapper := installFallbackTestWrapper(t, config, original, template)
+	shimDir := t.TempDir()
+	shim := filepath.Join(shimDir, filepath.Base(wrapper))
+	guard := "#!/bin/bash\n[ -z \"${DIU_TEST_SHIM_RETURNED:-}\" ] || exit 99\nexport DIU_TEST_SHIM_RETURNED=1\n"
+	writeExecutableForTest(t, shim, guard+invocation+"\n")
+	t.Setenv("DIU_TEST_WRAPPER", wrapper)
+	t.Setenv("PATH", filepath.Dir(wrapper)+":"+shimDir+":/usr/bin:/bin")
+	runContendedWrapper(t, wrapper)
 }
 
 func TestWrapperDiscoveryPrefersPATHOrder(t *testing.T) {
