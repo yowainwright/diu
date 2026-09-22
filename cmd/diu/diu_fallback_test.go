@@ -90,6 +90,109 @@ func TestWrappersFollowChangedPATH(t *testing.T) {
 	}
 }
 
+func TestWrappersHandleReturningShim(t *testing.T) {
+	for _, template := range []string{"executable", "process"} {
+		t.Run(template, func(t *testing.T) {
+			assertReturningShims(t, template)
+		})
+	}
+}
+
+func assertReturningShims(t *testing.T, template string) {
+	t.Helper()
+	shims := map[string]string{
+		"exec": `exec "$DIU_TEST_WRAPPER" "$@"`,
+		"child": `"$DIU_TEST_WRAPPER" "$@"
+exit $?`,
+	}
+	for name, invocation := range shims {
+		t.Run(name, func(t *testing.T) {
+			assertReturningShim(t, template, invocation)
+		})
+	}
+}
+
+func assertReturningShim(t *testing.T, template, invocation string) {
+	t.Helper()
+	config := setupTestHomeConfig(t)
+	original := writeFallbackOriginal(t)
+	wrapper := installFallbackTestWrapper(t, config, original, template)
+	shimDir := t.TempDir()
+	shim := filepath.Join(shimDir, filepath.Base(wrapper))
+	guard := "#!/bin/bash\n[ -z \"${DIU_TEST_SHIM_RETURNED:-}\" ] || exit 99\nexport DIU_TEST_SHIM_RETURNED=1\n"
+	writeExecutableForTest(t, shim, guard+invocation+"\n")
+	t.Setenv("DIU_TEST_WRAPPER", wrapper)
+	t.Setenv("PATH", filepath.Dir(wrapper)+":"+shimDir+":/usr/bin:/bin")
+	runContendedWrapper(t, wrapper)
+}
+
+func TestWrappersPreserveNestedCommandSelection(t *testing.T) {
+	for _, template := range []string{"executable", "process"} {
+		t.Run(template, func(t *testing.T) {
+			assertNestedCommandSelection(t, template)
+		})
+	}
+}
+
+func assertNestedCommandSelection(t *testing.T, template string) {
+	t.Helper()
+	config := setupTestHomeConfig(t)
+	original := writeFallbackOriginal(t)
+	wrapper := installFallbackTestWrapper(t, config, original, template)
+	preferred := t.TempDir()
+	name := filepath.Base(wrapper)
+	script := "#!/bin/bash\nif [ \"${1:-}\" = inner ]; then printf 'preferred\\n'; exit 7; fi\n\"$DIU_TEST_COMMAND\" inner\nexit $?\n"
+	writeExecutableForTest(t, filepath.Join(preferred, name), script)
+	t.Setenv("DIU_TEST_COMMAND", name)
+	t.Setenv("PATH", filepath.Dir(wrapper)+":"+preferred+":/usr/bin:/bin")
+	assertSelectedCommand(t, name, "preferred\n", 7)
+}
+
+func TestWrappersPreserveDelegatedPATH(t *testing.T) {
+	for _, template := range []string{"executable", "process"} {
+		t.Run(template, func(t *testing.T) {
+			assertDelegatedPATH(t, template)
+		})
+	}
+}
+
+func assertDelegatedPATH(t *testing.T, template string) {
+	t.Helper()
+	config := setupTestHomeConfig(t)
+	wrapper := installFallbackTestWrapper(t, config, writeFallbackOriginal(t), template)
+	preferred := t.TempDir()
+	name := filepath.Base(wrapper)
+	writeExecutableForTest(t, filepath.Join(preferred, name), "#!/bin/sh\nexec custom-helper\n")
+	writeExecutableForTest(t, filepath.Join(filepath.Dir(wrapper), "custom-helper"), "#!/bin/sh\nprintf 'custom\\n'\nexit 7\n")
+	writeExecutableForTest(t, filepath.Join(preferred, "custom-helper"), "#!/bin/sh\nprintf 'wrong\\n'\nexit 99\n")
+	t.Setenv("PATH", filepath.Dir(wrapper)+":"+preferred+":/usr/bin:/bin")
+	assertSelectedCommand(t, name, "custom\n", 7)
+	assertSelectedCommand(t, name, "custom\n", 7)
+}
+
+func TestWrappersDelegateRelativePATH(t *testing.T) {
+	for _, template := range []string{"executable", "process"} {
+		t.Run(template, func(t *testing.T) { assertRelativeDelegation(t, template) })
+	}
+}
+
+func assertRelativeDelegation(t *testing.T, template string) {
+	t.Helper()
+	config := setupTestHomeConfig(t)
+	wrapper := installFallbackTestWrapper(t, config, writeFallbackOriginal(t), template)
+	t.Chdir(t.TempDir())
+	preferred := "a $directory with 'quotes'"
+	if err := os.Mkdir(preferred, core.OwnerDirectoryMode); err != nil {
+		t.Fatal(err)
+	}
+	name := filepath.Base(wrapper)
+	script := "#!/bin/bash\nif [ \"${1:-}\" = inner ]; then printf 'preferred\\n'; exit 7; fi\ncd / && \"$DIU_TEST_COMMAND\" inner\nexit $?\n"
+	writeExecutableForTest(t, filepath.Join(preferred, name), script)
+	t.Setenv("DIU_TEST_COMMAND", name)
+	t.Setenv("PATH", filepath.Dir(wrapper)+":"+preferred+":/usr/bin:/bin")
+	assertSelectedCommand(t, name, "preferred\n", 7)
+}
+
 func TestWrapperDiscoveryPrefersPATHOrder(t *testing.T) {
 	preferred, other := t.TempDir(), t.TempDir()
 	name := "tool"

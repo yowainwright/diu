@@ -17,6 +17,9 @@ brew install yowainwright/tap/diu
 diu setup
 ```
 
+<!-- Homebrew installation derived from .goreleaser.yaml and the tap's Formula/diu.rb -->
+Homebrew installs the prebuilt binary for your Mac (Apple Silicon or Intel). Go is not required.
+
 Open a new terminal window to activate tracking. DIU records usage as you work.
 
 <!-- Setup and inventory behavior derived from cmd/diu/diu_setup.go and cmd/diu/diu_daemon.go -->
@@ -74,6 +77,8 @@ For `uv tool run`, DIU attributes usage to the command's package, or the package
 
 <!-- Wrapper execution sequence derived from cmd/diu/diu_setup.go and internal/monitors/monitors_process.go -->
 `diu setup` places command wrappers in `~/.local/bin/diu-wrappers` and adds that directory to existing shell config files when possible. Each wrapper runs the original tool and preserves its output and exit code.
+
+When another installation takes precedence in `PATH`, DIU delegates to it using a private `.diu-delegates` directory beside its wrappers. That directory forwards only the selected command; existing `PATH` entries keep their order, so unrelated personal scripts remain available. Nested calls use the selected installation, while version-manager shims that explicitly return to a DIU wrapper reach its configured original without looping.
 
 Executables installed globally through npm, pnpm, or Bun count toward their package's usage without a `--global` flag. When Homebrew and JavaScript managers share a bin directory, DIU uses the resolved executable path to distinguish their packages.
 
@@ -280,6 +285,9 @@ mise run build
 <!-- Development checks derived from .mise.toml and .custom-gcl.yml -->
 Setup installs Bash. Lint runs Go vet, golangci-lint with legibility, shfmt, ShellCheck, and shell legibility. Use `mise run lint-shell` for shell checks alone.
 
+Use `mise run test-unit` to skip the two slow recorder shutdown tests and
+`mise run test-slow` to run them separately. `mise run test` and CI include both.
+
 Release checks:
 
 ```bash
@@ -291,7 +299,10 @@ mise run release
 The version and release tasks fetch tags before `svu` calculates the next version
 from conventional commits. Release requires a clean `main` synchronized with
 origin. It asks for confirmation, runs the preview, then pushes an annotated
-`v*` tag. The tag workflow publishes the GitHub Release, binaries, and Homebrew formula.
+`v*` tag. The tag workflow publishes the GitHub Release and binaries. A separate job
+runs the tap's shared `scripts/update-formula` to generate the binary formula and its
+checksums, then opens a pull request with the formula and package metadata.
+The tap's CI audits, installs, and tests the formula before that pull request is merged.
 
 `HOMEBREW_TAP_GITHUB_TOKEN` is required by the tag workflow.
 

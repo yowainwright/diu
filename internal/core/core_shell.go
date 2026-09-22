@@ -34,13 +34,64 @@ diu_selected_command() {
     done
 }
 
+diu_delegation_path() {
+    local parent selected key root directory
+    case "$DIU_SELECTED_COMMAND" in
+        /*) selected="$DIU_SELECTED_COMMAND" ;;
+        *) selected="$PWD/$DIU_SELECTED_COMMAND" ;;
+    esac
+    key="$(printf '%s' "$selected" | /usr/bin/shasum -a 256)" || return
+    parent="$(CDPATH='' cd -P -- "${0%/*}" && pwd -P)" || return
+    root="$parent/.diu-delegates"
+    directory="$root/${key%% *}"
+    diu_private_directory "$root" && diu_private_directory "$directory" || return
+    diu_write_delegate "$directory/$DIU_COMMAND" "$selected" || return
+    printf '%s:%s' "$directory" "$PATH"
+}
+
+diu_private_directory() {
+    if [ ! -e "$1" ]; then
+        (umask 077; /bin/mkdir "$1") 2>/dev/null || [ -d "$1" ] || return 1
+    fi
+    [ -d "$1" ] && [ ! -L "$1" ] && [ -O "$1" ] || return 1
+    /bin/chmod 700 "$1"
+}
+
+diu_write_delegate() {
+    local content temporary
+    printf -v content '#!/bin/bash\n# DIU delegated command\nexec %q "$@"\n' "$2"
+    if [ -e "$1" ] || [ -L "$1" ]; then
+        [ -f "$1" ] && [ ! -L "$1" ] && [ -x "$1" ] && [ "$(< "$1")" = "${content%$'\n'}" ]
+        return
+    fi
+    temporary="$(/usr/bin/mktemp "${1%/*}/.command.XXXXXX")" || return
+    printf '%s' "$content" > "$temporary" && /bin/chmod 700 "$temporary" && /bin/ln "$temporary" "$1" 2>/dev/null
+    /bin/rm -f "$temporary"
+    [ -f "$1" ] && [ ! -L "$1" ] && [ -x "$1" ] && [ "$(< "$1")" = "${content%$'\n'}" ]
+}
+
+diu_delegated_command() {
+    local shebang='' marker=''
+    {
+        IFS= read -r -n 128 shebang
+        IFS= read -r -n 128 marker
+    } 2>/dev/null < "$1"
+    [ "$shebang" = '#!/bin/bash' ] && [ "$marker" = '# DIU delegated command' ]
+}
+
 DIU_SELECTED_COMMAND="$(diu_selected_command)"
-if [ -z "$DIU_SELECTED_COMMAND" ] && diu_generated_wrapper "$DIU_ORIGINAL"; then
+# The private directory overrides only this command. A returning shim reaches
+# the original, while ordinary nested lookups keep selecting the delegated tool.
+if [ -n "$DIU_SELECTED_COMMAND" ] && ! [ "$DIU_SELECTED_COMMAND" -ef "$DIU_ORIGINAL" ] && ! diu_delegated_command "$DIU_SELECTED_COMMAND"; then
+    DIU_DELEGATION_PATH="$(diu_delegation_path)" || {
+        printf 'diu: cannot prepare command delegation for %s\n' "$DIU_COMMAND" >&2
+        exit 127
+    }
+    PATH="$DIU_DELEGATION_PATH" exec "$DIU_SELECTED_COMMAND" "$@"
+fi
+if diu_generated_wrapper "$DIU_ORIGINAL"; then
     printf 'diu: no original executable found for %s\n' "$DIU_COMMAND" >&2
     exit 127
-fi
-if [ -n "$DIU_SELECTED_COMMAND" ] && ! [ "$DIU_SELECTED_COMMAND" -ef "$DIU_ORIGINAL" ]; then
-    exec "$DIU_SELECTED_COMMAND" "$@"
 fi
 `
 
