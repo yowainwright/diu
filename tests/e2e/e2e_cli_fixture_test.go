@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -48,7 +49,7 @@ func shortTestHome(t *testing.T) string {
 }
 
 func (f *cliFixture) basePath() string {
-	return f.bin + ":" + f.managed + ":/usr/bin:/bin"
+	return strings.Join([]string{f.bin, f.managed, "/usr/bin", "/bin"}, ":")
 }
 
 func cliConfig(f *cliFixture) *core.Config {

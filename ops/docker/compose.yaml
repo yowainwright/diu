@@ -32,7 +32,7 @@ services:
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
     tmpfs:
-      - /tmp:rw,nosuid,size=256m
+      - /tmp:rw,exec,nosuid,size=256m
       - /home/diu:rw,nosuid,size=16m,uid=1000,gid=1000
     depends_on:
       diu:
@@ -58,7 +58,7 @@ services:
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
     tmpfs:
-      - /tmp:rw,nosuid,size=256m
+      - /tmp:rw,exec,nosuid,size=256m
       - /home/diu:rw,nosuid,size=16m,uid=1000,gid=1000
     profiles:
       - cli-e2e

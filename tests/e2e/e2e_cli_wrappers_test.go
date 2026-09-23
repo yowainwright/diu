@@ -24,7 +24,29 @@ func TestCLIWrappersPreserveCommandContract(t *testing.T) {
 
 func assertCLICommandContract(t *testing.T, f *cliFixture, shell, name string) {
 	t.Helper()
-	args := []string{"argument", "", "with spaces", "quotes'\"$`", "line\nbreak", "日本語"}
+	assertCLISelectedCommand(t, f, shell, filepath.Join(f.wrappers, name))
+	assertCLICommandBehavior(t, f, shell, name)
+}
+
+func assertCLIUnwrappedCommandContract(t *testing.T, f *cliFixture) {
+	t.Helper()
+	assertCLISelectedCommand(t, f, "bash", filepath.Join(f.managed, "probe"))
+	assertCLICommandBehavior(t, f, "bash", "probe")
+}
+
+func assertCLISelectedCommand(t *testing.T, f *cliFixture, shell, expected string) {
+	t.Helper()
+	args := []string{"/bin/bash", "--noprofile", "--norc", "-c", `command -v "$1"`, "diu-test", filepath.Base(expected)}
+	result := runCLICommand(t, f.shell(t, shell, args...), "")
+	assertCLIExit(t, result, 0)
+	if strings.TrimSpace(result.stdout) != expected {
+		t.Fatalf("%s selected %q, want %s", shell, result.stdout, expected)
+	}
+}
+
+func assertCLICommandBehavior(t *testing.T, f *cliFixture, shell, name string) {
+	t.Helper()
+	args := cliProbeArgs()
 	original := filepath.Join(f.managed, name)
 	if name == "brew" {
 		original = filepath.Join(f.bin, name)
@@ -36,6 +58,10 @@ func assertCLICommandContract(t *testing.T, f *cliFixture, shell, name string) {
 	if got != want {
 		t.Fatalf("%s changed command behavior:\ngot: %#v\nwant: %#v", shell, got, want)
 	}
+}
+
+func cliProbeArgs() []string {
+	return []string{"argument", "", "with spaces", "quotes'\"$`", "line\nbreak", "日本語"}
 }
 
 func (f *cliFixture) shell(t *testing.T, shell string, args ...string) *exec.Cmd {
@@ -58,7 +84,8 @@ func TestCLIWrapperDirectoryWithShellCharacters(t *testing.T) {
 		t.Run(shell, func(t *testing.T) {
 			f := newCLIFixture(t)
 			f.wrappers = filepath.Join(f.home, "wrappers $'`\" spaces")
-			f.config.Monitoring.Process.WrapperDir = f.wrappers
+			process := &f.config.Monitoring.Process
+			process.WrapperDir = f.wrappers
 			writeCLIConfig(t, f)
 			f.setup(t)
 			assertCLICommandContract(t, f, shell, "probe")
@@ -96,11 +123,13 @@ exit 23
 func assertCLIDelegates(t *testing.T, f *cliFixture) {
 	t.Helper()
 	paths, err := filepath.Glob(filepath.Join(f.wrappers, ".diu-delegates", "*", "probe"))
-	if err != nil || len(paths) != 1 {
+	hasWrongCount := err != nil || len(paths) != 1
+	if hasWrongCount {
 		t.Fatalf("expected one reusable delegation file: %v, %v", paths, err)
 	}
 	info, err := os.Stat(paths[0])
-	if err != nil || info.Mode().Perm() != 0o700 {
+	hasWrongMode := err != nil || info.Mode().Perm() != 0o700
+	if hasWrongMode {
 		t.Fatalf("delegate permissions: %v, %v", info, err)
 	}
 	if !strings.Contains(readCLIFile(t, paths[0]), "# DIU delegated command") {

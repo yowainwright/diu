@@ -43,7 +43,8 @@ func runCLICommand(t *testing.T, cmd *exec.Cmd, input string) cliResult {
 	t.Cleanup(func() { _ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) })
 	err := cmd.Wait()
 	var exitErr *exec.ExitError
-	if err != nil && !errors.As(err, &exitErr) {
+	hasUnexpectedError := err != nil && !errors.As(err, &exitErr)
+	if hasUnexpectedError {
 		t.Fatalf("command did not complete: %v; stderr: %s", err, stderr.String())
 	}
 	return cliResult{stdout: stdout.String(), stderr: stderr.String(), code: cmd.ProcessState.ExitCode()}

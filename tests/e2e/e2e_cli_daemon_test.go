@@ -70,7 +70,7 @@ func TestCLIUninstallStopsRealRecorderAndRemovesRuntimeFiles(t *testing.T) {
 	assertCLIMissing(t, f.config.Daemon.PIDFile)
 	assertCLIMissing(t, f.config.Daemon.SocketPath)
 	assertCLICleanup(t, f)
-	assertCLICommandContract(t, f, "bash", "probe")
+	assertCLIUnwrappedCommandContract(t, f)
 }
 
 func TestCLIUninstallCleansWrappersWhenRecorderCannotStop(t *testing.T) {

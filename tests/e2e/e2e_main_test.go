@@ -23,5 +23,7 @@ func isE2EContainer() bool {
 	linux := runtime.GOOS == "linux"
 	nonRoot := os.Getuid() != 0
 	optedIn := os.Getenv("DIU_E2E_CONTAINER") == "1"
-	return linux && nonRoot && optedIn && markerErr == nil && dockerErr == nil
+	hasMarkers := markerErr == nil && dockerErr == nil
+	canRun := linux && nonRoot && optedIn && hasMarkers
+	return canRun
 }

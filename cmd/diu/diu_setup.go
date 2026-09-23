@@ -583,13 +583,17 @@ func removeShellPathEntriesFromHomes(homeDirs []string, wrapperDir string) error
 }
 
 func removeShellPathEntries(homeDir, wrapperDir string) error {
+	fishPath := filepath.Join(homeDir, ".config", "fish", "config.fish")
+	fishLine := core.FishPathLine(wrapperDir)
+	legacyFishLine := strings.ReplaceAll(fishLine, "`", "\\`")
 	entries := []struct {
 		path string
 		line string
 	}{
 		{filepath.Join(homeDir, ".bashrc"), core.PosixPathLine(wrapperDir)},
 		{filepath.Join(homeDir, ".zshrc"), core.PosixPathLine(wrapperDir)},
-		{filepath.Join(homeDir, ".config", "fish", "config.fish"), core.FishPathLine(wrapperDir)},
+		{fishPath, fishLine},
+		{fishPath, legacyFishLine},
 	}
 	var cleanupErr error
 	for _, entry := range entries {

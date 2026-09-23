@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -36,10 +37,11 @@ func TestCLIRecordsActualWrapperExecutionWithoutDaemon(t *testing.T) {
 		t.Fatalf("expected one tool execution, got %d: %#v", len(records), records)
 	}
 	record := records[0]
-	if record.ExitCode != 17 || record.WorkingDir != f.home {
+	hasWrongDetails := record.ExitCode != 17 || record.WorkingDir != f.home
+	if hasWrongDetails {
 		t.Fatalf("record lost execution details: %#v", record)
 	}
-	if len(record.Args) != 6 || record.Args[1] != "" || record.Args[4] != "line\nbreak" {
+	if !slices.Equal(record.Args, cliProbeArgs()) {
 		t.Fatalf("record changed argument boundaries: %#v", record.Args)
 	}
 }

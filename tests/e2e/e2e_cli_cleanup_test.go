@@ -3,10 +3,13 @@
 package e2e
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/yowainwright/diu/internal/core"
 )
 
 func TestCLIUninstallRestoresShellsAndPreservesHistory(t *testing.T) {
@@ -23,7 +26,7 @@ func TestCLIUninstallRestoresShellsAndPreservesHistory(t *testing.T) {
 		assertCLIFile(t, historyPath, history)
 		assertCLIFile(t, filepath.Join(f.wrappers, "personal"), "keep this\n")
 	}
-	assertCLICommandContract(t, f, "bash", "probe")
+	assertCLIUnwrappedCommandContract(t, f)
 }
 
 func assertCLICleanup(t *testing.T, f *cliFixture) {
@@ -46,7 +49,8 @@ func assertCLICleanShells(t *testing.T, f *cliFixture) {
 		path := filepath.Join(f.home, name)
 		assertCLIFile(t, path, shellSentinel)
 		info, err := os.Stat(path)
-		if err != nil || info.Mode().Perm() != 0o640 {
+		hasWrongMode := err != nil || info.Mode().Perm() != 0o640
+		if hasWrongMode {
 			t.Fatalf("cleanup changed shell permissions: %s: %v, %v", name, info, err)
 		}
 	}
@@ -117,4 +121,19 @@ func TestCLIUninstallPreservesSymlinkTargetsAndPersonalWrappers(t *testing.T) {
 	assertCLIFile(t, outside, "retain target\n")
 	assertCLIFile(t, filepath.Join(f.wrappers, "personal-link"), "retain target\n")
 	assertCLIFile(t, filepath.Join(f.wrappers, "personal"), "#!/bin/bash\nprintf keep\n")
+}
+
+func TestCLIUninstallRemovesLegacyFishPathBlock(t *testing.T) {
+	f := newCLIFixture(t)
+	f.wrappers = filepath.Join(f.home, "wrappers `legacy`")
+	process := &f.config.Monitoring.Process
+	process.WrapperDir = f.wrappers
+	writeCLIConfig(t, f)
+	f.setup(t)
+	quoted := core.ShellEscapeString(f.wrappers)
+	line := fmt.Sprintf("if not contains \"%s\" $PATH\n    set -gx PATH \"%s\" $PATH\nend", quoted, quoted)
+	content := shellSentinel + "\n# DIU path configuration\n" + line + "\n"
+	writeCLIFile(t, filepath.Join(f.home, ".config/fish/config.fish"), content, 0o640)
+	assertCLIExit(t, f.cli(t, "uninstall"), 0)
+	assertCLICleanup(t, f)
 }

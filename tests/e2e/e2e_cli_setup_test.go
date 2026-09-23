@@ -66,13 +66,11 @@ func snapshotCLIHome(t *testing.T, home string) map[string]cliFileState {
 		if err != nil {
 			return err
 		}
-		if entry.Type().IsRegular() {
-			info, statErr := entry.Info()
-			if statErr != nil {
-				return statErr
-			}
-			files[strings.TrimPrefix(path, home+"/")] = cliFileState{readCLIFile(t, path), info.Mode().Perm()}
+		name, err := filepath.Rel(home, path)
+		if err != nil {
+			return err
 		}
+		files[name] = snapshotCLIEntry(t, path, entry)
 		return nil
 	})
 	if err != nil {
@@ -81,10 +79,30 @@ func snapshotCLIHome(t *testing.T, home string) map[string]cliFileState {
 	return files
 }
 
+func snapshotCLIEntry(t *testing.T, path string, entry os.DirEntry) cliFileState {
+	t.Helper()
+	info, err := entry.Info()
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := cliFileState{mode: info.Mode()}
+	if info.Mode().IsRegular() {
+		state.content = readCLIFile(t, path)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		state.content, err = os.Readlink(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	return state
+}
+
 func assertCLIChanges(t *testing.T, before, after map[string]cliFileState) {
 	t.Helper()
 	for path, state := range after {
-		if !allowedCLISetupChange(path) && before[path] != state {
+		hasUnexpectedChange := !allowedCLISetupChange(path) && before[path] != state
+		if hasUnexpectedChange {
 			t.Errorf("setup changed an unrelated file: %s", path)
 		}
 	}
@@ -101,7 +119,8 @@ func allowedCLISetupChange(path string) bool {
 			return true
 		}
 	}
-	if path == ".config/diu/config.json" {
+	switch path {
+	case ".config/diu/config.json", ".local", ".local/bin", ".local/share", ".local/share/diu", ".local/bin/diu-wrappers":
 		return true
 	}
 	data := strings.HasPrefix(path, ".local/share/diu/")
@@ -111,7 +130,8 @@ func allowedCLISetupChange(path string) bool {
 
 func TestCLISetupHonorsDisabledWrappers(t *testing.T) {
 	f := newCLIFixture(t)
-	f.config.Monitoring.Process.ShouldAutoInstallWrappers = false
+	process := &f.config.Monitoring.Process
+	process.ShouldAutoInstallWrappers = false
 	writeCLIConfig(t, f)
 	f.setup(t)
 	assertCLICleanShells(t, f)
