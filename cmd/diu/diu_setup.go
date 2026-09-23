@@ -86,76 +86,16 @@ DIU_PACKAGE="%s"
 DIU_EXECUTABLE="%s"
 DIU_COMMAND="$DIU_EXECUTABLE"
 DIU_ORIGINAL="$ORIGINAL_BINARY"
+DIU_RECORD_COMMAND="$DIU_EXECUTABLE"
 %s
-START_TIME=$(/bin/date +%%s)
+%s
+`
 
-"$ORIGINAL_BINARY" "$@"
-EXIT_CODE=$?
-
-# Recording must not delay the command or retain its input/output pipes.
-{
-END_TIME=$(/bin/date +%%s)
-DURATION=$(( (END_TIME - START_TIME) * 1000 ))
-
-json_escape() {
-    local value="$1"
-    value="${value//\\/\\\\}"
-    value="${value//\"/\\\"}"
-    value="${value//$'\n'/\\n}"
-    value="${value//$'\r'/\\r}"
-    value="${value//$'\t'/\\t}"
-    printf '%%s' "$value"
-}
-
-args_json="["
-first=true
-for arg in "$@"; do
-    if [ "$first" = true ]; then
-        first=false
-    else
-        args_json="$args_json,"
-    fi
-    args_json="$args_json\"$(json_escape "$arg")\""
-done
-args_json="$args_json]"
-
-payload=$(/bin/cat <<EOF
-{
-        "tool": "$DIU_TOOL",
-        "command": "$(json_escape "$DIU_EXECUTABLE $*")",
-        "args": $args_json,
-        "exit_code": $EXIT_CODE,
-        "duration_ms": $DURATION,
-        "timestamp": "$(/bin/date -u +%%Y-%%m-%%dT%%H:%%M:%%SZ)",
-        "working_dir": "$(json_escape "$(pwd)")",
-        "user": "$(json_escape "$(/usr/bin/whoami)")",
-        "packages_affected": ["$(json_escape "$DIU_PACKAGE")"],
-        "metadata": {
-            "executable": "$(json_escape "$DIU_EXECUTABLE")",
-            "original_path": "$(json_escape "$ORIGINAL_BINARY")"
-        }
-}
-EOF
-)
-
-record_fallback() {
-    DIU_RECORD_BINARY="$(command -v "$DIU_BINARY" 2>/dev/null || true)"
-    if [ -n "$DIU_RECORD_BINARY" ] && [ -x "$DIU_RECORD_BINARY" ]; then
-        printf '%%s\n' "$payload" | DIU_RECORDING=1 "$DIU_RECORD_BINARY" record >/dev/null 2>&1
-    fi
-}
-
-# Use system nc so event delivery cannot enter a tracked wrapper.
-if [ -S "$DIU_SOCKET" ] && [ -x /usr/bin/nc ]; then
-    if ! printf '%%s\n' "$payload" | /usr/bin/nc -w 1 -U "$DIU_SOCKET" 2>/dev/null; then
-        record_fallback
-    fi
-else
-    record_fallback
-fi
-} </dev/null >/dev/null 2>&1 &
-
-exit $EXIT_CODE
+const executableWrapperPayload = `    "packages_affected": ["$(json_escape "$DIU_PACKAGE")"],
+    "metadata": {
+        "executable": "$(json_escape "$DIU_EXECUTABLE")",
+        "original_path": "$(json_escape "$ORIGINAL_BINARY")"
+    }
 `
 
 func newInventoryScan() *inventoryScan {
@@ -300,7 +240,7 @@ func disableWrapperInstallation(config *core.Config) error {
 		return nil
 	}
 	config.Monitoring.Process.ShouldAutoInstallWrappers = false
-	if err := config.Save(); err != nil {
+	if err := config.SaveExisting(); err != nil {
 		return fmt.Errorf("failed to disable automatic wrapper installation: %w", err)
 	}
 	return nil
@@ -705,6 +645,9 @@ func scanInventory(config *core.Config, activity *dx.Activity) (int, error) {
 }
 
 func refreshCommandWrappers(config *core.Config, activity *dx.Activity) error {
+	if !config.Monitoring.Process.ShouldAutoInstallWrappers {
+		return nil
+	}
 	warn := func(message string) { activity.Notice(dx.Warning, message) }
 	if err := configureCommandWrappers(config, warn); err != nil {
 		return err
@@ -1427,5 +1370,6 @@ func executableWrapperScript(config *core.Config, target executableWrapper) stri
 	tool := core.ShellEscapeString(target.Tool)
 	pkg := core.ShellEscapeString(target.Package)
 	name := core.ShellEscapeString(target.Name)
-	return fmt.Sprintf(executableWrapperScriptTemplate, marker, socket, "diu", original, tool, pkg, name, core.WrapperCommandGuard)
+	recording := core.WrapperRecordingScript(executableWrapperPayload)
+	return fmt.Sprintf(executableWrapperScriptTemplate, marker, socket, "diu", original, tool, pkg, name, core.WrapperCommandGuard, recording)
 }

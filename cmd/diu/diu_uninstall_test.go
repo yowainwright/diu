@@ -128,6 +128,21 @@ func TestDisabledWrapperConfigurationRemovesExistingSetup(t *testing.T) {
 	assertUninstallArtifacts(t, fixture)
 }
 
+func TestDisabledRefreshPreservesExistingSetup(t *testing.T) {
+	fixture := newUninstallFixture(t)
+	shell, err := os.ReadFile(fixture.zshPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 3 {
+		if err := refreshCommandWrappers(fixture.config, nil); err != nil {
+			t.Fatal(err)
+		}
+		assertFileContent(t, fixture.wrapperPath, generatedWrapperFixture)
+		assertFileContent(t, fixture.zshPath, string(shell))
+	}
+}
+
 func TestExecutableWrapperInstallationHonorsDisabledSetting(t *testing.T) {
 	config := setupTestHomeConfig(t)
 	if err := installExecutableWrappers(config); err != nil {
@@ -165,13 +180,11 @@ func TestWrapperInstallationConfigCanBeReenabled(t *testing.T) {
 	}
 }
 
-func TestExecutableWrapperRecordingIsDetached(t *testing.T) {
+func TestExecutableWrapperUsesSharedRecording(t *testing.T) {
 	config := setupTestHomeConfig(t)
 	target := executableWrapper{Name: "jq", OriginalPath: "/usr/bin/true"}
 	script := executableWrapperScript(config, target)
-	for _, expected := range []string{"} </dev/null >/dev/null 2>&1 &", `DIU_RECORDING=1 "$DIU_RECORD_BINARY" record`, "START_TIME=$(/bin/date", "payload=$(/bin/cat"} {
-		if !strings.Contains(script, expected) {
-			t.Errorf("wrapper missing %q", expected)
-		}
+	if !strings.Contains(script, core.WrapperRecordingScript(executableWrapperPayload)) {
+		t.Fatal("executable wrapper does not use shared recording")
 	}
 }

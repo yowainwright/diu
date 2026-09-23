@@ -92,7 +92,7 @@ command -> DIU wrapper -> original tool -> output to your terminal
                `--> return the original exit code
 ```
 
-Recording runs with detached input and output so it cannot hold a command's pipes open. Recorder subprocesses bypass tracking to avoid recording themselves. If both the recorder binary and socket are absent, wrappers run the original tool directly.
+Recording runs with detached input and output so it cannot hold a command's pipes open. Recorder subprocesses bypass tracking to avoid recording themselves. If both the recorder binary and socket are absent, wrappers run the original tool directly. Detached recording has no global concurrency cap; bursts of commands can create multiple recorder processes. Lock and socket timeouts do not impose a process limit.
 
 Stop or start the background recorder:
 
@@ -137,7 +137,10 @@ diu uninstall
 ```
 
 <!-- Uninstall behavior derived from cmd/diu/diu_setup.go, cmd/diu/diu_uninstall.go, and cmd/diu/diu_daemon.go -->
-This disables automatic wrapper installation, stops the recorder, and removes the login service, generated wrappers, delegation cache, and shell PATH entries. Cleanup continues after individual failures and reports them; unrelated files and usage history are preserved. Open a new terminal afterward, or run `rehash` in zsh (`hash -r` in bash).
+This disables automatic wrapper installation in an existing config, stops the recorder, and removes the login service, generated wrappers, delegation cache, and shell PATH entries. Uninstall does not create a missing config. Cleanup continues after individual failures and reports them; unrelated files and usage history are preserved. Open a new terminal afterward, or run `rehash` in zsh (`hash -r` in bash).
+
+<!-- Disabled wrapper behavior derived from configureCommandWrappers and refreshCommandWrappers in cmd/diu/diu_setup.go -->
+Setting `monitoring.process.auto_install_wrappers` to `false` makes inventory refresh leave wrappers and shell configuration alone. An explicit `diu setup` with that setting removes the existing integration; `diu uninstall` always attempts cleanup.
 
 For a Homebrew installation, then run `brew uninstall diu`. Removing only the binary does not clean up DIU's shell integration. If the binary was already removed, reinstall it to run `diu uninstall`, then remove it again.
 

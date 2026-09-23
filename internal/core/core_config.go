@@ -221,6 +221,23 @@ func (c *Config) Save() error {
 	return c.SaveTo(path)
 }
 
+func (c *Config) SaveExisting() (err error) {
+	data, err := json.MarshalIndent(c, "", "  ")
+	if err != nil {
+		return err
+	}
+	file, err := safefs.OpenFile(defaultConfigPath(), os.O_WRONLY|os.O_TRUNC, PrivateFileMode)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	defer func() { err = safefs.CloseWithError(err, file, "close existing config") }()
+	_, err = file.Write(data)
+	return err
+}
+
 func (c *Config) SaveTo(path string) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, OwnerDirectoryMode); err != nil {

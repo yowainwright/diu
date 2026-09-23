@@ -55,6 +55,26 @@ func replaceCLIRecorder(t *testing.T, f *cliFixture, script string) {
 	writeCLIFile(t, path, script, 0o700)
 }
 
+func TestCLIRecordsManagerWrapperMetadata(t *testing.T) {
+	f := newCLIFixture(t)
+	f.setup(t)
+	assertCLICommandContract(t, f, "bash", "brew")
+	records := waitCLIRecords(t, f, 1)
+	if len(records) != 1 {
+		t.Fatalf("manager produced %d records, want one", len(records))
+	}
+	record := records[0]
+	if core.NormalizeToolName(record.Tool) != core.ToolHomebrew {
+		t.Fatalf("manager identity changed: %#v", record)
+	}
+	if record.Metadata["original_path"] != filepath.Join(f.bin, "brew") {
+		t.Fatalf("manager original path changed: %#v", record)
+	}
+	if !slices.Equal(record.Args, cliProbeArgs()) {
+		t.Fatalf("manager changed argument boundaries: %#v", record.Args)
+	}
+}
+
 func TestCLISlowRecorderDoesNotHoldCommandPipesOpen(t *testing.T) {
 	f := newCLIFixture(t)
 	f.setup(t)
