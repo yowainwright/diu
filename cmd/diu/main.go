@@ -51,6 +51,10 @@ func rootCommand() *command {
 }
 
 func rootCommands() []*command {
+	return append(rootApplicationCommands(), rootRecorderCommands()...)
+}
+
+func rootApplicationCommands() []*command {
 	return []*command{
 		newDaemonCommand(),
 		newQueryCommand(),
@@ -66,7 +70,14 @@ func rootCommands() []*command {
 		newSetupCommand(),
 		newUninstallCommand(),
 		newScanCommand(),
+	}
+}
+
+func rootRecorderCommands() []*command {
+	return []*command{
 		newRecordCommand(),
+		newRecorderSupervisorCommand(),
+		newRecorderWorkerCommand(),
 	}
 }
 
@@ -319,12 +330,15 @@ func newScanCommand() *command {
 }
 
 func newRecordCommand() *command {
-	return &command{
+	var shouldUseBackground bool
+	cmd := &command{
 		Use:      "record",
 		Short:    "Record an execution event from stdin",
 		IsHidden: true,
 		RunE:     recordExecution,
 	}
+	cmd.Flags().BoolVar(&shouldUseBackground, "background", defaultBoolFlagValue, "Admit bounded background recording")
+	return cmd
 }
 
 func exitStatus(err error) int {

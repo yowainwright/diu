@@ -7,7 +7,9 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -78,16 +80,54 @@ func TestCLIRecordsManagerWrapperMetadata(t *testing.T) {
 func TestCLISlowRecorderDoesNotHoldCommandPipesOpen(t *testing.T) {
 	f := newCLIFixture(t)
 	f.setup(t)
-	replaceCLIRecorder(t, f, "#!/bin/bash\n/bin/cat > \"$HOME/received-event\"\n/bin/sleep 30\n")
+	forceHomebrewLookup(t, f)
+	writeCLIFile(t, filepath.Join(f.bin, "brew"), slowHomebrewPrefixScript, 0o700)
 	started := time.Now()
 	assertCLICommandContract(t, f, "bash", "probe")
-	if elapsed := time.Since(started); elapsed > 2*time.Second {
-		t.Fatalf("command waited for background recording: %s", elapsed)
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("command waited for recorder work: %s", elapsed)
 	}
-	awaitCLI(t, func() bool {
-		_, err := os.Stat(filepath.Join(f.home, "received-event"))
-		return err == nil
-	})
+	pidPath := filepath.Join(f.home, "slow-brew-pids")
+	awaitCLI(t, func() bool { return countCLILines(t, pidPath) == 1 })
+	assertSlowRecorderProcessStops(t, f, pidPath)
+}
+
+const slowHomebrewPrefixScript = `#!/bin/bash
+case "${1:-}" in
+    --cellar|--prefix) printf '%s\n' "$$" >> "$HOME/slow-brew-pids"; exec /bin/sleep 30 ;;
+    *) exit 0 ;;
+esac
+`
+
+func forceHomebrewLookup(t *testing.T, f *cliFixture) {
+	t.Helper()
+	homebrewConfig := f.config.Tools.Homebrew
+	homebrewConfig.CellarPaths = nil
+	f.config.Tools.Homebrew = homebrewConfig
+	writeCLIConfig(t, f)
+}
+
+func countCLILines(t *testing.T, path string) int {
+	t.Helper()
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return 0
+	}
+	return strings.Count(string(content), "\n")
+}
+
+func assertSlowRecorderProcessStops(t *testing.T, f *cliFixture, path string) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	awaitCLI(t, func() bool { return syscall.Kill(pid, 0) == syscall.ESRCH })
+	awaitCLI(t, func() bool { return busyRecorderSlotCount(f.config.Daemon.DataDir) == 0 })
 }
 
 func TestCLIRecorderSubcommandsAreNotRecordedAgain(t *testing.T) {

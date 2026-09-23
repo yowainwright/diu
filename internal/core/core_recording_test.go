@@ -24,8 +24,8 @@ var recordingIsolationParts = []string{
 	"START_TIME=$(/bin/date",
 	"payload=$(/bin/cat",
 	"/usr/bin/whoami",
-	"/usr/bin/nc -w 1 -U",
-	`DIU_RECORDING=1 "$DIU_RECORD_BINARY" record`,
-	"} </dev/null >/dev/null 2>&1 &",
+	`DIU_RECORDING=1 "$DIU_RECORD_BINARY" record --background`,
+	"</dev/null >/dev/null 2>&1",
+	"Admit recording before detaching",
 	"exit $EXIT_CODE",
 }

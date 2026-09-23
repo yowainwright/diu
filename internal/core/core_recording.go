@@ -5,7 +5,7 @@ const wrapperRecordingStart = `START_TIME=$(/bin/date +%s)
 "$DIU_ORIGINAL" "$@"
 EXIT_CODE=$?
 
-# Recording must not delay the command or retain its input/output pipes.
+# Admit recording before detaching: excess events are dropped, never queued.
 {
 END_TIME=$(/bin/date +%s)
 DURATION=$(( (END_TIME - START_TIME) * 1000 ))
@@ -48,21 +48,8 @@ const wrapperRecordingEnd = `}
 EOF
 )
 
-record_fallback() {
-    if [ -n "$DIU_RECORD_BINARY" ] && [ -x "$DIU_RECORD_BINARY" ]; then
-        printf '%s\n' "$payload" | DIU_RECORDING=1 "$DIU_RECORD_BINARY" record >/dev/null 2>&1
-    fi
-}
-
-# Use system nc so event delivery cannot enter a tracked wrapper.
-if [ -S "$DIU_SOCKET" ] && [ -x /usr/bin/nc ]; then
-    if ! printf '%s\n' "$payload" | /usr/bin/nc -w 1 -U "$DIU_SOCKET" 2>/dev/null; then
-        record_fallback
-    fi
-else
-    record_fallback
-fi
-} </dev/null >/dev/null 2>&1 &
+printf '%s\n' "$payload" | DIU_RECORDING=1 "$DIU_RECORD_BINARY" record --background >/dev/null 2>&1
+} </dev/null >/dev/null 2>&1
 
 exit $EXIT_CODE
 `

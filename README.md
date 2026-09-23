@@ -92,7 +92,7 @@ command -> DIU wrapper -> original tool -> output to your terminal
                `--> return the original exit code
 ```
 
-Recording runs with detached input and output so it cannot hold a command's pipes open. Recorder subprocesses bypass tracking to avoid recording themselves. If both the recorder binary and socket are absent, wrappers run the original tool directly. Detached recording has no global concurrency cap; bursts of commands can create multiple recorder processes. Lock and socket timeouts do not impose a process limit.
+Recording never holds a command's input or output pipes open. Each data directory admits at most four recorder jobs at once; additional events are dropped. Jobs stop after two seconds, and their subprocess groups are terminated so a stuck package-manager lookup cannot keep a slot. Recorder subprocesses bypass tracking to avoid recording themselves. If the recorder binary is absent, wrappers run the original tool directly.
 
 Stop or start the background recorder:
 
@@ -199,6 +199,7 @@ The API is unauthenticated. Keep `api.host` bound to `127.0.0.1` for local use.
 | `~/.local/share/diu/executions.ndjson` | Size-bounded execution history. |
 | `~/.local/share/diu/diu.log` | Private, size-bounded daemon log. |
 | `~/.local/share/diu/fallback-contention` | Private marker for daemon-off recorder contention. |
+| `~/.local/share/diu/recorder-0.lock` through `recorder-3.lock` | Private recorder admission slots; the lock files persist, while active locks release when recorder processes exit. |
 | `~/.local/share/diu/diu.pid` | Daemon PID file. |
 | `~/.local/share/diu/diu.sock` | Daemon Unix socket. |
 | `~/.local/bin/diu-wrappers` | Generated command wrappers. |

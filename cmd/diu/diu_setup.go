@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"os"
 	"os/exec"
@@ -1098,14 +1099,21 @@ func recordExecution(cmd *command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
+	if flagBool(cmd, "background") {
+		return startBackgroundRecorder(config, cliOutput().Stdin())
+	}
 	return withFallbackRecordLock(config, func(wait time.Duration) error {
 		return storeFallbackExecution(config, wait)
 	})
 }
 
 func storeFallbackExecution(config *core.Config, wait time.Duration) error {
+	return storeFallbackExecutionFrom(config, wait, cliOutput().Stdin())
+}
+
+func storeFallbackExecutionFrom(config *core.Config, wait time.Duration, input io.Reader) error {
 	var record core.ExecutionRecord
-	if err := json.NewDecoder(cliOutput().Stdin()).Decode(&record); err != nil {
+	if err := json.NewDecoder(input).Decode(&record); err != nil {
 		return fmt.Errorf("failed to decode execution record: %w", err)
 	}
 

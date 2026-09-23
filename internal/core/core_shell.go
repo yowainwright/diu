@@ -102,7 +102,7 @@ DIU_RECORD_BINARY="$(command -v "$DIU_BINARY" 2>/dev/null || true)"
 if [ "${DIU_RECORDING:-}" = 1 ]; then
     exec "$DIU_ORIGINAL" "$@"
 fi
-if [ ! -x "$DIU_RECORD_BINARY" ] && [ ! -S "$DIU_SOCKET" ]; then
+if [ ! -x "$DIU_RECORD_BINARY" ]; then
     exec "$DIU_ORIGINAL" "$@"
 fi
 `
