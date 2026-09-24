@@ -221,21 +221,56 @@ func (c *Config) Save() error {
 	return c.SaveTo(path)
 }
 
-func (c *Config) SaveExisting() (err error) {
-	data, err := json.MarshalIndent(c, "", "  ")
-	if err != nil {
-		return err
-	}
-	file, err := safefs.OpenFile(defaultConfigPath(), os.O_WRONLY|os.O_TRUNC, PrivateFileMode)
+func (c *Config) SaveExisting() error {
+	path, mode, err := existingConfigFile(defaultConfigPath())
 	if os.IsNotExist(err) {
 		return nil
 	}
 	if err != nil {
 		return err
 	}
-	defer func() { err = safefs.CloseWithError(err, file, "close existing config") }()
-	_, err = file.Write(data)
-	return err
+	data, err := json.MarshalIndent(c, "", "  ")
+	if err != nil {
+		return err
+	}
+	return safefs.WriteFileAtomic(path, data, mode)
+}
+
+func existingConfigFile(path string) (string, os.FileMode, error) {
+	info, err := safefs.Lstat(path)
+	if err != nil {
+		return "", 0, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		path, err = resolveSymlinkedConfig(path)
+		if err != nil {
+			return "", 0, err
+		}
+		info, err = safefs.Stat(path)
+		if err != nil {
+			return "", 0, err
+		}
+	}
+	return path, info.Mode().Perm(), nil
+}
+
+func resolveSymlinkedConfig(path string) (string, error) {
+	root, err := filepath.EvalSymlinks(filepath.Dir(path))
+	if err != nil {
+		return "", err
+	}
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return "", err
+	}
+	relative, err := filepath.Rel(root, resolved)
+	if err != nil {
+		return "", err
+	}
+	if !filepath.IsLocal(relative) {
+		return "", fmt.Errorf("config symlink escapes its directory")
+	}
+	return resolved, nil
 }
 
 func (c *Config) SaveTo(path string) error {

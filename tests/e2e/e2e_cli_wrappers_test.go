@@ -83,12 +83,21 @@ func TestCLIWrapperDirectoryWithShellCharacters(t *testing.T) {
 	for _, shell := range []string{"bash", "zsh", "fish"} {
 		t.Run(shell, func(t *testing.T) {
 			f := newCLIFixture(t)
-			f.wrappers = filepath.Join(f.home, "wrappers $'`\" spaces")
+			f.wrappers = filepath.Join(f.home, "wrappers $'`\" spaces (evil)$(evil)")
 			process := &f.config.Monitoring.Process
 			process.WrapperDir = f.wrappers
+			marker := filepath.Join(f.home, "fish-path-substitution")
+			if shell == "fish" {
+				writeCLIFile(t, filepath.Join(f.bin, "evil"), "#!/bin/sh\n: > \"$HOME/fish-path-substitution\"\n", 0o700)
+			}
 			writeCLIConfig(t, f)
 			f.setup(t)
 			assertCLICommandContract(t, f, shell, "probe")
+			if shell == "fish" {
+				if _, err := os.Stat(marker); !os.IsNotExist(err) {
+					t.Fatalf("Fish evaluated a command in the wrapper path: %v", err)
+				}
+			}
 			assertCLIExit(t, f.cli(t, "uninstall"), 0)
 			assertCLICleanShells(t, f)
 		})
