@@ -32,8 +32,8 @@ description = "Run the slow recorder shutdown tests"
 run = "go test -v -count=1 -run '^TestSetup(RecoversAfterSlowPIDFallbackStop|AbortsWhenRecorderIgnoresStop)$' ./cmd/diu"
 
 [tasks.test-e2e]
-description = "Run E2E tests"
-run = "go test -tags=e2e -v ./tests/e2e/..."
+description = "Run real CLI E2Es in an isolated Docker container"
+run = "docker compose -f ops/docker/compose.yaml --profile cli-e2e run --build --rm --no-deps cli-e2e"
 
 [tasks.test-stress]
 description = "Run the near-limit fallback recorder stress test"
@@ -94,7 +94,9 @@ run = "cp diu /usr/local/bin/"
 
 [tasks.uninstall]
 description = "Uninstall DIU"
-run = "rm -f /usr/local/bin/diu"
+run = """
+/usr/local/bin/diu uninstall && rm -f /usr/local/bin/diu
+"""
 
 # Development tasks
 [tasks.dev]

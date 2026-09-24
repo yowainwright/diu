@@ -1,21 +1,23 @@
-# E2E Test Runner Dockerfile
-FROM golang:1.26.6-alpine
-
-WORKDIR /app
-
-# Install test dependencies
-RUN apk add --no-cache bash curl jq git npm python3 py3-pip
-
-# Install package managers for testing. py3-pip is installed by apk above.
-RUN npm install -g yarn pnpm
-
-# Copy test files
+FROM golang:1.26.6-alpine AS build
+WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
+COPY cmd ./cmd
+COPY internal ./internal
+COPY tests/e2e ./tests/e2e
+RUN CGO_ENABLED=0 go build -o /out/diu ./cmd/diu && \
+    CGO_ENABLED=0 go test -tags=e2e -c -o /out/diu-e2e ./tests/e2e
 
-COPY . .
-
-RUN go build -o /usr/local/bin/diu ./cmd/diu
-
-# Run tests
-CMD ["go", "test", "-tags=e2e", "-v", "./tests/e2e/..."]
+FROM debian:bookworm-slim
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends bash zsh fish perl netcat-openbsd ca-certificates && \
+    rm -rf /var/lib/apt/lists/* && \
+    useradd --uid 1000 --create-home diu && \
+    touch /.diu-e2e-container
+COPY --from=build /out/diu /usr/local/bin/diu
+COPY --from=build /out/diu-e2e /usr/local/bin/diu-e2e
+USER 1000:1000
+ENV HOME=/home/diu DIU_E2E_CONTAINER=1
+WORKDIR /tmp
+ENTRYPOINT ["/usr/local/bin/diu-e2e"]
+CMD ["-test.v", "-test.timeout=3m", "-test.run=^TestCLI"]

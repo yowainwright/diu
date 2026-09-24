@@ -100,6 +100,8 @@ func monitoringConfigValue(config *core.Config, key string) (any, bool) {
 	switch key {
 	case "monitoring.enabled_tools":
 		return strings.Join(config.Monitoring.EnabledTools, ", "), true
+	case "monitoring.process.auto_install_wrappers":
+		return config.Monitoring.Process.ShouldAutoInstallWrappers, true
 	}
 	return nil, false
 }
@@ -183,12 +185,10 @@ func updateTextConfigValue(config *core.Config, key, value string) bool {
 
 func updateParsedConfigValue(config *core.Config, key, value string) error {
 	switch key {
+	case "monitoring.process.auto_install_wrappers":
+		return updateWrapperInstallation(config, value)
 	case "api.enabled":
-		parsed, err := strconv.ParseBool(value)
-		if err != nil {
-			return fmt.Errorf("invalid boolean value: %w", err)
-		}
-		config.API.IsEnabled = parsed
+		return updateAPIEnabled(config, value)
 	case "api.port":
 		parsed, err := strconv.Atoi(value)
 		if err != nil {
@@ -198,6 +198,24 @@ func updateParsedConfigValue(config *core.Config, key, value string) error {
 	default:
 		return fmt.Errorf("unknown config key: %s", key)
 	}
+	return nil
+}
+
+func updateAPIEnabled(config *core.Config, value string) error {
+	parsed, err := strconv.ParseBool(value)
+	if err != nil {
+		return fmt.Errorf("invalid boolean value: %w", err)
+	}
+	config.API.IsEnabled = parsed
+	return nil
+}
+
+func updateWrapperInstallation(config *core.Config, value string) error {
+	parsed, err := strconv.ParseBool(value)
+	if err != nil {
+		return fmt.Errorf("invalid boolean value: %w", err)
+	}
+	config.Monitoring.Process.ShouldAutoInstallWrappers = parsed
 	return nil
 }
 

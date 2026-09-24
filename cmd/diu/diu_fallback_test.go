@@ -39,6 +39,7 @@ func TestRecordExecutionPreservesSlowNPMEnrichment(t *testing.T) {
 
 func TestExecutableWrapperPreservesCommandSelection(t *testing.T) {
 	config := setupTestHomeConfig(t)
+	config.Monitoring.Process.ShouldAutoInstallWrappers = true
 	preferredDir, managedDir := t.TempDir(), t.TempDir()
 	name := "node"
 	original := filepath.Join(managedDir, name)
@@ -326,10 +327,27 @@ func TestWrappersBoundStorageLockWait(t *testing.T) {
 			wrapper := installFallbackTestWrapper(t, config, original, template)
 			unlock := holdFallbackStorageLock(t, config)
 			runContendedWrapper(t, wrapper)
+			waitForFallbackContention(t, config)
 			unlock()
 			assertFallbackRecordDropped(t, config)
 		})
 	}
+}
+
+func waitForFallbackContention(t *testing.T, config *core.Config) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		_, contended, err := observability.ReadFallbackContention(config.Daemon.DataDir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if contended {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("background recorder did not report storage contention")
 }
 
 func buildFallbackTestBinary(t *testing.T) string {
@@ -434,13 +452,18 @@ func assertFallbackCommandResult(t *testing.T, err error, stdout, stderr string)
 }
 
 func TestWrappersUseSystemNC(t *testing.T) {
+	binaryDir := buildFallbackTestBinary(t)
 	socketDir := t.TempDir()
 	for _, template := range []string{"executable", "process"} {
 		t.Run(template, func(t *testing.T) {
 			config := setupTestHomeConfig(t)
 			config.Daemon.SocketPath = filepath.Join(socketDir, template)
+			if err := config.Save(); err != nil {
+				t.Fatal(err)
+			}
 			listener := listenForWrapperEvent(t, config.Daemon.SocketPath)
 			marker := installTrackedNCProbe(t)
+			t.Setenv("PATH", binaryDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 			original := writeFallbackOriginal(t)
 			wrapper := installFallbackTestWrapper(t, config, original, template)
 			runContendedWrapper(t, wrapper)

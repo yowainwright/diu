@@ -35,78 +35,14 @@ DIU_SOCKET="%s"
 DIU_TOOL="%s"
 DIU_COMMAND="${0##*/}"
 DIU_ORIGINAL="$ORIGINAL"
+DIU_RECORD_COMMAND="$DIU_TOOL"
 %s
-START_TIME=$(date +%%s)
+%s
+`
 
-"$ORIGINAL" "$@"
-EXIT_CODE=$?
-
-END_TIME=$(date +%%s)
-DURATION=$(( (END_TIME - START_TIME) * 1000 ))
-
-json_escape() {
-    local value="$1"
-    value="${value//\\/\\\\}"
-    value="${value//\"/\\\"}"
-    value="${value//$'\n'/\\n}"
-    value="${value//$'\r'/\\r}"
-    value="${value//$'\t'/\\t}"
-    printf '%%s' "$value"
-}
-
-args_json="["
-first=true
-for arg in "$@"; do
-    if [ "$first" = true ]; then
-        first=false
-    else
-        args_json="$args_json,"
-    fi
-    args_json="$args_json\"$(json_escape "$arg")\""
-done
-args_json="$args_json]"
-
-payload=$(cat <<EOF
-{
-    "tool": "$DIU_TOOL",
-    "command": "$(json_escape "$DIU_TOOL $*")",
-    "args": $args_json,
-    "exit_code": $EXIT_CODE,
-    "duration_ms": $DURATION,
-    "timestamp": "$(date -u +%%Y-%%m-%%dT%%H:%%M:%%SZ)",
-    "working_dir": "$(json_escape "$(pwd)")",
-    "user": "$(json_escape "$(whoami)")",
-    "metadata": {
+const processWrapperPayload = `    "metadata": {
         "original_path": "$(json_escape "$ORIGINAL")"
     }
-}
-EOF
-)
-
-record_fallback() {
-    DIU_RECORD_BINARY="$(command -v "$DIU_BINARY" 2>/dev/null || true)"
-    if [ -n "$DIU_RECORD_BINARY" ] && [ -x "$DIU_RECORD_BINARY" ]; then
-        printf '%%s\n' "$payload" | "$DIU_RECORD_BINARY" record >/dev/null 2>&1
-    fi
-}
-
-# Use system nc so event delivery cannot enter a tracked wrapper.
-if [ -S "$DIU_SOCKET" ] && [ -x /usr/bin/nc ]; then
-    {
-        sent=false
-        if printf '%%s\n' "$payload" | /usr/bin/nc -w 1 -U "$DIU_SOCKET" 2>/dev/null; then
-            sent=true
-        fi
-
-        if [ "$sent" != true ]; then
-            record_fallback
-        fi
-    } &>/dev/null &
-else
-    record_fallback >/dev/null 2>&1
-fi
-
-exit $EXIT_CODE
 `
 
 func NewProcessMonitor(name, binaryPath string) *ProcessMonitor {
@@ -300,7 +236,8 @@ func generateProcessWrapperScript(originalPath, diuPath, socketPath, tool string
 	diu := core.ShellEscapeString(diuPath)
 	socket := core.ShellEscapeString(socketPath)
 	escapedTool := core.ShellEscapeString(tool)
-	return fmt.Sprintf(processWrapperScriptTemplate, marker, original, diu, socket, escapedTool, core.WrapperCommandGuard)
+	recording := core.WrapperRecordingScript(processWrapperPayload)
+	return fmt.Sprintf(processWrapperScriptTemplate, marker, original, diu, socket, escapedTool, core.WrapperCommandGuard, recording)
 }
 
 func (m *ProcessMonitor) updateShellConfig() error {

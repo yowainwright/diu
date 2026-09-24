@@ -507,23 +507,20 @@ func uninstallBackgroundTracking() error {
 	if err != nil {
 		return err
 	}
+	var serviceErr error
 	if launchAgentInstalled() {
-		if err := removeLaunchAgent(); err != nil {
-			return err
-		}
+		serviceErr = removeLaunchAgent()
 	}
-	return stopExistingDaemon(config)
+	return errors.Join(serviceErr, stopExistingDaemon(config))
 }
 
 func removeLaunchAgent() error {
-	if err := unloadLaunchAgent(); err != nil {
-		return err
-	}
+	unloadErr := unloadLaunchAgent()
 	path, err := launchAgentPath()
 	if err != nil {
-		return err
+		return errors.Join(unloadErr, err)
 	}
-	return os.Remove(path)
+	return errors.Join(unloadErr, os.Remove(path))
 }
 
 func refreshInventoryProcess(parent context.Context, config *core.Config) error {

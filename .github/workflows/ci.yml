@@ -185,6 +185,10 @@ jobs:
         if: always()
         run: docker compose -f ops/docker/compose.yaml --profile e2e down --volumes
 
+  cli-e2e:
+    name: Isolated CLI Lifecycle E2Es
+    uses: ./.github/workflows/cli-e2e.yml
+
   release-config:
     name: Release Config
     runs-on: macos-latest

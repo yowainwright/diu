@@ -120,15 +120,13 @@ func TestProcessMonitorGenerateWrapperScript(t *testing.T) {
 var requiredWrapperScriptParts = []string{
 	"#!/bin/bash",
 	core.GeneratedWrapperMarker,
-	"nc",
 	`DIU_SOCKET=`,
-	`command -v "$DIU_BINARY"`,
-	`"$DIU_RECORD_BINARY" record`,
 	"/usr/local/bin/brew",
 	`DIU_TOOL="brew"`,
 	`"tool": "$DIU_TOOL"`,
 	`"args": $args_json`,
-	"exit $EXIT_CODE",
+	core.WrapperCommandGuard,
+	core.WrapperRecordingScript(processWrapperPayload),
 }
 
 func assertWrapperScriptContainsRequiredParts(t *testing.T, script string) {

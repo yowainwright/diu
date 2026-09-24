@@ -105,3 +105,11 @@ func taskBlock(config, header string) string {
 	}
 	return rest[:next]
 }
+
+func TestUninstallTaskCleansSetupBeforeRemovingBinary(t *testing.T) {
+	path := filepath.Join(projectRoot(t), ".mise.toml")
+	task := taskBlock(readFile(t, path), "[tasks.uninstall]")
+	if !strings.Contains(task, "/usr/local/bin/diu uninstall && rm -f /usr/local/bin/diu") {
+		t.Fatal("uninstall task must finish cleanup before removing the binary")
+	}
+}

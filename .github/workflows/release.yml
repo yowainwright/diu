@@ -18,8 +18,13 @@ env:
   GOVULNCHECK_VERSION: 'v1.6.0'
 
 jobs:
+  cli-e2e:
+    name: Isolated CLI Lifecycle E2Es
+    uses: ./.github/workflows/cli-e2e.yml
+
   release:
     name: Release
+    needs: cli-e2e
     runs-on: macos-latest
     permissions:
       contents: write
