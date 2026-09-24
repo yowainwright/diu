@@ -452,13 +452,18 @@ func assertFallbackCommandResult(t *testing.T, err error, stdout, stderr string)
 }
 
 func TestWrappersUseSystemNC(t *testing.T) {
+	binaryDir := buildFallbackTestBinary(t)
 	socketDir := t.TempDir()
 	for _, template := range []string{"executable", "process"} {
 		t.Run(template, func(t *testing.T) {
 			config := setupTestHomeConfig(t)
 			config.Daemon.SocketPath = filepath.Join(socketDir, template)
+			if err := config.Save(); err != nil {
+				t.Fatal(err)
+			}
 			listener := listenForWrapperEvent(t, config.Daemon.SocketPath)
 			marker := installTrackedNCProbe(t)
+			t.Setenv("PATH", binaryDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 			original := writeFallbackOriginal(t)
 			wrapper := installFallbackTestWrapper(t, config, original, template)
 			runContendedWrapper(t, wrapper)

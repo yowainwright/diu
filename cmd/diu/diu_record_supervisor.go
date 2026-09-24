@@ -30,6 +30,7 @@ func supervisedRecorderCommand(ctx context.Context, lock *os.File, slot int) (*e
 	if err != nil {
 		return nil, err
 	}
+	// #nosec G204 -- re-exec this DIU binary with a fixed internal command and validated slot.
 	cmd := exec.CommandContext(ctx, executable, "record-worker", strconv.Itoa(slot))
 	configureRecorderProcess(cmd, lock, os.Stdin)
 	cmd.Cancel = func() error { return killRecorderGroup(cmd.Process.Pid) }

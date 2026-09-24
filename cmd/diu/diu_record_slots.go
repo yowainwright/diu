@@ -49,12 +49,19 @@ func validateRecorderSlot(file *os.File) error {
 		return err
 	}
 	stat, ok := info.Sys().(*syscall.Stat_t)
-	isOwned := ok && stat.Uid == uint32(os.Geteuid()) && stat.Nlink == 1
+	isOwned := ok && recorderSlotOwnedByEffectiveUser(stat.Uid, int64(os.Geteuid())) && stat.Nlink == 1
 	isValid := info.Mode().IsRegular() && isOwned
 	if !isValid {
 		return fmt.Errorf("invalid recorder slot")
 	}
 	return file.Chmod(core.PrivateFileMode)
+}
+
+func recorderSlotOwnedByEffectiveUser(uid uint32, effectiveUID int64) bool {
+	if effectiveUID < 0 {
+		return false
+	}
+	return int64(uid) == effectiveUID
 }
 
 func inheritedRecorderSlot(dataDir string, slot int) (*os.File, error) {

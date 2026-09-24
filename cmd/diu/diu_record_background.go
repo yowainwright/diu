@@ -59,6 +59,7 @@ func detachRecorderSupervisor(lock *os.File, slot int, payload *os.File) error {
 	if err != nil {
 		return err
 	}
+	// #nosec G204 -- re-exec this DIU binary with a fixed internal command and bounded slot.
 	cmd := exec.Command(executable, "record-supervisor", strconv.Itoa(slot))
 	configureRecorderProcess(cmd, lock, payload)
 	if err := cmd.Start(); err != nil {
