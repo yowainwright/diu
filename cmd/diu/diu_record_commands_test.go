@@ -4,10 +4,32 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/yowainwright/diu/internal/core"
 )
+
+func TestRecordExecutionWritesToConfiguredStorage(t *testing.T) {
+	config := setupTestHomeConfig(t)
+	runRecordExecution(t, homebrewExecutionPayload)
+	assertStoredHomebrewExecution(t, config)
+}
+
+func TestRecordExecutionDropsConcurrentFallback(t *testing.T) {
+	config := setupTestHomeConfig(t)
+	lock := acquireFallbackRecordLockForTest(t, config)
+	defer releaseFallbackRecordLockForTest(t, lock)
+	payload := `{"tool":"brew","command":"brew install jq"}`
+	withStdin(t, payload, func() {
+		err := recordExecution(&command{}, nil)
+		hasBusyError := err != nil && strings.Contains(err.Error(), "remained busy")
+		if !hasBusyError {
+			t.Fatalf("recordExecution error = %v", err)
+		}
+	})
+	assertFallbackRecordDropped(t, config)
+}
 
 func TestRecorderSlotArgumentValidation(t *testing.T) {
 	tests := []struct {
