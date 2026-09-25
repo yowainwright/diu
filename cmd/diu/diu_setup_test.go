@@ -20,6 +20,91 @@ import (
 	"github.com/yowainwright/diu/internal/storage"
 )
 
+func TestSetupProjectInitializesStorageWithoutWrappers(t *testing.T) {
+	config := setupTestHomeConfig(t)
+
+	output := captureStderr(t, func() {
+		if err := setupProject(&command{}, nil); err != nil {
+			t.Fatalf("setupProject failed: %v", err)
+		}
+	})
+	if !strings.Contains(output, "DIU setup completed") {
+		t.Fatalf("Unexpected setup output: %q", output)
+	}
+	if _, err := os.Stat(config.Storage.JSONFile); err != nil {
+		t.Fatalf("Expected storage file to exist: %v", err)
+	}
+}
+
+func TestSetupProjectSkipsUnavailableManagers(t *testing.T) {
+	config := setupTestHomeConfig(t)
+	t.Setenv("PATH", t.TempDir())
+	config.Monitoring.EnabledTools = []string{core.ToolPoetry}
+	config.Monitoring.Process.ShouldAutoInstallWrappers = true
+	if err := config.Save(); err != nil {
+		t.Fatalf("Failed to save config: %v", err)
+	}
+
+	output := captureStderr(t, func() {
+		if err := setupProject(&command{}, nil); err != nil {
+			t.Fatalf("setupProject failed: %v", err)
+		}
+	})
+	if strings.Contains(output, "failed to install poetry wrapper") {
+		t.Fatalf("Unavailable manager should be skipped without a warning: %q", output)
+	}
+}
+
+func TestSetupScansInventoryBeforeEnablingBackgroundTracking(t *testing.T) {
+	config := setupTestHomeConfig(t)
+	binDir := configureExecutableWrapperScan(t, config)
+	setupBackgroundTracking = func(*core.Config) error {
+		assertScannedWrapperPackage(t, config, binDir)
+		return nil
+	}
+	if err := setupProject(&command{}, nil); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSetupDrainsLegacyDaemonBeforeMigratingHistory(t *testing.T) {
+	config := setupLegacySetupHistory(t)
+	t.Cleanup(SetDaemonChecker(isDaemonRunning))
+	previous := daemonStopRequester
+	t.Cleanup(func() { daemonStopRequester = previous })
+	daemonStopRequester = func(*core.Config) error {
+		flushLegacySetupHistory(t, config.Storage.JSONFile)
+		return nil
+	}
+	setupBackgroundTracking = func(*core.Config) error {
+		assertMigratedSetupHistory(t, config)
+		return nil
+	}
+	if err := setupProject(&command{}, nil); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSetupPreservesLegacyHistoryWhenDaemonStopFails(t *testing.T) {
+	config := setupLegacySetupHistory(t)
+	before := readLegacySetupHistory(t, config.Storage.JSONFile)
+	stopErr := errors.New("daemon stop failed")
+	t.Cleanup(SetDaemonChecker(isDaemonRunning))
+	t.Cleanup(stubDaemonStopRequest(stopErr))
+	setupBackgroundTracking = func(*core.Config) error {
+		t.Fatal("setup started background tracking after stop failed")
+		return nil
+	}
+	if err := setupProject(&command{}, nil); !errors.Is(err, stopErr) {
+		t.Fatalf("setup error = %v, want %v", err, stopErr)
+	}
+	after := readLegacySetupHistory(t, config.Storage.JSONFile)
+	if string(after) != string(before) {
+		t.Fatal("setup changed legacy history after stop failed")
+	}
+	assertFileMissing(t, storage.ExecutionLogPath(config.Storage.JSONFile))
+}
+
 type setupRecorderState struct {
 	isRunning bool
 	starts    int
