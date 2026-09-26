@@ -29,6 +29,7 @@ func TestFallbackBurstNearStorageLimit(t *testing.T) {
 			wrapper := installFallbackTestWrapper(t, config, writeFallbackOriginal(t), template)
 			runFallbackBurst(t, wrapper)
 			assertRecordersExited(t, pidLog)
+			waitForBurstRecorderSlots(t, config)
 			assertBurstHistory(t, config)
 		})
 	}
@@ -127,6 +128,35 @@ func assertRecordersExited(t *testing.T, path string) {
 			t.Errorf("recorder %d still exists: %v", pid, err)
 		}
 	}
+}
+
+func waitForBurstRecorderSlots(t *testing.T, config *core.Config) {
+	t.Helper()
+	deadline := time.Now().Add(core.RecorderTimeout + time.Second)
+	for time.Now().Before(deadline) {
+		if burstRecorderSlotsAreFree(t, config.Daemon.DataDir) {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("background recorders did not release their slots")
+}
+
+func burstRecorderSlotsAreFree(t *testing.T, dataDir string) bool {
+	t.Helper()
+	for slot := range core.MaxRecorderWorkers {
+		lock, err := tryRecorderSlot(core.RecorderSlotPath(dataDir, slot))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if lock == nil {
+			return false
+		}
+		if err := lock.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return true
 }
 
 func assertBurstHistory(t *testing.T, config *core.Config) {
