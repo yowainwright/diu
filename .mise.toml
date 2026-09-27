@@ -150,11 +150,11 @@ run = "./diu packages --unused 6mo"
 
 # Release tasks
 [tasks.version]
-description = "Show the next semantic version from conventional commits"
+description = "Show the next version, defaulting to patch when commits do not trigger a bump"
 run = """
 RELEASE_BRANCH="${RELEASE_BRANCH:-main}"
 git fetch --quiet origin "$RELEASE_BRANCH" --tags
-svu next
+svu next --always
 """
 
 [tasks.release-snapshot]
