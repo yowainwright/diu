@@ -59,16 +59,23 @@ check_synced() {
 	[ "$head_sha" = "$origin_sha" ] || die "HEAD is not synchronized with origin/$RELEASE_BRANCH"
 }
 
+check_commits_since_release() {
+	latest_tag="$(git describe --tags --abbrev=0 --match 'v[0-9]*' 2>/dev/null)" || return 0
+	commit_count="$(git rev-list --count "$latest_tag..HEAD")" || die "could not inspect commits since $latest_tag"
+	[ "$commit_count" -gt 0 ] || die "no commits since $latest_tag"
+}
+
 check_release_context() {
 	check_clean
 	check_branch
 	check_repository
 	refresh_origin
 	check_synced
+	check_commits_since_release
 }
 
 next_tag() {
-	svu next || die "svu could not determine the next version"
+	svu next --always || die "svu could not determine the next version"
 }
 
 validate_tag() {

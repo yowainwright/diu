@@ -22,6 +22,33 @@ func TestTagScriptPublishesSVUNextVersion(t *testing.T) {
 	assertReleasePreviewLog(t, run.logPath)
 }
 
+func TestTagScriptRejectsReleaseWithoutNewCommits(t *testing.T) {
+	repo, origin := newReleaseRepo(t)
+	tagRelease(t, repo, origin, "v0.2.0")
+	run := newTagScriptRun(t, repo, origin)
+	run.extraEnv = []string{"SVU_VERSION=v0.2.1"}
+
+	output, err := runTagScript(t, run)
+	assertNoCommitsSinceReleaseError(t, output, err)
+	if remoteTagExists(origin, "v0.2.1") {
+		t.Fatal("release tag was pushed without a new commit")
+	}
+}
+
+func TestTagScriptPublishesAfterCommitSinceRelease(t *testing.T) {
+	repo, origin := newReleaseRepo(t)
+	tagRelease(t, repo, origin, "v0.2.0")
+	commitAfterRelease(t, repo, origin)
+	run := newTagScriptRun(t, repo, origin)
+	run.extraEnv = []string{"SVU_VERSION=v0.2.1"}
+
+	output, err := runTagScript(t, run)
+	if err != nil {
+		t.Fatalf("tag script failed after a new commit: %v\n%s", err, output)
+	}
+	assertRemoteTagExists(t, origin, "v0.2.1")
+}
+
 func newTagScriptRun(t *testing.T, repo, origin string) tagScriptRun {
 	t.Helper()
 
@@ -46,6 +73,15 @@ func assertReleasePreviewLog(t *testing.T, logPath string) {
 
 	if got := readFile(t, logPath); got != "run release-preview\n" {
 		t.Fatalf("release preview calls = %q", got)
+	}
+}
+
+func assertNoCommitsSinceReleaseError(t *testing.T, output string, err error) {
+	t.Helper()
+
+	hasExpectedError := err != nil && strings.Contains(output, "no commits since v0.2.0")
+	if !hasExpectedError {
+		t.Fatalf("expected no-commits-since-release error, got %v\n%s", err, output)
 	}
 }
 
@@ -159,6 +195,22 @@ func newReleaseRepo(t *testing.T) (string, string) {
 	run(t, repo, "git", "remote", "add", "origin", origin)
 	run(t, repo, "git", "push", "-u", "origin", "main")
 	return repo, origin
+}
+
+func tagRelease(t *testing.T, repo, origin, tag string) {
+	t.Helper()
+
+	run(t, repo, "git", "tag", "-a", tag, "-m", "Release "+tag)
+	run(t, repo, "git", "push", "origin", "refs/tags/"+tag)
+}
+
+func commitAfterRelease(t *testing.T, repo, origin string) {
+	t.Helper()
+	path := filepath.Join(repo, "after-release.txt")
+	writeReleaseFixture(t, path, "another commit\n")
+	run(t, repo, "git", "add", "after-release.txt")
+	run(t, repo, "git", "commit", "-m", "chore: follow-up")
+	run(t, repo, "git", "push", "origin", "main")
 }
 
 type tagScriptRun struct {
