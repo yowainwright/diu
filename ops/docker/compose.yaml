@@ -63,20 +63,6 @@ services:
     profiles:
       - cli-e2e
 
-  # Simulated package managers for testing
-  test-env:
-    image: alpine:latest
-    container_name: diu-test-env
-    command: tail -f /dev/null
-    volumes:
-      - ../../tests/fixtures/scripts:/scripts:ro
-    environment:
-      - DIU_API_URL=http://diu:8081
-    networks:
-      - diu-network
-    profiles:
-      - e2e
-
 volumes:
   diu-data:
 
