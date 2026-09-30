@@ -6,9 +6,13 @@ shellcheck = "0.11.0"
 shfmt = "3.14.0"
 
 [tools."github:yowainwright/shellcheck_legibility"]
-version = "0.2.1"
-asset_pattern = "shellcheck-legibility-{{ version }}.tar.gz"
-checksum = "sha256:137942db1000e72ce8f8e2fbe8c10e334c70dc554ad2ef08aa49f0778f0302c0"
+version = "0.3.1"
+
+[tools."github:yowainwright/shellcheck_legibility".platforms]
+macos-arm64 = { checksum = "sha256:1aabd1c8ca0d45002eaaae850279c565be5f8c5b2299b0f50f93c8d8290c6e46" }
+macos-x64 = { checksum = "sha256:1fea29d94b6419f56801ff58dd9a8d156e88f21702d325ac59c5a7e0bfc25dd9" }
+linux-x64 = { checksum = "sha256:82cb4dee7b70947e719f59afeb89a98c03558e1810cf29e6503f0178f74e36bc" }
+linux-arm64 = { checksum = "sha256:690e9c8e510c3327138e4e4911e1845c16c2722a3a66f64f275572b03e8a651f" }
 
 [env]
 CGO_ENABLED = "0"
@@ -99,15 +103,6 @@ run = """
 """
 
 # Development tasks
-[tasks.dev]
-description = "Run in development mode with auto-reload"
-run = """
-if ! command -v air &> /dev/null; then
-  go install github.com/cosmtrek/air@latest
-fi
-air
-"""
-
 [tasks.run]
 description = "Build and run DIU"
 depends = ["build"]

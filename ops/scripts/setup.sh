@@ -29,7 +29,7 @@ require_command() {
 	fail "$1 is required. Install it, then rerun $SCRIPT_NAME."
 }
 
-write_pre_commit_hook() {
+write_pre_commit_hook() { # noqa: LEG038 - keep the generated hook template together.
 	target_path="${1:?}"
 	cat >"$target_path" <<'HOOK'
 #!/usr/bin/env sh
@@ -49,9 +49,9 @@ echo "Running DIU pre-commit checks"
 mise run lint
 mise run test
 HOOK
-} # noqa: LEG038 - keep the generated hook template together.
+}
 
-write_post_merge_hook() {
+write_post_merge_hook() { # noqa: LEG038 - keep the generated hook template together.
 	target_path="${1:?}"
 	cat >"$target_path" <<'HOOK'
 #!/usr/bin/env sh
@@ -83,7 +83,7 @@ fi
 mise install
 mise run deps
 HOOK
-} # noqa: LEG038 - keep the generated hook template together.
+}
 
 write_hook() {
 	case "$hook_name" in
