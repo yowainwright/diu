@@ -319,14 +319,11 @@ func newSetupCommand() *command {
 }
 
 func newScanCommand() *command {
-	var shouldRefreshWrappers bool
-	cmd := &command{
+	return &command{
 		Use:   "scan",
 		Short: "Refresh the installed package inventory",
 		RunE:  scanPackages,
 	}
-	cmd.Flags().BoolVar(&shouldRefreshWrappers, "refresh-wrappers", defaultBoolFlagValue, "Refresh command wrappers too")
-	return cmd
 }
 
 func newRecordCommand() *command {

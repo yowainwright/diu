@@ -17,7 +17,6 @@ type inventoryScan struct {
 
 type packageScanner struct {
 	config          *core.Config
-	scanConfig      core.Config
 	store           storage.Storage
 	activity        *dx.Activity
 	scan            *inventoryScan
@@ -68,14 +67,12 @@ func scanPackages(cmd *command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
-	if flagBool(cmd, "refresh-wrappers") {
-		if err := refreshCommandWrappers(config, activity); err != nil {
-			return err
-		}
-	}
 	total, err := scanInventory(config, activity)
 	if err != nil {
 		return err
+	}
+	if err := refreshZshShellIntegration(config); err != nil {
+		return fmt.Errorf("failed to refresh zsh shell integration: %w", err)
 	}
 	activity.Success(fmt.Sprintf("%d packages scanned", total))
 	return nil
@@ -100,11 +97,8 @@ func newPackageScanner(config *core.Config, store storage.Storage, activity *dx.
 	if err != nil {
 		return nil, fmt.Errorf("failed to read package inventory: %w", err)
 	}
-	scanConfig := *config
-	scanConfig.Monitoring.Process.ShouldAutoInstallWrappers = false
 	return &packageScanner{
 		config:          config,
-		scanConfig:      scanConfig,
 		store:           store,
 		activity:        activity,
 		scan:            newInventoryScan(),
@@ -124,7 +118,7 @@ func (s *packageScanner) run() error {
 }
 
 func (s *packageScanner) scanManagers() {
-	for _, tool := range s.scanConfig.Monitoring.EnabledTools {
+	for _, tool := range s.config.Monitoring.EnabledTools {
 		s.scanManager(tool)
 	}
 }
@@ -136,7 +130,7 @@ func (s *packageScanner) scanManager(tool string) {
 	if err != nil {
 		return
 	}
-	if err := monitor.Initialize(&s.scanConfig); err != nil {
+	if err := monitor.Initialize(s.config); err != nil {
 		s.noticeScanFailure("initialize", tool, err)
 		return
 	}
@@ -145,7 +139,7 @@ func (s *packageScanner) scanManager(tool string) {
 		s.noticeScanFailure("scan", tool, err)
 		return
 	}
-	s.scan.complete(inventoryScopes(normalizedTool, &s.scanConfig))
+	s.scan.complete(inventoryScopes(normalizedTool, s.config))
 	s.addPackages(packages)
 }
 

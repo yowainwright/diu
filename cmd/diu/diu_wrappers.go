@@ -437,25 +437,15 @@ func writePrivateFile(path string, data []byte) (err error) {
 	return err
 }
 
-func refreshCommandWrappers(config *core.Config, activity *dx.Activity) error {
-	if !config.Monitoring.Process.ShouldAutoInstallWrappers {
-		return nil
-	}
-	warn := func(message string) { activity.Notice(dx.Warning, message) }
-	if err := configureCommandWrappers(config, warn); err != nil {
-		return err
-	}
-	return removeMissingToolWrappers(config.Monitoring.Process.WrapperDir)
+func refreshCommandWrappers(config *core.Config, _ *dx.Activity) error {
+	return refreshZshShellIntegration(config)
 }
 
-func configureCommandWrappers(config *core.Config, warn func(string)) error {
-	if !config.Monitoring.Process.ShouldAutoInstallWrappers {
-		return removeDisabledWrappers(config)
-	}
-	if err := installWrappers(config, warn); err != nil {
+func configureCommandWrappers(config *core.Config, _ func(string)) error {
+	if err := disableWrapperInstallation(config); err != nil {
 		return err
 	}
-	return installExecutableWrappers(config)
+	return removeDisabledWrappers(config)
 }
 
 func removeDisabledWrappers(config *core.Config) error {

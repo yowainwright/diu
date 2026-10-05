@@ -42,13 +42,7 @@ type StorageConfig struct {
 type MonitoringConfig struct {
 	EnabledTools []string         `json:"enabled_tools"`
 	Methods      []string         `json:"methods"`
-	Process      ProcessConfig    `json:"process"`
 	Filesystem   FilesystemConfig `json:"filesystem"`
-}
-
-type ProcessConfig struct {
-	WrapperDir                string `json:"wrapper_dir"`
-	ShouldAutoInstallWrappers bool   `json:"auto_install_wrappers"`
 }
 
 type FilesystemConfig struct {
@@ -136,15 +130,7 @@ func defaultMonitoringConfig() MonitoringConfig {
 	return MonitoringConfig{
 		EnabledTools: DefaultEnabledTools,
 		Methods:      DefaultMonitorMethods,
-		Process:      defaultProcessConfig(homeDir),
 		Filesystem:   defaultFilesystemConfig(homeDir),
-	}
-}
-
-func defaultProcessConfig(homeDir string) ProcessConfig {
-	return ProcessConfig{
-		WrapperDir:                filepath.Join(homeDir, ".local", "bin", "diu-wrappers"),
-		ShouldAutoInstallWrappers: true,
 	}
 }
 
@@ -297,7 +283,6 @@ func (c *Config) EnsureDirectories() error {
 		filepath.Dir(c.Daemon.PIDFile),
 		filepath.Dir(c.Daemon.SocketPath),
 		filepath.Dir(c.Storage.JSONFile),
-		c.Monitoring.Process.WrapperDir,
 	}
 
 	for _, dir := range dirs {

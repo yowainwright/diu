@@ -27,7 +27,6 @@ type usageStatus struct {
 	StoragePath        string     `json:"storage_path"`
 	HistoryPath        string     `json:"history_path"`
 	LogPath            string     `json:"log_path"`
-	WrapperPath        string     `json:"wrapper_path"`
 }
 
 func showStatus(cmd *command, args []string) error {
@@ -72,7 +71,6 @@ func baseUsageStatus(config *core.Config, hasStorage bool, storageErr error) usa
 		StoragePath:  config.Storage.JSONFile,
 		HistoryPath:  storage.ExecutionLogPath(config.Storage.JSONFile),
 		LogPath:      observability.LogPath(config.Daemon.DataDir),
-		WrapperPath:  config.Monitoring.Process.WrapperDir,
 	}
 }
 
@@ -156,7 +154,6 @@ func usageStatusRows(out *dx.Out, status usageStatus) [][]string {
 		statusRow(out, "Storage manifest", dx.Muted, displayLocalPath(status.StoragePath)),
 		statusRow(out, "Execution history", dx.Muted, displayLocalPath(status.HistoryPath)),
 		statusRow(out, "Logs", dx.Muted, displayLocalPath(status.LogPath)),
-		statusRow(out, "Wrappers", dx.Muted, displayLocalPath(status.WrapperPath)),
 	}
 }
 

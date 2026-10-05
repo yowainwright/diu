@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -789,30 +788,7 @@ func removeUninstalledPackageState(pkg *core.PackageInfo) error {
 	if err != nil {
 		return nil
 	}
-	if err := removePackageWrapper(config, pkg); err != nil {
-		return err
-	}
 	return deleteUninstalledPackage(config, pkg)
-}
-
-func removePackageWrapper(config *core.Config, pkg *core.PackageInfo) error {
-	wrapperName := wrapperNameForPackage(pkg)
-	if wrapperName == "" {
-		return nil
-	}
-	wrapperDir := config.Monitoring.Process.WrapperDir
-	wrapperPath, err := executableWrapperPath(wrapperDir, wrapperName)
-	if err != nil {
-		return nil
-	}
-	removeErr := os.Remove(wrapperPath)
-	if removeErr == nil {
-		return nil
-	}
-	if os.IsNotExist(removeErr) {
-		return nil
-	}
-	return fmt.Errorf("failed to remove wrapper %s: %w", wrapperPath, removeErr)
 }
 
 func deleteUninstalledPackage(config *core.Config, pkg *core.PackageInfo) error {

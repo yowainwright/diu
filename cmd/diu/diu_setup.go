@@ -71,12 +71,11 @@ func configureSetupProject(config *core.Config, activity *dx.Activity) error {
 		return err
 	}
 
-	warn := func(message string) { activity.Notice(dx.Warning, message) }
-	if err := configureCommandWrappers(config, warn); err != nil {
-		return err
-	}
 	if _, err := scanInventory(config, activity); err != nil {
 		return err
+	}
+	if err := installZshShellIntegration(config); err != nil {
+		return fmt.Errorf("failed to install zsh integration: %w", err)
 	}
 	return setupBackgroundTracking(config)
 }
@@ -109,11 +108,13 @@ func initializeSetupStorage(config *core.Config) error {
 func uninstallProject(cmd *command, args []string) error {
 	activity := cliOutput().StartActivity("Removing DIU setup")
 	defer activity.Stop()
-	paths, err := loadUninstallPaths()
+	config, err := core.LoadConfig("")
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to load config: %w", err)
 	}
-	if err := removeSetupArtifacts(paths, uninstallBackgroundTracking); err != nil {
+	cleanupErr := uninstallBackgroundTracking()
+	shellErr := removeZshShellIntegration(config)
+	if err := errors.Join(cleanupErr, shellErr); err != nil {
 		return err
 	}
 	activity.Success("DIU setup removed; configuration and usage data preserved")

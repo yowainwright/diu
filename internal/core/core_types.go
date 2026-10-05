@@ -5,8 +5,11 @@ import (
 	"time"
 )
 
+const ExecutionKindLaunchAttempt = "launch_attempt"
+
 type ExecutionRecord struct {
 	ID               string                 `json:"id"`
+	Kind             string                 `json:"kind,omitempty"`
 	Tool             string                 `json:"tool"`
 	Command          string                 `json:"command"`
 	Args             []string               `json:"args"`
@@ -22,6 +25,7 @@ type ExecutionRecord struct {
 
 type executionRecordJSON struct {
 	ID               string                 `json:"id"`
+	Kind             string                 `json:"kind,omitempty"`
 	Tool             string                 `json:"tool"`
 	Command          string                 `json:"command"`
 	Args             []string               `json:"args"`
@@ -35,9 +39,32 @@ type executionRecordJSON struct {
 	Metadata         map[string]interface{} `json:"metadata,omitempty"`
 }
 
+type launchAttemptRecordJSON struct {
+	ID               string                 `json:"id,omitempty"`
+	Kind             string                 `json:"kind"`
+	Tool             string                 `json:"tool"`
+	Command          string                 `json:"command"`
+	Timestamp        time.Time              `json:"timestamp"`
+	PackagesAffected []string               `json:"packages_affected,omitempty"`
+	Metadata         map[string]interface{} `json:"metadata,omitempty"`
+}
+
 func (r ExecutionRecord) MarshalJSON() ([]byte, error) {
+	if r.Kind == ExecutionKindLaunchAttempt {
+		return json.Marshal(launchAttemptRecordJSON{
+			ID:               r.ID,
+			Kind:             r.Kind,
+			Tool:             r.Tool,
+			Command:          r.Command,
+			Timestamp:        r.Timestamp,
+			PackagesAffected: r.PackagesAffected,
+			Metadata:         r.Metadata,
+		})
+	}
+
 	return json.Marshal(executionRecordJSON{
 		ID:               r.ID,
+		Kind:             r.Kind,
 		Tool:             r.Tool,
 		Command:          r.Command,
 		Args:             r.Args,
@@ -59,6 +86,7 @@ func (r *ExecutionRecord) UnmarshalJSON(data []byte) error {
 	}
 
 	r.ID = raw.ID
+	r.Kind = raw.Kind
 	r.Tool = raw.Tool
 	r.Command = raw.Command
 	r.Args = raw.Args

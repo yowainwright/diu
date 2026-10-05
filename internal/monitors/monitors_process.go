@@ -17,43 +17,13 @@ import (
 type ProcessMonitor struct {
 	*BaseMonitor
 	binaryPath   string
-	wrapperPath  string
 	originalPath string
-	homeDir      string
 }
-
-type shellPathEntry struct {
-	path string
-	line string
-}
-
-const processWrapperScriptTemplate = `#!/bin/bash
-%s
-ORIGINAL="%s"
-DIU_BINARY="%s"
-DIU_SOCKET="%s"
-DIU_TOOL="%s"
-DIU_COMMAND="${0##*/}"
-DIU_ORIGINAL="$ORIGINAL"
-DIU_RECORD_COMMAND="$DIU_TOOL"
-%s
-%s
-`
-
-const processWrapperPayload = `    "metadata": {
-        "original_path": "$(json_escape "$ORIGINAL")"
-    }
-`
 
 func NewProcessMonitor(name, binaryPath string) *ProcessMonitor {
-	homeDir := os.Getenv("HOME")
-	if dir, err := os.UserHomeDir(); err == nil {
-		homeDir = dir
-	}
 	return &ProcessMonitor{
 		BaseMonitor: NewBaseMonitor(name),
 		binaryPath:  binaryPath,
-		homeDir:     homeDir,
 	}
 }
 
@@ -62,26 +32,12 @@ func (m *ProcessMonitor) Initialize(config *core.Config) error {
 		return err
 	}
 
-	m.wrapperPath = filepath.Join(config.Monitoring.Process.WrapperDir, filepath.Base(m.binaryPath))
-	if err := m.setOriginalPath(config); err != nil {
-		return err
-	}
-	if !config.Monitoring.Process.ShouldAutoInstallWrappers {
-		return nil
-	}
-	return m.InstallWrapper()
-}
-
-func (m *ProcessMonitor) setOriginalPath(config *core.Config) error {
 	originalPath, err := m.findOriginalBinary()
-	if err != nil {
-		if config.Monitoring.Process.ShouldAutoInstallWrappers {
-			return err
-		}
-		m.originalPath = m.binaryPath
+	if err == nil {
+		m.originalPath = originalPath
 		return nil
 	}
-	m.originalPath = originalPath
+	m.originalPath = m.binaryPath
 	return nil
 }
 
@@ -208,54 +164,6 @@ func relativePathInsideDirectory(relativePath string) bool {
 	return insideSubtree
 }
 
-func (m *ProcessMonitor) InstallWrapper() error {
-	wrapperDir := m.wrapperDir()
-	if err := os.MkdirAll(wrapperDir, core.OwnerDirectoryMode); err != nil {
-		return fmt.Errorf("failed to create wrapper directory: %w", err)
-	}
-
-	wrapperContent := m.generateWrapperScript()
-	if err := writeOwnerExecutableFile(m.wrapperPath, []byte(wrapperContent)); err != nil {
-		return fmt.Errorf("failed to write wrapper script: %w", err)
-	}
-
-	return m.updateShellConfig()
-}
-
-func writeOwnerExecutableFile(path string, data []byte) error {
-	return safefs.WriteFileAtomic(path, data, core.OwnerExecutableMode)
-}
-
-func (m *ProcessMonitor) generateWrapperScript() string {
-	return generateProcessWrapperScript(m.originalPath, "diu", m.config.Daemon.SocketPath, m.name)
-}
-
-func generateProcessWrapperScript(originalPath, diuPath, socketPath, tool string) string {
-	marker := core.GeneratedWrapperMarker
-	original := core.ShellEscapeString(originalPath)
-	diu := core.ShellEscapeString(diuPath)
-	socket := core.ShellEscapeString(socketPath)
-	escapedTool := core.ShellEscapeString(tool)
-	recording := core.WrapperRecordingScript(processWrapperPayload)
-	return fmt.Sprintf(processWrapperScriptTemplate, marker, original, diu, socket, escapedTool, core.WrapperCommandGuard, recording)
-}
-
-func (m *ProcessMonitor) updateShellConfig() error {
-	wrapperDir := m.wrapperDir()
-	bashPath := filepath.Join(m.homeDir, ".bashrc")
-	zshPath := filepath.Join(m.homeDir, ".zshrc")
-	fishPath := filepath.Join(m.homeDir, ".config", "fish", "config.fish")
-	posixLine := core.PosixPathLine(wrapperDir)
-	fishLine := core.FishPathLine(wrapperDir)
-	entries := []shellPathEntry{{bashPath, posixLine}, {zshPath, posixLine}, {fishPath, fishLine}}
-	for _, entry := range entries {
-		if err := appendPathConfigIfPresent(entry.path, entry.line); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 func (m *ProcessMonitor) wrapperDir() string {
 	monitoring := m.config.Monitoring
 	process := monitoring.Process
@@ -265,59 +173,6 @@ func (m *ProcessMonitor) wrapperDir() string {
 func (m *ProcessMonitor) cleanWrapperDir() string {
 	wrapperDir := m.wrapperDir()
 	return filepath.Clean(wrapperDir)
-}
-
-func appendPathConfigIfPresent(path, line string) error {
-	content, err := readShellConfigIfPresent(path)
-	if err != nil {
-		return err
-	}
-	if content == nil {
-		return nil
-	}
-	if strings.Contains(string(content), line) {
-		return nil
-	}
-	lineWithNewline := line + "\n"
-	if err := appendShellConfigLines(path, "\n"+core.ShellPathMarker+"\n", lineWithNewline); err != nil {
-		return fmt.Errorf("failed to update shell config %s: %w", path, err)
-	}
-	return nil
-}
-
-func readShellConfigIfPresent(path string) ([]byte, error) {
-	if _, err := safefs.Stat(path); err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("failed to inspect shell config %s: %w", path, err)
-	}
-	content, err := safefs.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read shell config %s: %w", path, err)
-	}
-	return content, nil
-}
-
-func appendShellConfigLines(path string, lines ...string) (err error) {
-	file, err := safefs.OpenFile(path, os.O_APPEND|os.O_WRONLY, core.PrivateFileMode)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		closeErr := file.Close()
-		shouldReturnCloseErr := err == nil && closeErr != nil
-		if shouldReturnCloseErr {
-			err = closeErr
-		}
-	}()
-
-	for _, line := range lines {
-		if _, err := file.WriteString(line); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 func (m *ProcessMonitor) Start(ctx context.Context, eventChan chan<- *core.ExecutionRecord) error {

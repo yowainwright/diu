@@ -142,7 +142,7 @@ func runDaemonForeground(config *core.Config) error {
 	if err != nil {
 		return fmt.Errorf("failed to create daemon: %w", err)
 	}
-	d.SetInventoryRefresh(func(ctx context.Context) error { return refreshInventoryProcess(ctx, config) })
+	d.SetInventoryRefresh(refreshInventoryProcess)
 	if err := d.Start(); err != nil {
 		return err
 	}
@@ -347,7 +347,7 @@ func installLaunchAgent(config *core.Config) error {
 	if runtime.GOOS != "darwin" {
 		return nil
 	}
-	if err := writeLaunchAgent(config); err != nil {
+	if err := writeLaunchAgent(); err != nil {
 		return err
 	}
 	if err := unloadLaunchAgent(); err != nil {
@@ -375,12 +375,12 @@ func startManagedDaemon(config *core.Config) error {
 	return nil
 }
 
-func writeLaunchAgent(config *core.Config) error {
+func writeLaunchAgent() error {
 	path, err := launchAgentPath()
 	if err != nil {
 		return err
 	}
-	data, err := launchAgentPlist(config)
+	data, err := launchAgentPlist()
 	if err != nil {
 		return err
 	}
@@ -393,7 +393,7 @@ func writeLaunchAgent(config *core.Config) error {
 	return nil
 }
 
-func launchAgentPlist(config *core.Config) ([]byte, error) {
+func launchAgentPlist() ([]byte, error) {
 	executable, err := installedDaemonExecutable()
 	if err != nil {
 		return nil, err
@@ -402,7 +402,7 @@ func launchAgentPlist(config *core.Config) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	path := backgroundToolPath(config.Monitoring.Process.WrapperDir)
+	path := backgroundToolPath()
 	data := fmt.Sprintf(launchAgentTemplate, plistString(executable), plistString(home), plistString(path))
 	return []byte(data), nil
 }
@@ -444,13 +444,10 @@ func sameExecutable(first, second string) bool {
 	return os.SameFile(firstInfo, secondInfo)
 }
 
-func backgroundToolPath(wrapperDir string) string {
+func backgroundToolPath() string {
 	var paths []string
 	for _, path := range filepath.SplitList(os.Getenv("PATH")) {
 		if !filepath.IsAbs(path) {
-			continue
-		}
-		if filepath.Clean(path) == filepath.Clean(wrapperDir) {
 			continue
 		}
 		paths = append(paths, path)
@@ -523,18 +520,18 @@ func removeLaunchAgent() error {
 	return errors.Join(unloadErr, os.Remove(path))
 }
 
-func refreshInventoryProcess(parent context.Context, config *core.Config) error {
+func refreshInventoryProcess(parent context.Context) error {
 	executable, err := installedDaemonExecutable()
 	if err != nil {
 		return err
 	}
 	ctx, cancel := context.WithTimeout(parent, commandTimeout)
 	defer cancel()
-	return runInventoryScan(ctx, executable, backgroundScanEnvironment(config))
+	return runInventoryScan(ctx, executable, backgroundScanEnvironment())
 }
 
 func runInventoryScan(ctx context.Context, executable string, env []string) error {
-	cmd := exec.CommandContext(ctx, executable, "scan", "--refresh-wrappers")
+	cmd := exec.CommandContext(ctx, executable, "scan")
 	cmd.Env = env
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
@@ -548,13 +545,13 @@ func runInventoryScan(ctx context.Context, executable string, env []string) erro
 	return nil
 }
 
-func backgroundScanEnvironment(config *core.Config) []string {
+func backgroundScanEnvironment() []string {
 	var env []string
 	for _, value := range os.Environ() {
 		if !strings.HasPrefix(value, "PATH=") {
 			env = append(env, value)
 		}
 	}
-	path := backgroundToolPath(config.Monitoring.Process.WrapperDir)
+	path := backgroundToolPath()
 	return append(env, "PATH="+path, "DIU_ACTIVITY=never", "DIU_COLOR=never")
 }
