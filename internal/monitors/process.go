@@ -42,46 +42,26 @@ func (m *ProcessMonitor) Initialize(config *core.Config) error {
 }
 
 func (m *ProcessMonitor) findOriginalBinary() (string, error) {
-	wrapperDir := m.cleanWrapperDir()
 	if filepath.IsAbs(m.binaryPath) {
-		return validateOriginalBinaryPath(m.binaryPath, wrapperDir)
+		return validateExecutablePath(m.binaryPath)
 	}
 
 	paths := filepath.SplitList(os.Getenv("PATH"))
 	for _, path := range paths {
-		if skipSearchPath(path, wrapperDir) {
+		if path == "" || !filepath.IsAbs(path) {
 			continue
 		}
 
 		candidate := filepath.Join(path, filepath.Base(m.binaryPath))
-		validatedPath, ok := executableCandidate(candidate, wrapperDir)
+		validatedPath, ok := executableCandidate(candidate)
 		if ok {
 			return validatedPath, nil
 		}
 	}
-	return "", fmt.Errorf("original binary %q not found in PATH outside wrapper directory %s: %w", filepath.Base(m.binaryPath), wrapperDir, exec.ErrNotFound)
+	return "", fmt.Errorf("original binary %q not found in PATH: %w", filepath.Base(m.binaryPath), exec.ErrNotFound)
 }
 
-func validateOriginalBinaryPath(binaryPath, wrapperDir string) (string, error) {
-	validatedPath, err := validateExecutablePath(binaryPath)
-	if err != nil {
-		return "", err
-	}
-	if pathWithinDirectory(validatedPath, wrapperDir) {
-		return "", fmt.Errorf("original binary %q resolves inside wrapper directory %s", validatedPath, wrapperDir)
-	}
-	return validatedPath, nil
-}
-
-func skipSearchPath(path, wrapperDir string) bool {
-	isEmpty := path == ""
-	isRelative := !filepath.IsAbs(path)
-	isWrapperDir := filepath.Clean(path) == wrapperDir
-	shouldSkip := isEmpty || isRelative || isWrapperDir
-	return shouldSkip
-}
-
-func executableCandidate(candidate, wrapperDir string) (string, bool) {
+func executableCandidate(candidate string) (string, bool) {
 	info, err := safefs.Stat(candidate)
 	isDirectory := err == nil && info.IsDir()
 	unusablePath := err != nil || isDirectory
@@ -96,83 +76,7 @@ func executableCandidate(candidate, wrapperDir string) (string, bool) {
 	if err != nil {
 		return "", false
 	}
-	if pathWithinDirectory(validatedPath, wrapperDir) {
-		return "", false
-	}
 	return validatedPath, true
-}
-
-func pathWithinDirectory(path, dir string) bool {
-	cleanPath, cleanDir, ok := cleanDirectoryPaths(path, dir)
-	if !ok {
-		return false
-	}
-	relativePath, err := filepath.Rel(cleanDir, cleanPath)
-	if err != nil {
-		return false
-	}
-	return relativePathInsideDirectory(relativePath)
-}
-
-func cleanDirectoryPaths(path, dir string) (string, string, bool) {
-	pathEmpty := strings.TrimSpace(path) == ""
-	dirEmpty := strings.TrimSpace(dir) == ""
-	missingPath := pathEmpty || dirEmpty
-	if missingPath {
-		return "", "", false
-	}
-
-	cleanPath, ok := absoluteCleanPath(path)
-	if !ok {
-		return "", "", false
-	}
-	cleanDir, ok := absoluteCleanPath(dir)
-	if !ok {
-		return "", "", false
-	}
-	cleanPath = resolvedCleanPath(cleanPath)
-	cleanDir = resolvedCleanPath(cleanDir)
-	return cleanPath, cleanDir, true
-}
-
-func absoluteCleanPath(path string) (string, bool) {
-	cleanPath := filepath.Clean(path)
-	if filepath.IsAbs(cleanPath) {
-		return cleanPath, true
-	}
-	absPath, err := filepath.Abs(cleanPath)
-	return absPath, err == nil
-}
-
-func resolvedCleanPath(path string) string {
-	resolvedPath, err := filepath.EvalSymlinks(path)
-	if err != nil {
-		return path
-	}
-	return resolvedPath
-}
-
-func relativePathInsideDirectory(relativePath string) bool {
-	if relativePath == "." {
-		return true
-	}
-	if relativePath == ".." {
-		return false
-	}
-	parentPrefix := ".." + string(filepath.Separator)
-	insideSubtree := !strings.HasPrefix(relativePath, parentPrefix)
-	return insideSubtree
-}
-
-func (m *ProcessMonitor) wrapperDir() string {
-	monitoring := m.config.Monitoring
-	process := monitoring.Process
-	return process.WrapperDir
-}
-
-func (m *ProcessMonitor) cleanWrapperDir() string {
-	wrapperDir := m.wrapperDir()
-	return filepath.Clean(wrapperDir)
 }
 
 func (m *ProcessMonitor) Start(ctx context.Context, eventChan chan<- *core.ExecutionRecord) error {
