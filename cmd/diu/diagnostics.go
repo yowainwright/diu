@@ -277,12 +277,11 @@ func diagnosticReplacements(config *core.Config) map[string]string {
 	homeDir, _ := os.UserHomeDir()
 	executionLogPath := storage.ExecutionLogPath(config.Storage.JSONFile)
 	return map[string]string{
-		config.Storage.JSONFile:              "$STORAGE_FILE",
-		executionLogPath:                     "$EXECUTION_LOG",
-		config.Monitoring.Process.WrapperDir: "$WRAPPER_DIR",
-		config.Daemon.PIDFile:                "$PID_FILE",
-		config.Daemon.SocketPath:             "$SOCKET_PATH",
-		config.Daemon.DataDir:                "$DATA_DIR",
-		homeDir:                              "$HOME",
+		config.Storage.JSONFile:  "$STORAGE_FILE",
+		executionLogPath:         "$EXECUTION_LOG",
+		config.Daemon.PIDFile:    "$PID_FILE",
+		config.Daemon.SocketPath: "$SOCKET_PATH",
+		config.Daemon.DataDir:    "$DATA_DIR",
+		homeDir:                  "$HOME",
 	}
 }

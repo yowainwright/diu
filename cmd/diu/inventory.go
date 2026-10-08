@@ -237,7 +237,7 @@ func populateGoBinarySignature(pkg *core.PackageInfo) error {
 }
 
 func (s *packageScanner) scanExecutables() {
-	for _, target := range discoverExecutableWrappers(s.config) {
+	for _, target := range discoverExecutables(s.config) {
 		if s.executableAlreadySeen(target) {
 			continue
 		}
@@ -245,7 +245,7 @@ func (s *packageScanner) scanExecutables() {
 	}
 }
 
-func (s *packageScanner) executableAlreadySeen(target executableWrapper) bool {
+func (s *packageScanner) executableAlreadySeen(target executableTarget) bool {
 	key := target.Tool + "/" + target.Package
 	alreadySeen := s.seenExecutables[key]
 	s.seenExecutables[key] = true
@@ -254,7 +254,7 @@ func (s *packageScanner) executableAlreadySeen(target executableWrapper) bool {
 	return !trackExecutable
 }
 
-func packageFromExecutable(target executableWrapper) *core.PackageInfo {
+func packageFromExecutable(target executableTarget) *core.PackageInfo {
 	return &core.PackageInfo{
 		Name:        target.Package,
 		Tool:        target.Tool,

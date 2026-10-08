@@ -118,12 +118,18 @@ func printExecutionsCSV(executions []*core.ExecutionRecord) error {
 }
 
 func executionCSVRow(exec *core.ExecutionRecord) []string {
+	duration := ""
+	exitCode := ""
+	if exec.Kind != core.ExecutionKindLaunchAttempt {
+		duration = fmt.Sprintf("%d", exec.Duration.Milliseconds())
+		exitCode = fmt.Sprintf("%d", exec.ExitCode)
+	}
 	return []string{
 		exec.Tool,
 		exec.Command,
 		exec.Timestamp.Format(time.RFC3339),
-		fmt.Sprintf("%d", exec.Duration.Milliseconds()),
-		fmt.Sprintf("%d", exec.ExitCode),
+		duration,
+		exitCode,
 		exec.WorkingDir,
 	}
 }

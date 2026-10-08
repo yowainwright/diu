@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 
 	"github.com/yowainwright/diu/internal/core"
@@ -52,7 +51,7 @@ func installZshShellIntegration(config *core.Config) error {
 }
 
 func refreshZshShellIntegration(config *core.Config) error {
-	targets := discoverExecutableWrappers(config)
+	targets := discoverExecutables(config)
 	contents, err := renderZshIntegration(targets)
 	if err != nil {
 		return err
@@ -64,12 +63,12 @@ func zshIntegrationPath(config *core.Config) string {
 	return filepath.Join(config.Daemon.DataDir, zshIntegrationFileName)
 }
 
-func renderZshIntegration(targets []executableWrapper) (string, error) {
+func renderZshIntegration(targets []executableTarget) (string, error) {
 	var source strings.Builder
 	source.WriteString(zshIntegrationGeneratedMarker + "\n")
 	source.WriteString("typeset -gA _DIU_TOOL_MAP _DIU_PACKAGE_MAP _DIU_EXECUTABLE_MAP\n")
 	source.WriteString("_DIU_TOOL_MAP=() _DIU_PACKAGE_MAP=() _DIU_EXECUTABLE_MAP=()\n")
-	for _, target := range slices.SortedFunc(targets, compareExecutableWrappers) {
+	for _, target := range targets {
 		if err := appendZshExecutableMaps(&source, target); err != nil {
 			return "", err
 		}
@@ -78,11 +77,7 @@ func renderZshIntegration(targets []executableWrapper) (string, error) {
 	return source.String(), nil
 }
 
-func compareExecutableWrappers(a, b executableWrapper) int {
-	return strings.Compare(a.Name, b.Name)
-}
-
-func appendZshExecutableMaps(source *strings.Builder, target executableWrapper) error {
+func appendZshExecutableMaps(source *strings.Builder, target executableTarget) error {
 	fields := []zshMapField{
 		{mapName: "_DIU_TOOL_MAP", value: target.Tool},
 		{mapName: "_DIU_PACKAGE_MAP", value: target.Package},
@@ -194,6 +189,29 @@ func removeOneMarkedShellBlock(content string) (string, error) {
 		blockStart--
 	}
 	return joinShellConfig(content[:blockStart], content[blockEnd:]), nil
+}
+
+func joinShellConfig(prefix, suffix string) string {
+	hasPrefix := prefix != ""
+	hasSuffix := suffix != ""
+	prefixEndsLine := strings.HasSuffix(prefix, "\n")
+	suffixStartsLine := strings.HasPrefix(suffix, "\n")
+	needsNewline := hasPrefix && hasSuffix && !prefixEndsLine && !suffixStartsLine
+	if needsNewline {
+		return prefix + "\n" + suffix
+	}
+	return prefix + suffix
+}
+
+func readShellConfigIfPresent(path string) ([]byte, error) {
+	contents, err := safefs.ReadFile(path)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to read shell config %s: %w", path, err)
+	}
+	return contents, nil
 }
 
 func writeShellConfig(path string, contents []byte) error {

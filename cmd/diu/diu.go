@@ -17,7 +17,7 @@ var (
 func newUninstallCommand() *command {
 	return &command{
 		Use:   "uninstall",
-		Short: "Remove wrappers and shell PATH entries",
+		Short: "Remove background tracking and zsh integration",
 		RunE:  uninstallProject,
 	}
 }

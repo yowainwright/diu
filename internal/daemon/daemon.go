@@ -510,6 +510,9 @@ func (d *Daemon) enrichExecution(record *core.ExecutionRecord) {
 	if record.Timestamp.IsZero() {
 		record.Timestamp = time.Now()
 	}
+	if record.Kind == core.ExecutionKindLaunchAttempt {
+		return
+	}
 
 	monitor, ok := d.registry.Get(record.Tool)
 	if !ok {

@@ -2,6 +2,7 @@ package core
 
 import (
 	"encoding/json"
+	"reflect"
 	"testing"
 	"time"
 )
@@ -119,6 +120,48 @@ func assertDurationRoundTrip(t *testing.T, decoded, record ExecutionRecord) {
 	t.Helper()
 	if decoded.Duration != record.Duration {
 		t.Errorf("Expected duration %s, got %s", record.Duration, decoded.Duration)
+	}
+}
+
+func TestLaunchAttemptRecordJSONOmitsExecutionDetails(t *testing.T) {
+	record := launchAttemptExecutionRecord()
+	data := marshalExecutionRecord(t, record)
+	raw := unmarshalRawRecord(t, data)
+	assertLaunchAttemptJSONFields(t, raw)
+	decoded := unmarshalExecutionRecord(t, data)
+	assertLaunchAttemptRoundTrip(t, decoded, record)
+}
+
+func launchAttemptExecutionRecord() ExecutionRecord {
+	return ExecutionRecord{
+		Kind: ExecutionKindLaunchAttempt, Tool: ToolNPM, Command: "prettier",
+		Args: []string{"--check", "src"}, Timestamp: time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC),
+		Duration: time.Second, ExitCode: 1, WorkingDir: "/repo", User: "user",
+		Environment: map[string]string{"CI": "true"}, PackagesAffected: []string{"prettier"},
+		Metadata: map[string]interface{}{"executable": "prettier"},
+	}
+}
+
+func assertLaunchAttemptJSONFields(t *testing.T, raw map[string]interface{}) {
+	t.Helper()
+	for _, field := range []string{"args", "duration_ms", "exit_code", "working_dir", "user", "environment"} {
+		if _, exists := raw[field]; exists {
+			t.Errorf("launch attempt JSON includes %q", field)
+		}
+	}
+	if raw["kind"] != ExecutionKindLaunchAttempt || raw["command"] != "prettier" {
+		t.Fatalf("launch attempt identity = kind %v, command %v", raw["kind"], raw["command"])
+	}
+}
+
+func assertLaunchAttemptRoundTrip(t *testing.T, decoded, record ExecutionRecord) {
+	t.Helper()
+	want := ExecutionRecord{
+		Kind: record.Kind, Tool: record.Tool, Command: record.Command,
+		Timestamp: record.Timestamp, PackagesAffected: record.PackagesAffected, Metadata: record.Metadata,
+	}
+	if !reflect.DeepEqual(decoded, want) {
+		t.Fatalf("decoded launch attempt = %#v, want %#v", decoded, want)
 	}
 }
 

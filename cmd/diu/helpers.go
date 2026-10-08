@@ -157,7 +157,7 @@ func formatLastUsed(lastUsed time.Time) string {
 	return lastUsed.Format("2006-01-02")
 }
 
-func shouldSkipExecutableWrapper(name string) bool {
+func shouldSkipExecutable(name string) bool {
 	switch name {
 	case "", ".", "..", "diu", "brew", core.ToolNPM, core.ToolPNPM, core.ToolBun, core.ToolGo, core.ToolPip, "pip3", core.ToolUV, core.ToolPoetry:
 		return true
@@ -502,55 +502,6 @@ func validateExecutablePath(path string) (string, error) {
 	return cleanPath, nil
 }
 
-func wrapperNameForPackage(pkg *core.PackageInfo) string {
-	if pkg.Path != "" {
-		return filepath.Base(pkg.Path)
-	}
-	return pkg.Name
-}
-
-func executableWrapperPath(wrapperDir, name string) (string, error) {
-	if strings.TrimSpace(wrapperDir) == "" {
-		return "", fmt.Errorf("wrapper directory cannot be empty")
-	}
-	if err := validateWrapperName(name); err != nil {
-		return "", err
-	}
-
-	cleanDir := filepath.Clean(wrapperDir)
-	wrapperPath := filepath.Join(cleanDir, name)
-	relativePath, err := filepath.Rel(cleanDir, wrapperPath)
-	if err != nil {
-		return "", fmt.Errorf("failed to validate wrapper path: %w", err)
-	}
-	if wrapperEscapesDirectory(relativePath) {
-		return "", fmt.Errorf("wrapper path escapes wrapper directory: %s", wrapperPath)
-	}
-
-	return wrapperPath, nil
-}
-
-func validateWrapperName(name string) error {
-	if shouldSkipExecutableWrapper(name) {
-		return fmt.Errorf("invalid wrapper name: %s", name)
-	}
-	if filepath.Base(name) != name {
-		return fmt.Errorf("invalid wrapper name: %s", name)
-	}
-	return nil
-}
-
-func wrapperEscapesDirectory(relativePath string) bool {
-	if relativePath == "." {
-		return true
-	}
-	return strings.HasPrefix(relativePath, "..")
-}
-
-func writeOwnerExecutableFile(path string, data []byte) error {
-	return safefs.WriteFileAtomic(path, data, core.OwnerExecutableMode)
-}
-
 func newMonitor(tool string) (monitors.Monitor, error) {
 	normalizedTool := core.NormalizeToolName(tool)
 	switch normalizedTool {
@@ -594,15 +545,16 @@ func enrichExecutionRecord(config *core.Config, record *core.ExecutionRecord) {
 	if record.Timestamp.IsZero() {
 		record.Timestamp = time.Now()
 	}
+	if record.Kind == core.ExecutionKindLaunchAttempt {
+		return
+	}
 
 	monitor, err := newMonitor(record.Tool)
 	if err != nil {
 		return
 	}
 
-	parseConfig := *config
-	parseConfig.Monitoring.Process.ShouldAutoInstallWrappers = false
-	if err := monitor.Initialize(&parseConfig); err != nil {
+	if err := monitor.Initialize(config); err != nil {
 		return
 	}
 
