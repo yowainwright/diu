@@ -20,7 +20,7 @@ import (
 	"github.com/yowainwright/diu/internal/storage"
 )
 
-func TestSetupProjectInitializesStorageWithoutWrappers(t *testing.T) {
+func TestSetupProjectInitializesStorageAndZshIntegration(t *testing.T) {
 	config := setupTestHomeConfig(t)
 
 	output := captureStderr(t, func() {
@@ -34,24 +34,41 @@ func TestSetupProjectInitializesStorageWithoutWrappers(t *testing.T) {
 	if _, err := os.Stat(config.Storage.JSONFile); err != nil {
 		t.Fatalf("Expected storage file to exist: %v", err)
 	}
+	assertSetupZshIntegrationInstalled(t, config)
 }
 
 func TestSetupProjectSkipsUnavailableManagers(t *testing.T) {
 	config := setupTestHomeConfig(t)
 	t.Setenv("PATH", t.TempDir())
 	config.Monitoring.EnabledTools = []string{core.ToolPoetry}
-	config.Monitoring.Process.ShouldAutoInstallWrappers = true
 	if err := config.Save(); err != nil {
 		t.Fatalf("Failed to save config: %v", err)
 	}
+	if err := setupProject(&command{}, nil); err != nil {
+		t.Fatalf("setupProject failed: %v", err)
+	}
+}
 
-	output := captureStderr(t, func() {
-		if err := setupProject(&command{}, nil); err != nil {
-			t.Fatalf("setupProject failed: %v", err)
-		}
-	})
-	if strings.Contains(output, "failed to install poetry wrapper") {
-		t.Fatalf("Unavailable manager should be skipped without a warning: %q", output)
+func assertSetupZshIntegrationInstalled(t *testing.T, config *core.Config) {
+	t.Helper()
+	if _, err := os.Stat(zshIntegrationPath(config)); err != nil {
+		t.Fatalf("zsh integration file missing: %v", err)
+	}
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	contents, err := os.ReadFile(filepath.Join(homeDir, ".zshrc"))
+	if err != nil {
+		t.Fatalf("zshrc missing: %v", err)
+	}
+	blockCount := strings.Count(string(contents), zshSourceBlockStart)
+	if blockCount != 1 {
+		t.Fatalf("zsh source block count = %d, want 1", blockCount)
+	}
+	sourceLine := "source " + zshSingleQuote(zshIntegrationPath(config))
+	if !strings.Contains(string(contents), sourceLine) {
+		t.Fatalf("zshrc is missing integration source line %q", sourceLine)
 	}
 }
 
@@ -197,17 +214,18 @@ func TestSetupRestoresRecorderAfterStorageFailure(t *testing.T) {
 	assertSetupRecorderRestored(t, state)
 }
 
-func TestSetupRestoresRecorderAfterWrapperFailure(t *testing.T) {
-	config := setupTestHomeConfig(t)
-	configureExecutableWrapperScan(t, config)
-	requireConfigDirectories(t, config)
-	wrapper := filepath.Join(config.Monitoring.Process.WrapperDir, "jq")
-	if err := os.Mkdir(wrapper, core.OwnerDirectoryMode); err != nil {
+func TestSetupRestoresRecorderAfterZshIntegrationFailure(t *testing.T) {
+	setupTestHomeConfig(t)
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(homeDir, ".zshrc"), core.OwnerDirectoryMode); err != nil {
 		t.Fatal(err)
 	}
 	state := stubSetupRecorder(t)
 	if err := setupProject(&command{}, nil); err == nil {
-		t.Fatal("setup accepted a directory in place of a wrapper")
+		t.Fatal("setup accepted a directory in place of .zshrc")
 	}
 	assertSetupRecorderRestored(t, state)
 }
