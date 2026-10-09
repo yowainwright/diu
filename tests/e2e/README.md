@@ -1,4 +1,4 @@
-# CLI and API E2Es
+# CLI and API end-to-end tests
 
 Run the CLI lifecycle suite:
 
@@ -6,14 +6,14 @@ Run the CLI lifecycle suite:
 mise run test-e2e
 ```
 
-<!-- Runner derived from ops/docker/Dockerfile.e2e, ops/docker/compose.yaml, and e2e_main_test.go -->
+<!-- Runner derived from ops/docker/Dockerfile.e2e, ops/docker/compose.yaml, and main_test.go -->
 Docker builds the current CLI and Go test executable into an image. Tests run as UID 1000 against disposable homes. The root filesystem is read-only; writable files live in container tmpfs. The CLI service has no host mounts, Docker socket, or network. Limits: one CPU, 256 MiB memory, 128 processes, and a three-minute suite timeout. Commands have individual deadlines and process-group cleanup. The test executable refuses host execution, including accidental `go test -tags=e2e` runs.
 
 Recorder E2Es hold all four production file-lock slots and use a non-reading Unix socket to keep four real workers busy. They confirm excess events are dropped, later wrapped commands preserve their full contract, and slots free after work ends. A separate fake Homebrew lookup blocks a recorder to check that the two-second deadline leaves command pipes free. The four-job bound is per configured data directory.
 
 The CLI is real. The Homebrew command and tracked tools are controlled fixtures, so arguments, input, output, exit codes, and side effects can be checked exactly without installing real user packages. Tests call the public CLI; they do not call setup or uninstall internals.
 
-<!-- Coverage derived from e2e_cli_*_test.go -->
+<!-- Coverage derived from cli_*_test.go -->
 | Area | Assertions |
 | --- | --- |
 | Setup | Filesystem snapshots check file contents, modes, directories, and symlink targets; only DIU-owned paths and designated shell blocks change; repeat setup produces one PATH block; wrapper permissions are 0700. |

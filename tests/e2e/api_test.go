@@ -30,7 +30,7 @@ func getAPIURL() string {
 	return fmt.Sprintf("http://%s:%d", core.DefaultAPIHost, core.DefaultAPIPort)
 }
 
-func TestE2EDaemonHealth(t *testing.T) {
+func TestAPIDaemonHealth(t *testing.T) {
 	client := &http.Client{Timeout: 10 * time.Second}
 
 	// Wait for daemon to be ready
@@ -63,7 +63,7 @@ func TestE2EDaemonHealth(t *testing.T) {
 	}
 }
 
-func TestE2EExecutionTracking(t *testing.T) {
+func TestAPIExecutionTracking(t *testing.T) {
 	client := &http.Client{Timeout: 10 * time.Second}
 
 	// Send a test execution
@@ -122,7 +122,7 @@ func TestE2EExecutionTracking(t *testing.T) {
 	}
 }
 
-func TestE2EPackageTracking(t *testing.T) {
+func TestAPIPackageTracking(t *testing.T) {
 	client := &http.Client{Timeout: 10 * time.Second}
 
 	execution := map[string]interface{}{
@@ -172,7 +172,7 @@ func TestE2EPackageTracking(t *testing.T) {
 	}
 }
 
-func TestE2EStatistics(t *testing.T) {
+func TestAPIStatistics(t *testing.T) {
 	client := &http.Client{Timeout: 10 * time.Second}
 
 	tools := []string{core.ToolHomebrew, core.ToolNPM, core.ToolGo}
@@ -220,7 +220,7 @@ func TestE2EStatistics(t *testing.T) {
 	}
 }
 
-func TestE2ECLICommands(t *testing.T) {
+func TestAPICommands(t *testing.T) {
 	// Skip if not in Docker environment
 	if _, err := os.Stat("/usr/local/bin/diu"); os.IsNotExist(err) {
 		t.Skip("DIU binary not available, skipping CLI tests")
@@ -283,7 +283,7 @@ func TestE2ECLICommands(t *testing.T) {
 	}
 }
 
-func TestE2EFallbackRecordersDoNotQueue(t *testing.T) {
+func TestAPIFallbackRecordersDoNotQueue(t *testing.T) {
 	if _, err := os.Stat("/usr/local/bin/diu"); os.IsNotExist(err) {
 		t.Skip("DIU binary not available, skipping fallback recorder test")
 	}
@@ -375,7 +375,7 @@ func environmentWithHome(homeDir string) []string {
 	return append(environment, "HOME="+homeDir)
 }
 
-func TestE2ELaunchAttempt(t *testing.T) {
+func TestAPILaunchAttempt(t *testing.T) {
 	client := &http.Client{Timeout: 10 * time.Second}
 	record := core.ExecutionRecord{
 		Kind: core.ExecutionKindLaunchAttempt, Tool: core.ToolNPM, Command: "prettier",
