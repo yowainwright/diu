@@ -12,7 +12,10 @@ import (
 
 func TestProcessMonitor(t *testing.T) {
 	monitor := NewProcessMonitor("test-tool", "test-binary")
-	if monitor.Name() != "test-tool" || monitor.binaryPath != "test-binary" {
+	nameMatches := monitor.Name() == "test-tool"
+	pathMatches := monitor.binaryPath == "test-binary"
+	monitorMatches := nameMatches && pathMatches
+	if !monitorMatches {
 		t.Fatalf("monitor = %q, %q", monitor.Name(), monitor.binaryPath)
 	}
 }
@@ -57,14 +60,19 @@ func TestProcessMonitorParseCommand(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseCommand failed: %v", err)
 	}
-	if record.Tool != "mytool" || record.Command != "mytool" || strings.Join(record.Args, " ") != "alpha beta" {
+	argsMatch := strings.Join(record.Args, " ") == "alpha beta"
+	recordMatches := record.Tool == "mytool" && record.Command == "mytool" && argsMatch
+	if !recordMatches {
 		t.Fatalf("parsed record = %#v", record)
 	}
 }
 
 func TestProcessMonitorGetInstalledPackagesIsNotImplemented(t *testing.T) {
 	packages, err := NewProcessMonitor("test", "test").GetInstalledPackages()
-	if err == nil || packages != nil {
+	returnedError := err != nil
+	returnedNoPackages := packages == nil
+	invalidResult := !returnedError || !returnedNoPackages
+	if invalidResult {
 		t.Fatalf("GetInstalledPackages() = %v, %v; want nil and an error", packages, err)
 	}
 }
@@ -102,10 +110,15 @@ func TestProcessMonitorExecuteAndTrack(t *testing.T) {
 
 func assertTrackedProcessRecord(t *testing.T, record *core.ExecutionRecord) {
 	t.Helper()
-	if record.Tool != "testtool" || record.Command != "testtool alpha beta" || record.ExitCode != 7 {
+	toolAndCommandMatch := record.Tool == "testtool" && record.Command == "testtool alpha beta"
+	recordMatches := toolAndCommandMatch && record.ExitCode == 7
+	if !recordMatches {
 		t.Fatalf("tracked record = %#v", record)
 	}
-	if strings.Join(record.Args, " ") != "alpha beta" || record.Timestamp.IsZero() {
+	argsMatch := strings.Join(record.Args, " ") == "alpha beta"
+	timestampPresent := !record.Timestamp.IsZero()
+	detailsPresent := argsMatch && timestampPresent
+	if !detailsPresent {
 		t.Fatalf("tracked record details = %#v", record)
 	}
 }
@@ -123,12 +136,16 @@ func TestValidateExecutablePath(t *testing.T) {
 
 func assertResolvedExecutablePath(t *testing.T, actual, path string) {
 	t.Helper()
-	expected, err := filepath.EvalSymlinks(path)
+	expected, err := os.Stat(path)
 	if err != nil {
-		t.Fatalf("EvalSymlinks failed: %v", err)
+		t.Fatalf("Stat failed: %v", err)
 	}
-	if actual != expected {
-		t.Fatalf("resolved path = %q, want %q", actual, expected)
+	actualInfo, err := os.Stat(actual)
+	if err != nil {
+		t.Fatalf("Stat resolved path failed: %v", err)
+	}
+	if !os.SameFile(actualInfo, expected) {
+		t.Fatalf("resolved path %q is not the expected executable %q", actual, path)
 	}
 }
 

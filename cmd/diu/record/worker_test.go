@@ -1,4 +1,4 @@
-package main
+package record
 
 import (
 	"bytes"
@@ -120,7 +120,7 @@ func TestStartBackgroundRecorderRejectsInvalidDataDirectory(t *testing.T) {
 }
 
 func TestSendRecorderPayloadWritesUnixSocket(t *testing.T) {
-	socketDir, err := os.MkdirTemp("/tmp", "diu-sock-")
+	socketDir, err := os.MkdirTemp(".", "sock-")
 	if err != nil {
 		t.Fatal(err)
 	}

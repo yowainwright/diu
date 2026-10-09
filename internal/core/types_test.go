@@ -149,7 +149,10 @@ func assertLaunchAttemptJSONFields(t *testing.T, raw map[string]interface{}) {
 			t.Errorf("launch attempt JSON includes %q", field)
 		}
 	}
-	if raw["kind"] != ExecutionKindLaunchAttempt || raw["command"] != "prettier" {
+	kindMatches := raw["kind"] == ExecutionKindLaunchAttempt
+	commandMatches := raw["command"] == "prettier"
+	identityMatches := kindMatches && commandMatches
+	if !identityMatches {
 		t.Fatalf("launch attempt identity = kind %v, command %v", raw["kind"], raw["command"])
 	}
 }

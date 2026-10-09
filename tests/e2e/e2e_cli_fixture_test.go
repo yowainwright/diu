@@ -19,7 +19,6 @@ type cliFixture struct {
 	home     string
 	bin      string
 	managed  string
-	wrappers string
 	config   *core.Config
 	env      []string
 }
@@ -28,7 +27,6 @@ func newCLIFixture(t *testing.T) *cliFixture {
 	t.Helper()
 	home := shortTestHome(t)
 	f := &cliFixture{home: home, bin: filepath.Join(home, "bin"), managed: filepath.Join(home, "managed")}
-	f.wrappers = filepath.Join(home, ".local", "bin", "diu-wrappers")
 	f.env = []string{"HOME=" + home, "PATH=" + f.basePath(), "LANG=C.UTF-8", "DIU_TEST_HOME=" + home}
 	f.env = append(f.env, "DIU_TEST_TOKEN=preserve me", "TMPDIR="+home)
 	writeCLIManagers(t, f)
@@ -58,7 +56,6 @@ func cliConfig(f *cliFixture) *core.Config {
 	config.Daemon = core.DaemonConfig{DataDir: data, PIDFile: data + "/diu.pid", SocketPath: data + "/diu.sock"}
 	config.Storage.JSONFile = filepath.Join(data, "executions.json")
 	config.Monitoring.EnabledTools = []string{core.ToolHomebrew}
-	config.Monitoring.Process.WrapperDir = f.wrappers
 	config.Monitoring.Filesystem.WatchPaths = map[string][]string{core.ToolHomebrew: {f.managed}}
 	config.Monitoring.Filesystem.ScanInterval = time.Hour
 	config.Tools.Homebrew.CellarPaths = []string{filepath.Join(f.home, "Cellar")}

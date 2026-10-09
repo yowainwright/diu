@@ -25,7 +25,6 @@ func TestGoMonitorStart(t *testing.T) {
 
 func TestGoMonitorInitialize(t *testing.T) {
 	config := core.DefaultConfig()
-	config.Monitoring.Process.ShouldAutoInstallWrappers = false
 
 	monitor := NewGoMonitor().(*GoMonitor)
 	err := monitor.Initialize(config)
@@ -44,7 +43,6 @@ func TestGoMonitorInitialize(t *testing.T) {
 
 func TestGoMonitorInitializeWithConfig(t *testing.T) {
 	config := core.DefaultConfig()
-	config.Monitoring.Process.ShouldAutoInstallWrappers = false
 	config.Tools.Go.GoPath = "/custom/gopath"
 	config.Tools.Go.GoBin = "/custom/gobin"
 
@@ -455,7 +453,6 @@ func initializedGoMonitor(t *testing.T, goBin string) *GoMonitor {
 	t.Helper()
 
 	config := core.DefaultConfig()
-	config.Monitoring.Process.ShouldAutoInstallWrappers = false
 	config.Tools.Go.GoBin = goBin
 	monitor := NewGoMonitor().(*GoMonitor)
 	if err := monitor.Initialize(config); err != nil {
@@ -520,7 +517,6 @@ func TestGoGetBinaryVersionDoesNotExecuteBinary(t *testing.T) {
 
 func TestGoGetBinariesNonExistentDir(t *testing.T) {
 	config := core.DefaultConfig()
-	config.Monitoring.Process.ShouldAutoInstallWrappers = false
 	config.Tools.Go.GoBin = "/nonexistent/path/that/does/not/exist"
 
 	monitor := NewGoMonitor().(*GoMonitor)

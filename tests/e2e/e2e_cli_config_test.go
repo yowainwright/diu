@@ -28,8 +28,7 @@ func TestCLIUninstallCleansOrphansWithoutRecreatingConfig(t *testing.T) {
 	assertCLIExit(t, f.cli(t, "uninstall"), 0)
 	assertCLIMissing(t, filepath.Join(f.home, ".config", "diu"))
 	assertCLICleanShells(t, f)
-	assertCLIMissing(t, filepath.Join(f.wrappers, "probe"))
-	assertCLIMissing(t, filepath.Join(f.wrappers, "brew"))
+	assertCLIMissing(t, filepath.Join(f.config.Daemon.DataDir, "shell-integration.zsh"))
 }
 
 func removeCLIConfig(t *testing.T, f *cliFixture) {

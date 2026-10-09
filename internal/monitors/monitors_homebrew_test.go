@@ -288,7 +288,6 @@ func TestFormulaPackagesUseNewestInstalledVersion(t *testing.T) {
 
 func TestHomebrewInitialize(t *testing.T) {
 	config := core.DefaultConfig()
-	config.Monitoring.Process.ShouldAutoInstallWrappers = false
 	monitor := NewHomebrewMonitor()
 
 	err := monitor.Initialize(config)
@@ -343,7 +342,6 @@ func prepareFakeHomebrewPaths(t *testing.T) string {
 
 func testHomebrewConfig() *core.Config {
 	config := core.DefaultConfig()
-	config.Monitoring.Process.ShouldAutoInstallWrappers = false
 	config.Tools.Homebrew.CellarPaths = nil
 	config.Tools.Homebrew.ShouldTrackCasks = true
 	return config

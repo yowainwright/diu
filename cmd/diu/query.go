@@ -120,9 +120,11 @@ func printExecutionsCSV(executions []*core.ExecutionRecord) error {
 func executionCSVRow(exec *core.ExecutionRecord) []string {
 	duration := ""
 	exitCode := ""
+	workingDir := ""
 	if exec.Kind != core.ExecutionKindLaunchAttempt {
 		duration = fmt.Sprintf("%d", exec.Duration.Milliseconds())
 		exitCode = fmt.Sprintf("%d", exec.ExitCode)
+		workingDir = exec.WorkingDir
 	}
 	return []string{
 		exec.Tool,
@@ -130,7 +132,7 @@ func executionCSVRow(exec *core.ExecutionRecord) []string {
 		exec.Timestamp.Format(time.RFC3339),
 		duration,
 		exitCode,
-		exec.WorkingDir,
+		workingDir,
 	}
 }
 
@@ -171,7 +173,12 @@ func printExecutionPackages(out *dx.Out, exec *core.ExecutionRecord) {
 }
 
 func printExecutionLocation(out *dx.Out, exec *core.ExecutionRecord) {
-	if exec.WorkingDir == "" {
+	isLaunchAttempt := exec.Kind == core.ExecutionKindLaunchAttempt
+	if isLaunchAttempt {
+		return
+	}
+	hasWorkingDir := exec.WorkingDir != ""
+	if !hasWorkingDir {
 		return
 	}
 	out.Printf("  %s %s\n",
@@ -181,7 +188,12 @@ func printExecutionLocation(out *dx.Out, exec *core.ExecutionRecord) {
 }
 
 func printExecutionExitCode(out *dx.Out, exec *core.ExecutionRecord) {
-	if exec.ExitCode == 0 {
+	isLaunchAttempt := exec.Kind == core.ExecutionKindLaunchAttempt
+	if isLaunchAttempt {
+		return
+	}
+	hasFailure := exec.ExitCode != 0
+	if !hasFailure {
 		return
 	}
 	out.Printf("  %s %d\n",

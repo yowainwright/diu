@@ -99,7 +99,10 @@ func addExecutableEntry(targets map[string]executableTarget, tool, dir, name str
 		return
 	}
 	pkg := packageNameForExecutable(tool, path, name)
-	if pkg == "" || preferExistingExecutable(targets[name], path) {
+	if pkg == "" {
+		return
+	}
+	if preferExistingExecutable(targets[name], path) {
 		return
 	}
 	targets[name] = executableTarget{Name: name, OriginalPath: path, Tool: tool, Package: pkg}
@@ -124,7 +127,10 @@ func executablePathPriority(path string) int {
 
 func usableExecutablePath(path string) bool {
 	info, err := os.Stat(path)
-	if err != nil || info.IsDir() {
+	if err != nil {
+		return false
+	}
+	if info.IsDir() {
 		return false
 	}
 	return info.Mode()&core.ExecutableModeMask != 0

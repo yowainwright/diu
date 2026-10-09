@@ -45,20 +45,26 @@ func (m *ProcessMonitor) findOriginalBinary() (string, error) {
 	if filepath.IsAbs(m.binaryPath) {
 		return validateExecutablePath(m.binaryPath)
 	}
-
 	paths := filepath.SplitList(os.Getenv("PATH"))
+	return findOriginalBinaryInPath(m.binaryPath, paths)
+}
+
+func findOriginalBinaryInPath(binaryPath string, paths []string) (string, error) {
 	for _, path := range paths {
-		if path == "" || !filepath.IsAbs(path) {
+		if path == "" {
+			continue
+		}
+		if !filepath.IsAbs(path) {
 			continue
 		}
 
-		candidate := filepath.Join(path, filepath.Base(m.binaryPath))
+		candidate := filepath.Join(path, filepath.Base(binaryPath))
 		validatedPath, ok := executableCandidate(candidate)
 		if ok {
 			return validatedPath, nil
 		}
 	}
-	return "", fmt.Errorf("original binary %q not found in PATH: %w", filepath.Base(m.binaryPath), exec.ErrNotFound)
+	return "", fmt.Errorf("original binary %q not found in PATH: %w", filepath.Base(binaryPath), exec.ErrNotFound)
 }
 
 func executableCandidate(candidate string) (string, bool) {

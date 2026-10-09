@@ -101,14 +101,14 @@ func appendZshMapEntry(source *strings.Builder, mapName, executableName, value s
 	if err != nil {
 		return fmt.Errorf("failed to encode zsh executable map: %w", err)
 	}
-	line := fmt.Sprintf("%s[%s]=%s\n", mapName, zshSingleQuote(executableName), zshSingleQuote(string(encoded)))
+	line := fmt.Sprintf("%s+=(%s %s)\n", mapName, zshSingleQuote(executableName), zshSingleQuote(string(encoded)))
 	source.WriteString(line)
 	return nil
 }
 
 func zshSingleQuote(value string) string {
 	quoted := strings.ReplaceAll(value, "'", "'\\''")
-	return "'" + quoted + "'"
+	return fmt.Sprintf("'%s'", quoted)
 }
 
 func installZshSourceBlock(path, integrationPath string) error {
@@ -134,13 +134,18 @@ func upsertMarkedShellBlock(content, block string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if content != "" && !strings.HasSuffix(content, "\n") {
+	hasContent := content != ""
+	endsWithNewline := strings.HasSuffix(content, "\n")
+	shouldAddNewline := hasContent && !endsWithNewline
+	if shouldAddNewline {
 		content += "\n"
 	}
-	if content != "" && !strings.HasSuffix(content, "\n\n") {
+	hasBlankLineEnding := strings.HasSuffix(content, "\n\n")
+	shouldAddBlankLine := content != "" && !hasBlankLineEnding
+	if shouldAddBlankLine {
 		content += "\n"
 	}
-	return content + block + "\n", nil
+	return strings.Join([]string{content, block, ""}, "\n"), nil
 }
 
 func removeZshSourceBlock() error {
@@ -149,9 +154,16 @@ func removeZshSourceBlock() error {
 		return fmt.Errorf("failed to find home directory: %w", err)
 	}
 	path := filepath.Join(homeDirs[0], ".zshrc")
+	return removeZshSourceBlockAt(path)
+}
+
+func removeZshSourceBlockAt(path string) error {
 	content, err := readShellConfigIfPresent(path)
-	if err != nil || content == nil {
+	if err != nil {
 		return err
+	}
+	if content == nil {
+		return nil
 	}
 	updated, err := removeMarkedShellBlocks(string(content))
 	if err != nil {
@@ -175,20 +187,46 @@ func removeMarkedShellBlocks(content string) (string, error) {
 }
 
 func removeOneMarkedShellBlock(content string) (string, error) {
+	start, end, err := markedShellBlockOffsets(content)
+	if err != nil {
+		return "", err
+	}
+	blockStart := shellBlockStart(content, start)
+	blockEnd := shellBlockEnd(content, end)
+	return joinShellConfig(content[:blockStart], content[blockEnd:]), nil
+}
+
+func markedShellBlockOffsets(content string) (int, int, error) {
 	start := strings.Index(content, zshSourceBlockStart)
 	end := strings.Index(content, zshSourceBlockEnd)
-	if start < 0 || end < start {
-		return "", fmt.Errorf("malformed DIU zsh source block")
+	if start < 0 {
+		return 0, 0, fmt.Errorf("malformed DIU zsh source block")
 	}
+	if end < start {
+		return 0, 0, fmt.Errorf("malformed DIU zsh source block")
+	}
+	return start, end, nil
+}
+
+func shellBlockEnd(content string, end int) int {
 	blockEnd := end + len(zshSourceBlockEnd)
-	if blockEnd < len(content) && content[blockEnd] == '\n' {
-		blockEnd++
+	if blockEnd >= len(content) {
+		return blockEnd
 	}
-	blockStart := start
-	if blockStart > 0 && content[blockStart-1] == '\n' {
-		blockStart--
+	if content[blockEnd] == '\n' {
+		return blockEnd + 1
 	}
-	return joinShellConfig(content[:blockStart], content[blockEnd:]), nil
+	return blockEnd
+}
+
+func shellBlockStart(content string, start int) int {
+	if start == 0 {
+		return start
+	}
+	if content[start-1] == '\n' {
+		return start - 1
+	}
+	return start
 }
 
 func joinShellConfig(prefix, suffix string) string {
@@ -196,11 +234,19 @@ func joinShellConfig(prefix, suffix string) string {
 	hasSuffix := suffix != ""
 	prefixEndsLine := strings.HasSuffix(prefix, "\n")
 	suffixStartsLine := strings.HasPrefix(suffix, "\n")
-	needsNewline := hasPrefix && hasSuffix && !prefixEndsLine && !suffixStartsLine
-	if needsNewline {
-		return prefix + "\n" + suffix
+	if !hasPrefix {
+		return suffix
 	}
-	return prefix + suffix
+	if !hasSuffix {
+		return prefix
+	}
+	if prefixEndsLine {
+		return strings.Join([]string{prefix, suffix}, "")
+	}
+	if suffixStartsLine {
+		return strings.Join([]string{prefix, suffix}, "")
+	}
+	return strings.Join([]string{prefix, "\n", suffix}, "")
 }
 
 func readShellConfigIfPresent(path string) ([]byte, error) {

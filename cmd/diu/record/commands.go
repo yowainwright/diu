@@ -1,4 +1,4 @@
-package main
+package record
 
 import (
 	"context"
@@ -13,33 +13,45 @@ import (
 	"time"
 
 	"github.com/yowainwright/diu/internal/core"
+	"github.com/yowainwright/diu/internal/dx"
+	"github.com/yowainwright/diu/internal/monitors"
 	"github.com/yowainwright/diu/internal/observability"
 	"github.com/yowainwright/diu/internal/safefs"
 	"github.com/yowainwright/diu/internal/storage"
 )
 
 const (
+	defaultBackgroundEnabled   = false
 	fallbackRecordLockSuffix   = ".fallback.lock"
 	fallbackRecordLockAttempts = 5
 	fallbackRecordRetryDelay   = 10 * time.Millisecond
 	fallbackRecordLockWait     = fallbackRecordLockAttempts * fallbackRecordRetryDelay
 )
 
-func recordExecution(cmd *command, args []string) error {
+func NewCommand() *dx.Command {
+	var shouldUseBackground bool
+	cmd := &dx.Command{
+		Use:      "record",
+		Short:    "Record an execution event from stdin",
+		IsHidden: true,
+		RunE:     RunExecution,
+	}
+	cmd.Flags().BoolVar(&shouldUseBackground, "background", defaultBackgroundEnabled, "Admit bounded background recording")
+	return cmd
+}
+
+func RunExecution(cmd *dx.Command, _ []string) error {
 	config, err := core.LoadConfig("")
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
-	if flagBool(cmd, "background") {
-		return startBackgroundRecorder(config, cliOutput().Stdin())
+	background, _ := cmd.Flags().GetBool("background")
+	if background {
+		return startBackgroundRecorder(config, dx.TerminalOut().Stdin())
 	}
 	return withFallbackRecordLock(config, func(wait time.Duration) error {
-		return storeFallbackExecution(config, wait)
+		return storeFallbackExecutionFrom(config, wait, dx.TerminalOut().Stdin())
 	})
-}
-
-func storeFallbackExecution(config *core.Config, wait time.Duration) error {
-	return storeFallbackExecutionFrom(config, wait, cliOutput().Stdin())
 }
 
 func storeFallbackExecutionFrom(config *core.Config, wait time.Duration, input io.Reader) error {
@@ -48,13 +60,13 @@ func storeFallbackExecutionFrom(config *core.Config, wait time.Duration, input i
 		return fmt.Errorf("failed to decode execution record: %w", err)
 	}
 
-	enrichExecutionRecord(config, &record)
+	enrichRecord(config, &record)
 
 	store, err := storage.NewJSONStorageWithLockWait(config, wait)
 	if err != nil {
 		return fmt.Errorf("failed to open storage: %w", err)
 	}
-	defer closeStore(store)
+	defer closeStorage(store)
 
 	if err := store.AddExecution(&record); err != nil {
 		return fmt.Errorf("failed to record execution: %w", err)
@@ -149,19 +161,19 @@ func releaseFallbackRecordLock(lock *os.File) error {
 	return errors.Join(unlockErr, closeErr)
 }
 
-func newRecorderSupervisorCommand() *command {
-	return &command{
+func NewSupervisorCommand() *dx.Command {
+	return &dx.Command{
 		Use: "record-supervisor", IsHidden: true,
-		RunE: func(_ *command, args []string) error {
+		RunE: func(_ *dx.Command, args []string) error {
 			return withRecorderSlot(args, superviseRecorder)
 		},
 	}
 }
 
-func newRecorderWorkerCommand() *command {
-	return &command{
+func NewWorkerCommand() *dx.Command {
+	return &dx.Command{
 		Use: "record-worker", IsHidden: true,
-		RunE: func(_ *command, args []string) error {
+		RunE: func(_ *dx.Command, args []string) error {
 			return withRecorderSlot(args, runRecorderWorker)
 		},
 	}
@@ -197,4 +209,65 @@ func recorderSlotArgument(args []string) (int, error) {
 		return 0, fmt.Errorf("invalid recorder slot")
 	}
 	return slot, nil
+}
+
+func closeStorage(store storage.Storage) {
+	if err := store.Close(); err != nil {
+		dx.TerminalOut().Status(dx.Error, fmt.Sprintf("failed to close storage: %v", err))
+	}
+}
+
+func enrichRecord(config *core.Config, record *core.ExecutionRecord) {
+	record.Tool = core.NormalizeToolName(record.Tool)
+	if record.Timestamp.IsZero() {
+		record.Timestamp = time.Now()
+	}
+	if record.Kind == core.ExecutionKindLaunchAttempt {
+		return
+	}
+	monitor, err := recorderMonitor(record.Tool)
+	if err != nil {
+		return
+	}
+	if err := monitor.Initialize(config); err != nil {
+		return
+	}
+	monitors.EnrichExecutionRecord(monitor, record)
+}
+
+func recorderMonitor(tool string) (monitors.Monitor, error) {
+	switch core.NormalizeToolName(tool) {
+	case core.ToolHomebrew:
+		return monitors.NewHomebrewMonitor(), nil
+	case core.ToolGo:
+		return monitors.NewGoMonitor(), nil
+	case core.ToolNPM, core.ToolPNPM, core.ToolBun:
+		return javascriptRecorderMonitor(core.NormalizeToolName(tool))
+	case core.ToolPip, core.ToolUV, core.ToolPoetry:
+		return pythonRecorderMonitor(core.NormalizeToolName(tool))
+	default:
+		return nil, fmt.Errorf("unsupported tool: %s", tool)
+	}
+}
+
+func javascriptRecorderMonitor(tool string) (monitors.Monitor, error) {
+	switch tool {
+	case core.ToolNPM:
+		return monitors.NewNPMMonitor(), nil
+	case core.ToolPNPM:
+		return monitors.NewPNPMMonitor(), nil
+	default:
+		return monitors.NewBunMonitor(), nil
+	}
+}
+
+func pythonRecorderMonitor(tool string) (monitors.Monitor, error) {
+	switch tool {
+	case core.ToolPip:
+		return monitors.NewPipMonitor(), nil
+	case core.ToolUV:
+		return monitors.NewUVMonitor(), nil
+	default:
+		return monitors.NewPoetryMonitor(), nil
+	}
 }

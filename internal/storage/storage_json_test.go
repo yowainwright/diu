@@ -400,6 +400,47 @@ func TestGlobalJavaScriptExecutionCreatesPackage(t *testing.T) {
 	}
 }
 
+func TestLaunchAttemptUpdatesPackageUsage(t *testing.T) {
+	store := newTestStorage(t)
+	defer closeStorage(t, store)
+	usedAt := time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC)
+	addExecution(t, store, launchAttemptPackageRecord(usedAt))
+	assertLaunchAttemptPackageUsage(t, store, usedAt)
+	assertSingleLaunchAttemptStored(t, store)
+}
+
+func launchAttemptPackageRecord(usedAt time.Time) *core.ExecutionRecord {
+	return &core.ExecutionRecord{
+		Kind: core.ExecutionKindLaunchAttempt, Tool: core.ToolNPM, Command: "prettier",
+		Timestamp: usedAt, PackagesAffected: []string{"prettier"},
+		Metadata: map[string]interface{}{"executable": "prettier"},
+	}
+}
+
+func assertLaunchAttemptPackageUsage(t *testing.T, store Storage, usedAt time.Time) {
+	t.Helper()
+	pkg, err := store.GetPackage(core.ToolNPM, "prettier")
+	if err != nil {
+		t.Fatal(err)
+	}
+	usageMatches := pkg.UsageCount == 1 && pkg.LastUsed.Equal(usedAt)
+	if !usageMatches {
+		t.Fatalf("launch usage = count %d at %s, want count 1 at %s", pkg.UsageCount, pkg.LastUsed, usedAt)
+	}
+}
+
+func assertSingleLaunchAttemptStored(t *testing.T, store Storage) {
+	t.Helper()
+	executions, err := store.GetExecutions(QueryOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	isSingleLaunchAttempt := len(executions) == 1 && executions[0].Kind == core.ExecutionKindLaunchAttempt
+	if !isSingleLaunchAttempt {
+		t.Fatalf("stored launch attempts = %#v", executions)
+	}
+}
+
 func TestJavaScriptExecutableUsageUpdatesInventory(t *testing.T) {
 	managers := []monitors.Monitor{monitors.NewNPMMonitor(), monitors.NewPNPMMonitor(), monitors.NewBunMonitor()}
 	for _, monitor := range managers {

@@ -9,9 +9,9 @@ import (
 	"github.com/yowainwright/diu/internal/core"
 )
 
-func TestScanPackagesDiscoversExecutableWrappers(t *testing.T) {
+func TestScanPackagesDiscoversExecutables(t *testing.T) {
 	config := setupTestHomeConfig(t)
-	binDir := configureExecutableWrapperScan(t, config)
+	binDir := configureExecutableInventoryScan(t, config)
 
 	output := captureStderr(t, func() {
 		if err := scanPackages(&command{}, nil); err != nil {
@@ -21,7 +21,7 @@ func TestScanPackagesDiscoversExecutableWrappers(t *testing.T) {
 	if !strings.Contains(output, "1 packages scanned") {
 		t.Fatalf("Unexpected scan output: %q", output)
 	}
-	assertScannedWrapperPackage(t, config, binDir)
+	assertScannedExecutablePackage(t, config, binDir)
 }
 
 func TestMergeExistingPackageMigratesLegacyGoUsage(t *testing.T) {
@@ -52,7 +52,7 @@ func TestMergeExistingPackageCombinesLegacyAndCurrentGoUsage(t *testing.T) {
 	}
 }
 
-func TestPackageScannerDeduplicatesGoMonitorAndWrapperEntries(t *testing.T) {
+func TestPackageScannerDeduplicatesGoInventoryEntries(t *testing.T) {
 	scanner := &packageScanner{
 		scan:            newInventoryScan(),
 		existing:        legacyAndCurrentGoInventory(),

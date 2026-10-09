@@ -63,17 +63,17 @@ func TestCLIUninstallStopsRealRecorderAndRemovesRuntimeFiles(t *testing.T) {
 	f := newCLIFixture(t)
 	f.setup(t)
 	d := startCLIDaemon(t, f)
-	assertCLICommandContract(t, f, "bash", "probe")
+	assertCLIExit(t, submitCLIBackgroundLaunch(t, f), 0)
 	waitCLIRecords(t, f, 1)
 	assertCLIExit(t, f.cli(t, "uninstall"), 0)
 	assertCLIDaemonStopped(t, d)
 	assertCLIMissing(t, f.config.Daemon.PIDFile)
 	assertCLIMissing(t, f.config.Daemon.SocketPath)
-	assertCLICleanup(t, f)
-	assertCLIUnwrappedCommandContract(t, f)
+	assertCLICleanShells(t, f)
+	assertCLIMissing(t, filepath.Join(f.config.Daemon.DataDir, "shell-integration.zsh"))
 }
 
-func TestCLIUninstallCleansWrappersWhenRecorderCannotStop(t *testing.T) {
+func TestCLIUninstallCleansShellIntegrationWhenRecorderCannotStop(t *testing.T) {
 	f := newCLIFixture(t)
 	f.setup(t)
 	d := startCLIDaemon(t, f)
@@ -85,6 +85,6 @@ func TestCLIUninstallCleansWrappersWhenRecorderCannotStop(t *testing.T) {
 	if !strings.Contains(result.stderr, "timed out") {
 		t.Fatalf("missing recorder timeout error: %#v", result)
 	}
-	assertCLICleanup(t, f)
-	assertCLIMissing(t, filepath.Join(f.wrappers, ".diu-delegates"))
+	assertCLICleanShells(t, f)
+	assertCLIMissing(t, filepath.Join(f.config.Daemon.DataDir, "shell-integration.zsh"))
 }

@@ -62,8 +62,8 @@ func TestLaunchAgentSetupIsRepeatable(t *testing.T) {
 }
 
 func TestCleanupRemovesLoginFileAfterBootoutFailure(t *testing.T) {
-	config, state := setupLaunchAgentTest(t)
-	if err := writeLaunchAgent(config); err != nil {
+	_, state := setupLaunchAgentTest(t)
+	if err := writeLaunchAgent(); err != nil {
 		t.Fatal(err)
 	}
 	state.isLoaded = true
@@ -98,7 +98,7 @@ func TestLaunchAgentReportsBootstrapFailure(t *testing.T) {
 
 func TestManagedDaemonStartUsesLaunchctl(t *testing.T) {
 	config, state := setupLaunchAgentTest(t)
-	if err := writeLaunchAgent(config); err != nil {
+	if err := writeLaunchAgent(); err != nil {
 		t.Fatal(err)
 	}
 	if err := startDaemonWithConfig(config); err != nil {
@@ -177,22 +177,19 @@ func assertLaunchAgentFile(t *testing.T, config *core.Config) {
 	if output, err := exec.Command("/usr/bin/plutil", "-lint", path).CombinedOutput(); err != nil {
 		t.Fatalf("invalid plist: %v: %s", err, output)
 	}
-	assertLaunchAgentContents(t, string(data), config)
+	assertLaunchAgentContents(t, string(data))
 	info, _ := os.Stat(path)
 	if info.Mode().Perm() != core.PrivateFileMode {
 		t.Fatalf("plist permissions = %v", info.Mode())
 	}
 }
 
-func assertLaunchAgentContents(t *testing.T, data string, config *core.Config) {
+func assertLaunchAgentContents(t *testing.T, data string) {
 	t.Helper()
 	for _, expected := range []string{launchAgentLabel, "DIU_DAEMON_FOREGROUND", "RunAtLoad", "SuccessfulExit", plistString(os.Getenv("HOME"))} {
 		if !strings.Contains(data, expected) {
 			t.Fatalf("plist is missing %q", expected)
 		}
-	}
-	if strings.Contains(data, plistString(config.Monitoring.Process.WrapperDir)) {
-		t.Fatal("background PATH contains the wrapper directory")
 	}
 }
 
@@ -238,10 +235,9 @@ func symlinkCurrentExecutable(t *testing.T) string {
 	return stable
 }
 
-func TestBackgroundPathExcludesWrappersAndRelativePaths(t *testing.T) {
-	wrapper := filepath.Join(t.TempDir(), "wrappers")
-	t.Setenv("PATH", strings.Join([]string{wrapper, "", ".", "/usr/bin", "/bin"}, string(os.PathListSeparator)))
-	got := backgroundToolPath(wrapper)
+func TestBackgroundPathExcludesRelativePaths(t *testing.T) {
+	t.Setenv("PATH", strings.Join([]string{"", ".", "/usr/bin", "/bin"}, string(os.PathListSeparator)))
+	got := backgroundToolPath()
 	if got != "/usr/bin:/bin" {
 		t.Fatalf("background PATH = %q", got)
 	}

@@ -266,7 +266,6 @@ func directoryTestConfig(tempDir string) *Config {
 	config.Daemon.PIDFile = filepath.Join(tempDir, "run", "diu.pid")
 	config.Daemon.SocketPath = filepath.Join(tempDir, "socket", "diu.sock")
 	config.Storage.JSONFile = filepath.Join(tempDir, "storage", "exec.json")
-	config.Monitoring.Process.WrapperDir = filepath.Join(tempDir, "wrappers")
 	return config
 }
 
@@ -276,7 +275,6 @@ func collectConfigDirectories(config *Config) []string {
 		filepath.Dir(config.Daemon.PIDFile),
 		filepath.Dir(config.Daemon.SocketPath),
 		filepath.Dir(config.Storage.JSONFile),
-		config.Monitoring.Process.WrapperDir,
 	}
 }
 

@@ -10,7 +10,7 @@ RUN CGO_ENABLED=0 go build -o /out/diu ./cmd/diu && \
 
 FROM debian:bookworm-slim
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends bash zsh fish perl netcat-openbsd ca-certificates && \
+    apt-get install -y --no-install-recommends bash zsh fish perl netcat-openbsd util-linux ca-certificates && \
     rm -rf /var/lib/apt/lists/* && \
     useradd --uid 1000 --create-home diu && \
     touch /.diu-e2e-container

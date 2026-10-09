@@ -37,6 +37,16 @@ func TestSetupProjectInitializesStorageAndZshIntegration(t *testing.T) {
 	assertSetupZshIntegrationInstalled(t, config)
 }
 
+func TestSetupProjectIsRepeatable(t *testing.T) {
+	config := setupTestHomeConfig(t)
+	for range 2 {
+		if err := setupProject(&command{}, nil); err != nil {
+			t.Fatal(err)
+		}
+		assertSetupZshIntegrationInstalled(t, config)
+	}
+}
+
 func TestSetupProjectSkipsUnavailableManagers(t *testing.T) {
 	config := setupTestHomeConfig(t)
 	t.Setenv("PATH", t.TempDir())
@@ -54,6 +64,11 @@ func assertSetupZshIntegrationInstalled(t *testing.T, config *core.Config) {
 	if _, err := os.Stat(zshIntegrationPath(config)); err != nil {
 		t.Fatalf("zsh integration file missing: %v", err)
 	}
+	assertSetupZshSourceBlock(t, config)
+}
+
+func assertSetupZshSourceBlock(t *testing.T, config *core.Config) {
+	t.Helper()
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		t.Fatal(err)
@@ -74,9 +89,9 @@ func assertSetupZshIntegrationInstalled(t *testing.T, config *core.Config) {
 
 func TestSetupScansInventoryBeforeEnablingBackgroundTracking(t *testing.T) {
 	config := setupTestHomeConfig(t)
-	binDir := configureExecutableWrapperScan(t, config)
+	binDir := configureExecutableInventoryScan(t, config)
 	setupBackgroundTracking = func(*core.Config) error {
-		assertScannedWrapperPackage(t, config, binDir)
+		assertScannedExecutablePackage(t, config, binDir)
 		return nil
 	}
 	if err := setupProject(&command{}, nil); err != nil {

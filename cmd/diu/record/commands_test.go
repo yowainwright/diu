@@ -1,4 +1,4 @@
-package main
+package record
 
 import (
 	"os"
@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/yowainwright/diu/internal/core"
+	"github.com/yowainwright/diu/internal/dx"
 )
 
 func TestRecordExecutionWritesToConfiguredStorage(t *testing.T) {
@@ -22,13 +23,74 @@ func TestRecordExecutionDropsConcurrentFallback(t *testing.T) {
 	defer releaseFallbackRecordLockForTest(t, lock)
 	payload := `{"tool":"brew","command":"brew install jq"}`
 	withStdin(t, payload, func() {
-		err := recordExecution(&command{}, nil)
+		err := RunExecution(NewCommand(), nil)
 		hasBusyError := err != nil && strings.Contains(err.Error(), "remained busy")
 		if !hasBusyError {
 			t.Fatalf("recordExecution error = %v", err)
 		}
 	})
 	assertFallbackRecordDropped(t, config)
+}
+
+func TestLaunchAttemptEnrichmentPreservesResolvedIdentity(t *testing.T) {
+	config := setupTestHomeConfig(t)
+	record := &core.ExecutionRecord{
+		Kind: core.ExecutionKindLaunchAttempt, Tool: core.ToolNPM, Command: "prettier",
+		PackagesAffected: []string{"prettier"}, Metadata: map[string]interface{}{"executable": "prettier"},
+	}
+	enrichRecord(config, record)
+	hasPackage := len(record.PackagesAffected) == 1 && record.PackagesAffected[0] == "prettier"
+	identityPreserved := record.Tool == core.ToolNPM && record.Command == "prettier" && hasPackage
+	if !identityPreserved {
+		t.Fatalf("launch identity changed during enrichment: %#v", record)
+	}
+	if record.Timestamp.IsZero() {
+		t.Fatal("launch timestamp was not filled")
+	}
+}
+
+func TestBackgroundRecorderDropsWhenSlotsAreFull(t *testing.T) {
+	config := setupTestHomeConfig(t)
+	locks := lockAllRecorderSlots(t, config.Daemon.DataDir)
+	defer closeRecorderLocks(locks)
+
+	if err := startBackgroundRecorder(config, strings.NewReader(`{"kind":"launch_attempt"}`)); err != nil {
+		t.Fatalf("full recorder pool returned error: %v", err)
+	}
+	payloads, err := filepath.Glob(filepath.Join(config.Daemon.DataDir, ".recorder-payload-*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(payloads) != 0 {
+		t.Fatalf("full recorder pool created payload files: %v", payloads)
+	}
+}
+
+func lockAllRecorderSlots(t *testing.T, dataDir string) []*os.File {
+	t.Helper()
+	if err := os.MkdirAll(dataDir, core.OwnerDirectoryMode); err != nil {
+		t.Fatal(err)
+	}
+	locks := make([]*os.File, 0, core.MaxRecorderWorkers)
+	for slot := range core.MaxRecorderWorkers {
+		path := core.RecorderSlotPath(dataDir, slot)
+		file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, core.PrivateFileMode)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := lockFallbackRecorder(file); err != nil {
+			_ = file.Close()
+			t.Fatal(err)
+		}
+		locks = append(locks, file)
+	}
+	return locks
+}
+
+func closeRecorderLocks(locks []*os.File) {
+	for _, lock := range locks {
+		_ = lock.Close()
+	}
 }
 
 func TestRecorderSlotArgumentValidation(t *testing.T) {
@@ -60,7 +122,7 @@ func TestRecorderSlotArgumentValidation(t *testing.T) {
 }
 
 func TestRecorderCommandsAreHiddenAndValidateArguments(t *testing.T) {
-	commands := []*command{newRecorderSupervisorCommand(), newRecorderWorkerCommand()}
+	commands := []*dx.Command{NewSupervisorCommand(), NewWorkerCommand()}
 	for _, cmd := range commands {
 		if !cmd.IsHidden {
 			t.Fatalf("internal command %q is visible", cmd.Use)

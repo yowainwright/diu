@@ -16,9 +16,9 @@ func TestRenderZshIntegrationEscapesExecutableMapEntries(t *testing.T) {
 		t.Fatalf("renderZshIntegration failed: %v", err)
 	}
 	assertShellIntegrationContains(t, contents,
-		`_DIU_TOOL_MAP['fmt'\''check']='"npm"'`,
-		`_DIU_PACKAGE_MAP['fmt'\''check']='"@acme/fmt'\''check"'`,
-		`_DIU_EXECUTABLE_MAP['fmt'\''check']='"fmt'\''check"'`,
+		`_DIU_TOOL_MAP+=('fmt'\''check' '"npm"')`,
+		`_DIU_PACKAGE_MAP+=('fmt'\''check' '"@acme/fmt'\''check"')`,
+		`_DIU_EXECUTABLE_MAP+=('fmt'\''check' '"fmt'\''check"')`,
 		"add-zsh-hook preexec _diu_preexec",
 		"record --background",
 	)

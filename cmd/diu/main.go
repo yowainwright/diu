@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 
+	"github.com/yowainwright/diu/cmd/diu/record"
 	"github.com/yowainwright/diu/internal/dx"
 )
 
@@ -75,9 +76,9 @@ func rootApplicationCommands() []*command {
 
 func rootRecorderCommands() []*command {
 	return []*command{
-		newRecordCommand(),
-		newRecorderSupervisorCommand(),
-		newRecorderWorkerCommand(),
+		record.NewCommand(),
+		record.NewSupervisorCommand(),
+		record.NewWorkerCommand(),
 	}
 }
 
@@ -324,18 +325,6 @@ func newScanCommand() *command {
 		Short: "Refresh the installed package inventory",
 		RunE:  scanPackages,
 	}
-}
-
-func newRecordCommand() *command {
-	var shouldUseBackground bool
-	cmd := &command{
-		Use:      "record",
-		Short:    "Record an execution event from stdin",
-		IsHidden: true,
-		RunE:     recordExecution,
-	}
-	cmd.Flags().BoolVar(&shouldUseBackground, "background", defaultBoolFlagValue, "Admit bounded background recording")
-	return cmd
 }
 
 func exitStatus(err error) int {

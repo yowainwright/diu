@@ -797,9 +797,6 @@ const (
 func TestDaemonEnrichExecution(t *testing.T) {
 	cfg := testConfig(t)
 	cfg.Monitoring.EnabledTools = []string{core.ToolHomebrew}
-	cfg.Monitoring.Process.WrapperDir = t.TempDir()
-	cfg.Monitoring.Process.ShouldAutoInstallWrappers = false
-
 	d := newDaemonForTest(t, cfg)
 	defer closeStorageForTest(t, d.storage)
 
@@ -811,6 +808,37 @@ func TestDaemonEnrichExecution(t *testing.T) {
 
 	d.enrichExecution(record)
 	assertEnrichedHomebrewExecution(t, record)
+}
+
+func TestDaemonEnrichLaunchAttemptPreservesResolvedIdentity(t *testing.T) {
+	d := newDaemonForTest(t, testConfig(t))
+	defer closeStorageForTest(t, d.storage)
+	usedAt := time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC)
+	record := daemonLaunchAttemptRecord(usedAt)
+	d.enrichExecution(record)
+	assertDaemonLaunchAttemptIdentity(t, record, usedAt)
+}
+
+func daemonLaunchAttemptRecord(usedAt time.Time) *core.ExecutionRecord {
+	return &core.ExecutionRecord{
+		Kind: core.ExecutionKindLaunchAttempt, Tool: "npm", Command: "prettier",
+		Timestamp: usedAt, PackagesAffected: []string{"prettier"},
+		Metadata: map[string]interface{}{"executable": "prettier"},
+	}
+}
+
+func assertDaemonLaunchAttemptIdentity(t *testing.T, record *core.ExecutionRecord, usedAt time.Time) {
+	t.Helper()
+	hasPackage := len(record.PackagesAffected) == 1 && record.PackagesAffected[0] == "prettier"
+	toolMatches := record.Tool == core.ToolNPM
+	commandMatches := record.Command == "prettier"
+	identityPreserved := toolMatches && commandMatches && hasPackage
+	if !identityPreserved {
+		t.Fatalf("launch identity changed during daemon enrichment: %#v", record)
+	}
+	if !record.Timestamp.Equal(usedAt) {
+		t.Fatalf("launch timestamp = %s, want %s", record.Timestamp, usedAt)
+	}
 }
 
 func assertEnrichedHomebrewExecution(t *testing.T, record *core.ExecutionRecord) {

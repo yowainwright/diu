@@ -6,13 +6,13 @@ import (
 	"errors"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/yowainwright/diu/cmd/diu/record"
 	"github.com/yowainwright/diu/internal/core"
 	"github.com/yowainwright/diu/internal/safefs"
 	"github.com/yowainwright/diu/internal/storage"
@@ -48,14 +48,6 @@ var packageNameForExecutableCases = []packageNameForExecutableCase{
 		cmd:  "golangci-lint",
 		want: "golangci-lint",
 	},
-}
-
-var shouldSkipExecutableWrapperCases = map[string]bool{
-	"":        true,
-	".hidden": true,
-	"diu":     true,
-	"brew":    true,
-	"jq":      false,
 }
 
 func TestFilterPackagesSearchAndUnused(t *testing.T) {
@@ -247,78 +239,15 @@ func assertNonExecutablePathRejected(t *testing.T, tempDir string) {
 	}
 }
 
-const homebrewExecutionPayload = `{
-	"tool":"brew",
-	"command":"brew install jq",
-	"args":["install","jq"],
-	"exit_code":0,
-	"duration_ms":1200,
-	"packages_affected":["jq"]
-}`
-
 func runRecordExecution(t *testing.T, payload string) {
 	t.Helper()
 
 	var runErr error
 	withStdin(t, payload, func() {
-		runErr = recordExecution(&command{}, nil)
+		runErr = record.RunExecution(record.NewCommand(), nil)
 	})
 	if runErr != nil {
 		t.Fatalf("recordExecution failed: %v", runErr)
-	}
-}
-
-func assertStoredHomebrewExecution(t *testing.T, config *core.Config) {
-	t.Helper()
-
-	store := openTestStore(t, config)
-	defer closeTestStore(t, store)
-	executions, err := store.GetExecutions(storage.QueryOptions{Tool: core.ToolHomebrew})
-	if err != nil {
-		t.Fatalf("GetExecutions failed: %v", err)
-	}
-	if len(executions) != 1 {
-		t.Fatalf("Expected 1 homebrew execution, got %d", len(executions))
-	}
-	if executions[0].Tool != core.ToolHomebrew {
-		t.Fatalf("Tool = %q, want %q", executions[0].Tool, core.ToolHomebrew)
-	}
-}
-
-func acquireFallbackRecordLockForTest(t *testing.T, config *core.Config) *os.File {
-	t.Helper()
-
-	lock, acquired, err := tryAcquireFallbackRecordLock(config.Storage.JSONFile)
-	lockAcquired := err == nil && acquired
-	if !lockAcquired {
-		t.Fatalf("tryAcquireFallbackRecordLock = %v, %v", acquired, err)
-	}
-	return lock
-}
-
-func releaseFallbackRecordLockForTest(t *testing.T, lock *os.File) {
-	t.Helper()
-
-	if err := releaseFallbackRecordLock(lock); err != nil {
-		t.Fatalf("releaseFallbackRecordLock failed: %v", err)
-	}
-}
-
-func assertFallbackRecordDropped(t *testing.T, config *core.Config) {
-	t.Helper()
-
-	store := openTestStore(t, config)
-	defer closeTestStore(t, store)
-	executions, err := store.GetExecutions(storage.QueryOptions{})
-	if err != nil {
-		t.Fatalf("GetExecutions failed: %v", err)
-	}
-	if len(executions) != 0 {
-		t.Fatalf("concurrent fallback stored %d executions", len(executions))
-	}
-	report := collectDiagnosticReport(config)
-	if !report.Fallback.HasContention {
-		t.Fatal("diagnostics did not report fallback contention")
 	}
 }
 
@@ -653,47 +582,13 @@ func TestPackageRowsPreserveFourDigitSelections(t *testing.T) {
 	}
 }
 
-func TestDurationAndWrapperHelpers(t *testing.T) {
+func TestDurationHelpers(t *testing.T) {
 	assertParsedDuration(t, "2d", 48*time.Hour)
 	assertParsedDuration(t, "1w", 7*24*time.Hour)
 	assertParsedDuration(t, "1mo", 30*24*time.Hour)
 	assertParsedDuration(t, "30m", 30*time.Minute)
 	assertParsedDuration(t, "3h", 3*time.Hour)
 
-	tempDir := t.TempDir()
-	assertExecutableWrapperPath(t, tempDir)
-	assertOwnerExecutableFile(t, tempDir)
-}
-
-func assertExecutableWrapperPath(t *testing.T, tempDir string) {
-	t.Helper()
-
-	path, err := executableWrapperPath(tempDir, "tool")
-	if err != nil {
-		t.Fatalf("executableWrapperPath failed: %v", err)
-	}
-	if path != filepath.Join(tempDir, "tool") {
-		t.Fatalf("wrapper path = %s, want %s", path, filepath.Join(tempDir, "tool"))
-	}
-	if _, err := executableWrapperPath(tempDir, "../tool"); err == nil {
-		t.Fatal("Expected escaping wrapper name to fail")
-	}
-}
-
-func assertOwnerExecutableFile(t *testing.T, tempDir string) {
-	t.Helper()
-
-	written := filepath.Join(tempDir, "written")
-	if err := writeOwnerExecutableFile(written, []byte("#!/bin/bash\n")); err != nil {
-		t.Fatalf("writeOwnerExecutableFile failed: %v", err)
-	}
-	info, err := os.Stat(written)
-	if err != nil {
-		t.Fatalf("Failed to stat written wrapper: %v", err)
-	}
-	if info.Mode().Perm() != core.OwnerExecutableMode {
-		t.Fatalf("wrapper mode = %v, want %v", info.Mode().Perm(), core.OwnerExecutableMode)
-	}
 }
 
 func assertParsedDuration(t *testing.T, value string, want time.Duration) {
@@ -770,18 +665,17 @@ func assertShowStatsStorageOutput(t *testing.T, output string) {
 	}
 }
 
-func configureExecutableWrapperScan(t *testing.T, config *core.Config) string {
+func configureExecutableInventoryScan(t *testing.T, config *core.Config) string {
 	t.Helper()
-	config.Monitoring.Process.ShouldAutoInstallWrappers = true
 
 	t.Setenv("PATH", t.TempDir())
 
-	binDir := executableWrapperScanBinDir(t)
-	saveExecutableWrapperScanConfig(t, config, binDir)
+	binDir := executableInventoryScanBinDir(t)
+	saveExecutableInventoryScanConfig(t, config, binDir)
 	return binDir
 }
 
-func executableWrapperScanBinDir(t *testing.T) string {
+func executableInventoryScanBinDir(t *testing.T) string {
 	t.Helper()
 
 	binDir := t.TempDir()
@@ -793,7 +687,7 @@ func executableWrapperScanBinDir(t *testing.T) string {
 	return binDir
 }
 
-func saveExecutableWrapperScanConfig(t *testing.T, config *core.Config, binDir string) {
+func saveExecutableInventoryScanConfig(t *testing.T, config *core.Config, binDir string) {
 	t.Helper()
 
 	config.Monitoring.Filesystem.WatchPaths = map[string][]string{
@@ -806,7 +700,7 @@ func saveExecutableWrapperScanConfig(t *testing.T, config *core.Config, binDir s
 	}
 }
 
-func assertScannedWrapperPackage(t *testing.T, config *core.Config, binDir string) {
+func assertScannedExecutablePackage(t *testing.T, config *core.Config, binDir string) {
 	t.Helper()
 
 	store := openTestStore(t, config)
@@ -975,159 +869,9 @@ func assertAdditionalManagerPackages(t *testing.T, config *core.Config) {
 	}
 }
 
-func configureExecutableWrapperInstall(t *testing.T, config *core.Config) (string, string) {
-	t.Helper()
-	config.Monitoring.Process.ShouldAutoInstallWrappers = true
-
-	t.Setenv("PATH", t.TempDir())
-
-	wrapperDir := filepath.Join(t.TempDir(), "wrappers")
-	binDir, originalPath := homebrewWrapperFixture(t)
-
-	config.Monitoring.Process.WrapperDir = wrapperDir
-	config.Monitoring.Filesystem.WatchPaths = map[string][]string{
-		core.ToolHomebrew: {binDir},
-	}
-	config.Monitoring.EnabledTools = []string{core.ToolHomebrew}
-	config.Tools.Go.GoBin = filepath.Join(t.TempDir(), "missing")
-	if err := os.MkdirAll(wrapperDir, core.OwnerDirectoryMode); err != nil {
-		t.Fatalf("Failed to create wrapper dir: %v", err)
-	}
-	return wrapperDir, originalPath
-}
-
-func homebrewWrapperFixture(t *testing.T) (string, string) {
-	t.Helper()
-
-	binDir := filepath.Join(t.TempDir(), "Cellar", "jq", "1.8.1", "bin")
-	if err := os.MkdirAll(binDir, core.OwnerDirectoryMode); err != nil {
-		t.Fatalf("Failed to create bin dir: %v", err)
-	}
-	originalPath := filepath.Join(binDir, "jq")
-	writeExecutableForTest(t, originalPath, "#!/bin/bash\nexit 0\n")
-	return binDir, originalPath
-}
-
-func assertInstalledWrapperScript(t *testing.T, config *core.Config, wrapperDir, originalPath string) {
-	t.Helper()
-
-	wrapperPath := filepath.Join(wrapperDir, "jq")
-	wrapperContent := readWrapperContent(t, wrapperPath)
-	assertWrapperContentReferences(t, wrapperContent, config, originalPath)
-	assertWrapperScriptSyntax(t, wrapperPath)
-}
-
-func readWrapperContent(t *testing.T, wrapperPath string) string {
-	t.Helper()
-
-	content, err := os.ReadFile(wrapperPath)
-	if err != nil {
-		t.Fatalf("Failed to read wrapper: %v", err)
-	}
-	return string(content)
-}
-
-func assertWrapperContentReferences(t *testing.T, wrapperContent string, config *core.Config, originalPath string) {
-	t.Helper()
-
-	hasOriginalPath := strings.Contains(wrapperContent, originalPath)
-	hasSocketPath := strings.Contains(wrapperContent, config.Daemon.SocketPath)
-	hasWrapperReferences := hasOriginalPath && hasSocketPath
-	if !hasWrapperReferences {
-		t.Fatalf("Wrapper content missing original path or socket:\n%s", wrapperContent)
-	}
-	if !strings.Contains(wrapperContent, `DIU_BINARY="diu"`) {
-		t.Fatalf("Wrapper content should resolve diu by command name:\n%s", wrapperContent)
-	}
-	if !strings.Contains(wrapperContent, core.GeneratedWrapperMarker) {
-		t.Fatalf("Wrapper content should include the DIU marker:\n%s", wrapperContent)
-	}
-}
-
-func assertWrapperScriptSyntax(t *testing.T, wrapperPath string) {
-	t.Helper()
-
-	if bashPath, err := exec.LookPath("bash"); err == nil {
-		if output, err := exec.Command(bashPath, "-n", wrapperPath).CombinedOutput(); err != nil {
-			t.Fatalf("Generated wrapper has invalid bash syntax: %v\n%s", err, output)
-		}
-	}
-}
-
-func configureAdditionalWrapperDiscovery(t *testing.T, config *core.Config) {
-	t.Helper()
-
-	t.Setenv("PATH", t.TempDir())
-
-	pnpmDir := wrapperDiscoveryDir(t, "tsx")
-	bunDir := wrapperDiscoveryDir(t, "prettier")
-	pipDir := wrapperDiscoveryDir(t, "ruff")
-	uvDir := wrapperDiscoveryDir(t, "black")
-
-	config.Monitoring.Filesystem.WatchPaths = map[string][]string{
-		core.ToolPNPM: {pnpmDir},
-		core.ToolBun:  {bunDir},
-		core.ToolPip:  {pipDir},
-		core.ToolUV:   {uvDir},
-	}
-	config.Monitoring.EnabledTools = []string{core.ToolPNPM, core.ToolBun, core.ToolPip, core.ToolUV}
-	config.Tools.Go.GoBin = filepath.Join(t.TempDir(), "missing")
-}
-
-func wrapperDiscoveryDir(t *testing.T, name string) string {
-	t.Helper()
-
-	dir := t.TempDir()
-	writeExecutableForTest(t, filepath.Join(dir, name), "#!/bin/bash\nexit 0\n")
-	return dir
-}
-
-func assertAdditionalWrapperTargets(t *testing.T, targets []executableWrapper) {
-	t.Helper()
-
-	byName := wrappersByName(targets)
-	for name, wantTool := range additionalWrapperTargetTools {
-		assertAdditionalWrapperTarget(t, targets, byName, name, wantTool)
-	}
-}
-
-func wrappersByName(targets []executableWrapper) map[string]executableWrapper {
-	byName := make(map[string]executableWrapper)
-	for _, target := range targets {
-		byName[target.Name] = target
-	}
-	return byName
-}
-
-var additionalWrapperTargetTools = map[string]string{
-	"tsx":      core.ToolPNPM,
-	"prettier": core.ToolBun,
-	"ruff":     core.ToolPip,
-	"black":    core.ToolUV,
-}
-
-func assertAdditionalWrapperTarget(
-	t *testing.T,
-	targets []executableWrapper,
-	byName map[string]executableWrapper,
-	name string,
-	wantTool string,
-) {
-	t.Helper()
-
-	target, ok := byName[name]
-	if !ok {
-		t.Fatalf("Expected target %s in %#v", name, targets)
-	}
-	targetMatches := target.Tool == wantTool && target.Package == name
-	if !targetMatches {
-		t.Fatalf("Target %s = %#v, want tool %s package %s", name, target, wantTool, name)
-	}
-}
-
-func TestUninstallGoBinaryRemovesExecutableWrapperAndState(t *testing.T) {
+func TestUninstallGoBinaryRemovesBinaryAndState(t *testing.T) {
 	config := setupTestHomeConfig(t)
-	binaryPath, wrapperPath, fingerprint := setupGoBinaryUninstallFixture(t, config)
+	binaryPath, fingerprint := setupGoBinaryUninstallFixture(t, config)
 
 	output := captureStderr(t, func() {
 		pkg := &core.PackageInfo{
@@ -1142,27 +886,16 @@ func TestUninstallGoBinaryRemovesExecutableWrapperAndState(t *testing.T) {
 		}
 	})
 	assertGoBinaryUninstallOutput(t, output)
-	assertGoBinaryUninstallRemovedFiles(t, binaryPath, wrapperPath)
+	assertGoBinaryUninstallRemovedFile(t, binaryPath)
 	assertGoBinaryUninstallRemovedState(t, config)
 }
 
-func setupGoBinaryUninstallFixture(t *testing.T, config *core.Config) (string, string, string) {
+func setupGoBinaryUninstallFixture(t *testing.T, config *core.Config) (string, string) {
 	t.Helper()
 
-	ensureGoBinaryWrapperDir(t, config)
 	binaryPath, fingerprint := writeFingerprintedGoBinary(t)
-	wrapperPath := filepath.Join(config.Monitoring.Process.WrapperDir, "mytool")
-	writeExecutableForTest(t, wrapperPath, "#!/bin/bash\nexit 0\n")
 	addGoBinaryPackageState(t, config, binaryPath, fingerprint)
-	return binaryPath, wrapperPath, fingerprint
-}
-
-func ensureGoBinaryWrapperDir(t *testing.T, config *core.Config) {
-	t.Helper()
-
-	if err := os.MkdirAll(config.Monitoring.Process.WrapperDir, core.OwnerDirectoryMode); err != nil {
-		t.Fatalf("Failed to create wrapper dir: %v", err)
-	}
+	return binaryPath, fingerprint
 }
 
 func writeFingerprintedGoBinary(t *testing.T) (string, string) {
@@ -1198,14 +931,11 @@ func assertGoBinaryUninstallOutput(t *testing.T, output string) {
 	}
 }
 
-func assertGoBinaryUninstallRemovedFiles(t *testing.T, binaryPath, wrapperPath string) {
+func assertGoBinaryUninstallRemovedFile(t *testing.T, binaryPath string) {
 	t.Helper()
 
 	if _, err := os.Stat(binaryPath); !os.IsNotExist(err) {
 		t.Fatalf("Expected binary removal, stat err=%v", err)
-	}
-	if _, err := os.Stat(wrapperPath); !os.IsNotExist(err) {
-		t.Fatalf("Expected wrapper removal, stat err=%v", err)
 	}
 }
 
@@ -1222,7 +952,6 @@ func assertGoBinaryUninstallRemovedState(t *testing.T, config *core.Config) {
 func TestInteractiveAndUninstallHelpers(t *testing.T) {
 	pkg := &core.PackageInfo{Name: "jq", Tool: core.ToolHomebrew}
 	assertSupportsPackageUninstall(t, pkg)
-	assertPackageWrapperName(t)
 	assertConfirmAndUninstallCancellation(t, pkg)
 	assertConfirmAndUninstallEOF(t, pkg)
 	assertBrowserScreenShowsUninstall(t, pkg)
@@ -1236,14 +965,6 @@ func assertSupportsPackageUninstall(t *testing.T, pkg *core.PackageInfo) {
 	}
 	if supportsUninstall(&core.PackageInfo{Name: "unknown", Tool: "unknown"}) {
 		t.Fatal("Expected unknown tool to reject uninstall")
-	}
-}
-
-func assertPackageWrapperName(t *testing.T) {
-	t.Helper()
-
-	if wrapperNameForPackage(&core.PackageInfo{Name: "pkg", Path: "/tmp/tool"}) != "tool" {
-		t.Fatal("Expected wrapper name to prefer executable basename")
 	}
 }
 
@@ -1389,7 +1110,6 @@ func setupTestHomeConfig(t *testing.T) *core.Config {
 	config := core.DefaultConfig()
 	config.Monitoring.EnabledTools = []string{}
 	config.Monitoring.Filesystem.WatchPaths = map[string][]string{}
-	config.Monitoring.Process.ShouldAutoInstallWrappers = false
 
 	configPath := filepath.Join(homeDir, ".config", "diu", "config.json")
 	if err := config.SaveTo(configPath); err != nil {
@@ -2197,14 +1917,5 @@ func assertMigratedSetupHistory(t *testing.T, config *core.Config) {
 	slices.Sort(ids)
 	if !slices.Equal(ids, []string{"before-upgrade", "drained-on-stop"}) {
 		t.Fatalf("migrated history IDs = %v", ids)
-	}
-}
-
-func runWrapperRefreshForTest(t *testing.T, config *core.Config) {
-	t.Helper()
-	activity := cliOutput().StartActivity("refresh test")
-	defer activity.Stop()
-	if err := refreshCommandWrappers(config, activity); err != nil {
-		t.Fatal(err)
 	}
 }

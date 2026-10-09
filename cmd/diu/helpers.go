@@ -540,27 +540,6 @@ func newPythonMonitor(tool string) (monitors.Monitor, error) {
 	}
 }
 
-func enrichExecutionRecord(config *core.Config, record *core.ExecutionRecord) {
-	record.Tool = core.NormalizeToolName(record.Tool)
-	if record.Timestamp.IsZero() {
-		record.Timestamp = time.Now()
-	}
-	if record.Kind == core.ExecutionKindLaunchAttempt {
-		return
-	}
-
-	monitor, err := newMonitor(record.Tool)
-	if err != nil {
-		return
-	}
-
-	if err := monitor.Initialize(config); err != nil {
-		return
-	}
-
-	monitors.EnrichExecutionRecord(monitor, record)
-}
-
 func supportsUninstall(pkg *core.PackageInfo) bool {
 	switch pkg.Tool {
 	case core.ToolHomebrew, homebrewCaskTool, core.ToolNPM, core.ToolPNPM, core.ToolBun, core.ToolPip, core.ToolUV, core.ToolGo, core.ToolGoBinary:

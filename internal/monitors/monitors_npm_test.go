@@ -415,7 +415,6 @@ exit 2
 func initializedNPMMonitor(t *testing.T) *NPMMonitor {
 	t.Helper()
 	config := core.DefaultConfig()
-	config.Monitoring.Process.ShouldAutoInstallWrappers = false
 	config.Tools.NPM.ShouldTrackGlobalOnly = true
 	monitor := NewNPMMonitor().(*NPMMonitor)
 	if err := monitor.Initialize(config); err != nil {
@@ -482,7 +481,6 @@ func TestNPMGlobalPackagesFallbackWithFakeNPM(t *testing.T) {
 	prependFakeCommand(t, npmCommandName, fakeNPMFallbackPackagesScript)
 	t.Setenv("FAKE_NPM_PREFIX", t.TempDir())
 	config := core.DefaultConfig()
-	config.Monitoring.Process.ShouldAutoInstallWrappers = false
 	monitor := initializedNPMMonitorWithConfig(t, config)
 	packages := npmFallbackPackages(t, monitor)
 	assertNPMFallbackPackages(t, packages)

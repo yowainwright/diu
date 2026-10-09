@@ -40,7 +40,7 @@ func TestSaveExistingPersistsChanges(t *testing.T) {
 	if err := config.Save(); err != nil {
 		t.Fatal(err)
 	}
-	config.Monitoring.Process.ShouldAutoInstallWrappers = false
+	config.Monitoring.EnabledTools = []string{ToolNPM}
 	if err := config.SaveExisting(); err != nil {
 		t.Fatal(err)
 	}
@@ -48,8 +48,9 @@ func TestSaveExistingPersistsChanges(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if saved.Monitoring.Process.ShouldAutoInstallWrappers {
-		t.Fatal("existing config was not updated")
+	hasUpdatedTool := len(saved.Monitoring.EnabledTools) == 1 && saved.Monitoring.EnabledTools[0] == ToolNPM
+	if !hasUpdatedTool {
+		t.Fatalf("enabled tools = %v, want [%s]", saved.Monitoring.EnabledTools, ToolNPM)
 	}
 }
 
@@ -57,7 +58,7 @@ func TestSaveExistingUpdatesSymlinkedConfig(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	config := DefaultConfig()
 	configPath, linkTarget := createSymlinkedConfig(t, config)
-	config.Monitoring.Process.ShouldAutoInstallWrappers = false
+	config.Monitoring.EnabledTools = []string{ToolNPM}
 	if err := config.SaveExisting(); err != nil {
 		t.Fatal(err)
 	}
@@ -66,8 +67,9 @@ func TestSaveExistingUpdatesSymlinkedConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if saved.Monitoring.Process.ShouldAutoInstallWrappers {
-		t.Fatal("existing symlinked config was not updated")
+	hasUpdatedTool := len(saved.Monitoring.EnabledTools) == 1 && saved.Monitoring.EnabledTools[0] == ToolNPM
+	if !hasUpdatedTool {
+		t.Fatalf("symlinked enabled tools = %v, want [%s]", saved.Monitoring.EnabledTools, ToolNPM)
 	}
 }
 

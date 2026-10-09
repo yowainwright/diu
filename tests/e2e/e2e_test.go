@@ -375,35 +375,24 @@ func environmentWithHome(homeDir string) []string {
 	return append(environment, "HOME="+homeDir)
 }
 
-func TestE2EWrapperExecution(t *testing.T) {
-	// This test simulates wrapper script execution
+func TestE2ELaunchAttempt(t *testing.T) {
 	client := &http.Client{Timeout: 10 * time.Second}
-
-	// Simulate wrapper sending execution data
-	wrapperData := map[string]interface{}{
-		"tool":              "brew",
-		"command":           "brew install wget",
-		"args":              []string{"install", "wget"},
-		"exit_code":         0,
-		"duration_ms":       45230,
-		"timestamp":         time.Now().Format(time.RFC3339),
-		"working_dir":       "/Users/test/projects",
-		"user":              "wrapper-test",
-		"packages_affected": []string{"wget"},
-		"metadata": map[string]interface{}{
-			"brew_version":     "4.1.15",
-			"formulae_updated": []string{"wget"},
-		},
+	record := core.ExecutionRecord{
+		Kind: core.ExecutionKindLaunchAttempt, Tool: core.ToolNPM, Command: "prettier",
+		Timestamp: time.Now(), PackagesAffected: []string{"prettier"},
+		Metadata: map[string]interface{}{"executable": "prettier"},
 	}
-
-	jsonData, _ := json.Marshal(wrapperData)
+	jsonData, err := json.Marshal(record)
+	if err != nil {
+		t.Fatal(err)
+	}
 	resp, err := client.Post(
 		apiURL+"/api/v1/executions",
 		"application/json",
 		bytes.NewBuffer(jsonData),
 	)
 	if err != nil {
-		t.Fatalf("Failed to send wrapper data: %v", err)
+		t.Fatalf("Failed to send launch attempt: %v", err)
 	}
 	defer resp.Body.Close()
 
@@ -411,10 +400,9 @@ func TestE2EWrapperExecution(t *testing.T) {
 		t.Errorf("Expected status 202, got %d", resp.StatusCode)
 	}
 
-	// Verify the execution was recorded
 	time.Sleep(time.Second)
 
-	resp, err = client.Get(apiURL + "/api/v1/executions?tool=brew&limit=1")
+	resp, err = client.Get(apiURL + "/api/v1/executions?tool=npm&limit=1")
 	if err != nil {
 		t.Fatalf("Failed to query executions: %v", err)
 	}
@@ -426,17 +414,16 @@ func TestE2EWrapperExecution(t *testing.T) {
 	}
 
 	if len(executions) == 0 {
-		t.Fatal("No executions found after wrapper simulation")
+		t.Fatal("No launch attempt found")
 	}
 
 	exec := executions[0]
-	if exec["user"] != "wrapper-test" {
-		t.Errorf("Expected user 'wrapper-test', got %v", exec["user"])
+	if exec["kind"] != core.ExecutionKindLaunchAttempt || exec["command"] != "prettier" {
+		t.Errorf("launch identity = %#v", exec)
 	}
-
-	if packages, ok := exec["packages_affected"].([]interface{}); ok {
-		if len(packages) == 0 || packages[0] != "wget" {
-			t.Error("Package 'wget' not properly recorded")
+	for _, field := range []string{"args", "duration_ms", "exit_code", "working_dir", "user", "environment"} {
+		if _, exists := exec[field]; exists {
+			t.Errorf("launch attempt response includes %q", field)
 		}
 	}
 }

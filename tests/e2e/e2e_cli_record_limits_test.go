@@ -5,7 +5,6 @@ package e2e
 import (
 	"net"
 	"os"
-	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
@@ -19,7 +18,7 @@ func TestCLIRecorderDropsEventsWhenAllSlotsAreOccupied(t *testing.T) {
 	f.setup(t)
 	locks := holdAllRecorderTestSlots(t, f.config.Daemon.DataDir)
 	defer closeRecorderTestSlots(locks)
-	assertBusyRecorderPreservesCommands(t, f, locks)
+	assertBusyRecorderDropsLaunches(t, f, locks)
 }
 
 func holdAllRecorderTestSlots(t *testing.T, dataDir string) []*os.File {
@@ -51,19 +50,15 @@ func closeRecorderTestSlots(locks []*os.File) {
 	}
 }
 
-func assertBusyRecorderPreservesCommands(t *testing.T, f *cliFixture, locks []*os.File) {
+func assertBusyRecorderDropsLaunches(t *testing.T, f *cliFixture, locks []*os.File) {
 	t.Helper()
-	original := runCLICommand(t, f.command(t, filepath.Join(f.managed, "probe"), cliProbeArgs()...), "record input")
 	for range 8 {
-		result := runCLICommand(t, f.command(t, filepath.Join(f.wrappers, "probe"), cliProbeArgs()...), "record input")
-		if result != original {
-			t.Fatalf("busy recorder changed command behavior: %#v != %#v", result, original)
-		}
+		assertCLIExit(t, submitCLIBackgroundLaunch(t, f), 0)
 	}
 	assertCLINoRecordedEvents(t, f)
 	_ = locks[0].Close()
 	locks[0] = nil
-	assertCLICommandContract(t, f, "bash", "probe")
+	assertCLIExit(t, submitCLIBackgroundLaunch(t, f), 0)
 	waitCLIRecords(t, f, 1)
 }
 
@@ -84,7 +79,6 @@ func TestCLIRecorderCapsConcurrentWorkersAndReleasesSlots(t *testing.T) {
 	connections := startRecorderWriters(t, f, listener)
 	defer closeRecorderConnections(connections)
 	assertRecorderPoolIsFull(t, f, listener)
-	assertCommandsRunWhilePoolIsFull(t, f)
 	closeRecorderConnections(connections)
 	awaitCLI(t, func() bool { return busyRecorderSlotCount(f.config.Daemon.DataDir) == 0 })
 }
@@ -140,7 +134,7 @@ func busyRecorderSlotCount(dataDir string) int {
 
 func largeRecorderEvent() string {
 	padding := strings.Repeat("x", 900_000)
-	prefix := `{"tool":"brew","command":"brew list","args":["list"],"padding":"`
+	prefix := `{"kind":"launch_attempt","tool":"npm","command":"prettier","packages_affected":["prettier"],"metadata":{"executable":"prettier"},"padding":"`
 	suffix := `"}`
 	event := prefix + padding + suffix
 	return event
@@ -157,17 +151,6 @@ func assertRecorderPoolIsFull(t *testing.T, f *cliFixture, listener *net.UnixLis
 	if connection, err := listener.AcceptUnix(); err == nil {
 		_ = connection.Close()
 		t.Fatal("recorder accepted a fifth background job")
-	}
-}
-
-func assertCommandsRunWhilePoolIsFull(t *testing.T, f *cliFixture) {
-	t.Helper()
-	original := runCLICommand(t, f.command(t, filepath.Join(f.managed, "probe"), cliProbeArgs()...), "record input")
-	for range 8 {
-		result := runCLICommand(t, f.command(t, filepath.Join(f.wrappers, "probe"), cliProbeArgs()...), "record input")
-		if result != original {
-			t.Fatalf("full recorder pool changed command behavior: %#v != %#v", result, original)
-		}
 	}
 }
 

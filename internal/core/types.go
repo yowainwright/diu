@@ -51,54 +51,70 @@ type launchAttemptRecordJSON struct {
 
 func (r ExecutionRecord) MarshalJSON() ([]byte, error) {
 	if r.Kind == ExecutionKindLaunchAttempt {
-		return json.Marshal(launchAttemptRecordJSON{
-			ID:               r.ID,
-			Kind:             r.Kind,
-			Tool:             r.Tool,
-			Command:          r.Command,
-			Timestamp:        r.Timestamp,
-			PackagesAffected: r.PackagesAffected,
-			Metadata:         r.Metadata,
-		})
+		return marshalLaunchAttemptRecord(r)
 	}
+	return marshalCompletedExecutionRecord(r)
+}
 
+func marshalLaunchAttemptRecord(record ExecutionRecord) ([]byte, error) {
+	return json.Marshal(launchAttemptRecordJSON{
+		ID:               record.ID,
+		Kind:             record.Kind,
+		Tool:             record.Tool,
+		Command:          record.Command,
+		Timestamp:        record.Timestamp,
+		PackagesAffected: record.PackagesAffected,
+		Metadata:         record.Metadata,
+	})
+}
+
+func marshalCompletedExecutionRecord(record ExecutionRecord) ([]byte, error) {
 	return json.Marshal(executionRecordJSON{
-		ID:               r.ID,
-		Kind:             r.Kind,
-		Tool:             r.Tool,
-		Command:          r.Command,
-		Args:             r.Args,
-		Timestamp:        r.Timestamp,
-		DurationMS:       r.Duration.Milliseconds(),
-		ExitCode:         r.ExitCode,
-		WorkingDir:       r.WorkingDir,
-		User:             r.User,
-		Environment:      r.Environment,
-		PackagesAffected: r.PackagesAffected,
-		Metadata:         r.Metadata,
+		ID:               record.ID,
+		Kind:             record.Kind,
+		Tool:             record.Tool,
+		Command:          record.Command,
+		Args:             record.Args,
+		Timestamp:        record.Timestamp,
+		DurationMS:       record.Duration.Milliseconds(),
+		ExitCode:         record.ExitCode,
+		WorkingDir:       record.WorkingDir,
+		User:             record.User,
+		Environment:      record.Environment,
+		PackagesAffected: record.PackagesAffected,
+		Metadata:         record.Metadata,
 	})
 }
 
 func (r *ExecutionRecord) UnmarshalJSON(data []byte) error {
-	var raw executionRecordJSON
-	if err := json.Unmarshal(data, &raw); err != nil {
+	raw, err := decodeExecutionRecord(data)
+	if err != nil {
 		return err
 	}
-
-	r.ID = raw.ID
-	r.Kind = raw.Kind
-	r.Tool = raw.Tool
-	r.Command = raw.Command
-	r.Args = raw.Args
-	r.Timestamp = raw.Timestamp
-	r.Duration = durationFromJSONMilliseconds(raw.DurationMS)
-	r.ExitCode = raw.ExitCode
-	r.WorkingDir = raw.WorkingDir
-	r.User = raw.User
-	r.Environment = raw.Environment
-	r.PackagesAffected = raw.PackagesAffected
-	r.Metadata = raw.Metadata
+	r.assignExecutionRecord(raw)
 	return nil
+}
+
+func decodeExecutionRecord(data []byte) (executionRecordJSON, error) {
+	var record executionRecordJSON
+	err := json.Unmarshal(data, &record)
+	return record, err
+}
+
+func (r *ExecutionRecord) assignExecutionRecord(record executionRecordJSON) {
+	r.ID = record.ID
+	r.Kind = record.Kind
+	r.Tool = record.Tool
+	r.Command = record.Command
+	r.Args = record.Args
+	r.Timestamp = record.Timestamp
+	r.Duration = durationFromJSONMilliseconds(record.DurationMS)
+	r.ExitCode = record.ExitCode
+	r.WorkingDir = record.WorkingDir
+	r.User = record.User
+	r.Environment = record.Environment
+	r.PackagesAffected = record.PackagesAffected
+	r.Metadata = record.Metadata
 }
 
 func durationFromJSONMilliseconds(value int64) time.Duration {

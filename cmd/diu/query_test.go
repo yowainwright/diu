@@ -2,7 +2,9 @@ package main
 
 import (
 	"errors"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/yowainwright/diu/internal/core"
 	"github.com/yowainwright/diu/internal/storage"
@@ -88,6 +90,39 @@ func TestStatsJSONStorageFailuresLeaveOutputEmpty(t *testing.T) {
 	}
 	for _, store := range stores {
 		assertStatsJSONFailure(t, store, wantErr)
+	}
+}
+
+func TestLaunchAttemptQueryOmitsUnknownOutcome(t *testing.T) {
+	record := &core.ExecutionRecord{
+		Kind: core.ExecutionKindLaunchAttempt, Tool: core.ToolNPM, Command: "prettier",
+		Timestamp: time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC),
+		Duration:  time.Second, ExitCode: 127, WorkingDir: "/repo",
+	}
+	assertLaunchAttemptTableOmitsOutcome(t, record)
+	assertLaunchAttemptCSVOmitsOutcome(t, record)
+}
+
+func assertLaunchAttemptTableOmitsOutcome(t *testing.T, record *core.ExecutionRecord) {
+	t.Helper()
+	output := captureStdout(t, func() { printExecutionsTable([]*core.ExecutionRecord{record}) })
+	hasExitCode := strings.Contains(output, "Exit code:")
+	hasLocation := strings.Contains(output, "Location:")
+	includesUnknownDetails := hasExitCode || hasLocation
+	if includesUnknownDetails {
+		t.Fatalf("launch attempt output included an execution outcome or location: %q", output)
+	}
+}
+
+func assertLaunchAttemptCSVOmitsOutcome(t *testing.T, record *core.ExecutionRecord) {
+	t.Helper()
+	row := executionCSVRow(record)
+	durationIsEmpty := row[3] == ""
+	exitCodeIsEmpty := row[4] == ""
+	locationIsEmpty := row[5] == ""
+	fieldsAreEmpty := durationIsEmpty && exitCodeIsEmpty && locationIsEmpty
+	if !fieldsAreEmpty {
+		t.Fatalf("launch attempt CSV outcome fields = %v, want empty", row[3:])
 	}
 }
 
