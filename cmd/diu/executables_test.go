@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/yowainwright/diu/internal/core"
@@ -80,6 +81,107 @@ func TestDiscoverExecutablesSkipsDisabledToolsAndInvalidEntries(t *testing.T) {
 
 	if targets := discoverExecutables(config); len(targets) != 0 {
 		t.Fatalf("disabled tool targets = %#v, want none", targets)
+	}
+}
+
+func TestCurrentShellHomeDirsRejectsRelativeHome(t *testing.T) {
+	t.Setenv("HOME", "relative-home")
+	if _, err := currentShellHomeDirs(); err == nil {
+		t.Fatal("currentShellHomeDirs accepted a relative HOME")
+	}
+}
+
+func TestCompareExecutableTargetsSortsByName(t *testing.T) {
+	first := executableTarget{Name: "alpha"}
+	second := executableTarget{Name: "beta"}
+	if got := compareExecutableTargets(first, second); got >= 0 {
+		t.Fatalf("target comparison = %d, want alpha before beta", got)
+	}
+}
+
+func TestAddGoExecutableDirsUsesConfiguredGoBin(t *testing.T) {
+	dir := executableFixtureDir(t, "go-tool")
+	config := core.DefaultConfig()
+	config.Monitoring.EnabledTools = []string{core.ToolGo}
+	config.Tools.Go.GoBin = dir
+	targets := make(map[string]executableTarget)
+	addGoExecutableDirs(config, targets)
+	assertExecutableTargetPresent(t, targets, "go-tool", core.ToolGoBinary)
+}
+
+func TestAddGoExecutableDirsSkipsDisabledTool(t *testing.T) {
+	config := core.DefaultConfig()
+	config.Monitoring.EnabledTools = nil
+	targets := make(map[string]executableTarget)
+	addGoExecutableDirs(config, targets)
+	if len(targets) != 0 {
+		t.Fatalf("disabled Go executable targets = %#v", targets)
+	}
+}
+
+func TestAddExecutableEntrySkipsIgnoredAndManagerMismatch(t *testing.T) {
+	dir := executableFixtureDir(t, "jq")
+	cellarDir := filepath.Join(t.TempDir(), "Cellar", "jq", "1", "bin")
+	if err := os.MkdirAll(cellarDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeExecutableForTest(t, filepath.Join(cellarDir, "npm-tool"), "#!/bin/sh\nexit 0\n")
+	targets := make(map[string]executableTarget)
+	addExecutableEntry(targets, core.ToolHomebrew, dir, "brew")
+	addExecutableEntry(targets, core.ToolNPM, cellarDir, "npm-tool")
+	if len(targets) != 0 {
+		t.Fatalf("ignored or mismatched executable targets = %#v", targets)
+	}
+}
+
+func TestAddExecutableEntryKeepsEarlierPATHTarget(t *testing.T) {
+	preferredDir := executableFixtureDir(t, "jq")
+	managedDir := executableFixtureDir(t, "jq")
+	t.Setenv("PATH", preferredDir+string(os.PathListSeparator)+managedDir)
+	preferredPath := filepath.Join(preferredDir, "jq")
+	targets := map[string]executableTarget{"jq": {Name: "jq", OriginalPath: preferredPath}}
+	addExecutableEntry(targets, core.ToolHomebrew, managedDir, "jq")
+	if targets["jq"].OriginalPath != preferredPath {
+		t.Fatalf("preferred executable changed: %#v", targets["jq"])
+	}
+}
+
+func TestExecutablePathPriorityFallsAfterPATHEntries(t *testing.T) {
+	paths := []string{t.TempDir(), t.TempDir()}
+	t.Setenv("PATH", strings.Join(paths, string(os.PathListSeparator)))
+	if got := executablePathPriority(filepath.Join(t.TempDir(), "tool")); got != len(paths) {
+		t.Fatalf("executablePathPriority = %d, want %d", got, len(paths))
+	}
+}
+
+func TestUsableExecutablePathRejectsMissingDirectoriesAndFiles(t *testing.T) {
+	directory := t.TempDir()
+	nonExecutable := filepath.Join(directory, "notes")
+	if err := os.WriteFile(nonExecutable, []byte("notes"), core.PrivateFileMode); err != nil {
+		t.Fatal(err)
+	}
+	missing := filepath.Join(directory, "missing")
+	shouldBeUnusable := false
+	assertExecutablePathUsable(t, directory, shouldBeUnusable)
+	assertExecutablePathUsable(t, nonExecutable, shouldBeUnusable)
+	assertExecutablePathUsable(t, missing, shouldBeUnusable)
+}
+
+func assertExecutableTargetPresent(t *testing.T, targets map[string]executableTarget, name, tool string) {
+	t.Helper()
+	target, exists := targets[name]
+	targetMissing := !exists
+	toolDoesNotMatch := target.Tool != tool
+	invalidTarget := targetMissing || toolDoesNotMatch
+	if invalidTarget {
+		t.Fatalf("executable target %q = %#v, exists=%v", name, target, exists)
+	}
+}
+
+func assertExecutablePathUsable(t *testing.T, path string, shouldBeUsable bool) {
+	t.Helper()
+	if got := usableExecutablePath(path); got != shouldBeUsable {
+		t.Fatalf("usableExecutablePath(%q) = %v, want %v", path, got, shouldBeUsable)
 	}
 }
 

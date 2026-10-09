@@ -20,10 +20,69 @@ const (
 )
 
 const zshPreexecHook = `_diu_preexec() {
-    local submitted="$3" word tool package executable diu_binary
+    local submitted="$3" word tool package executable diu_binary command_position=1 skip_redirection_target=0 loop_header=0 case_header=0 case_pattern=0
+    if [[ ! -r "$_DIU_INTEGRATION_FILE" ]]; then
+        add-zsh-hook -d preexec _diu_preexec 2>/dev/null || true
+        unset _DIU_TOOL_MAP _DIU_PACKAGE_MAP _DIU_EXECUTABLE_MAP
+        return 0
+    fi
+    typeset -gi _DIU_IN_PREEXEC=1
+    source "$_DIU_INTEGRATION_FILE"
+    typeset -gi _DIU_IN_PREEXEC=0
     diu_binary="${commands[diu]-}"
     [[ -x "$diu_binary" ]] || return 0
     for word in ${(z)submitted}; do
+        if (( skip_redirection_target )); then
+            skip_redirection_target=0
+            continue
+        fi
+        case "$word" in
+            '>'|'>>'|'<'|'<<'|'<<<'|'<<-'|'<&'|'>&'|'<>'|'&>'|'&>>') skip_redirection_target=1; continue ;;
+        esac
+        local operator="${word#${word%%[!0-9]*}}"
+        if [[ "$word" == '&>'* || "$word" == '&>>'* || "$operator" == '>'* || "$operator" == '<'* ]]; then
+            [[ "$operator" == '>' || "$operator" == '>>' || "$operator" == '<' || "$operator" == '<<' || "$operator" == '<<<' || "$operator" == '<<-' || "$operator" == '<&' || "$operator" == '>&' || "$operator" == '<>' ]] && skip_redirection_target=1
+            continue
+        fi
+        if (( loop_header )); then
+            if [[ "$word" == do ]]; then
+                loop_header=0
+                command_position=1
+            fi
+            continue
+        fi
+        if (( case_pattern )); then
+            if [[ "$word" == ')' ]]; then
+                case_pattern=0
+                command_position=1
+            fi
+            continue
+        fi
+        if (( case_header )); then
+            if [[ "$word" == in ]]; then
+                case_header=0
+                case_pattern=1
+            fi
+            continue
+        fi
+        case "$word" in
+            case) case_header=1; command_position=0; continue ;;
+            for|select) loop_header=1; command_position=0; continue ;;
+            in) continue ;;
+            if|then|elif|else|while|until|do|!|coproc) command_position=1; continue ;;
+            fi|done|esac) command_position=0; continue ;;
+            ';'|'&&'|'||'|'|'|'|&'|'&'|'('|')') command_position=1; continue ;;
+        esac
+        case "$word" in
+            command|builtin|exec|noglob|nocorrect|time) continue ;;
+        esac
+        if [[ "$word" == *=* ]]; then
+            continue
+        fi
+        if (( ! command_position )); then
+            continue
+        fi
+        command_position=0
         word="${word:t}"
         tool="${_DIU_TOOL_MAP[$word]-}"
         [[ -n "$tool" ]] || continue
@@ -34,9 +93,11 @@ const zshPreexecHook = `_diu_preexec() {
             "$diu_binary" record --background >/dev/null 2>&1 &!
     done
 }
-autoload -Uz add-zsh-hook
-add-zsh-hook -d preexec _diu_preexec 2>/dev/null || true
-add-zsh-hook preexec _diu_preexec
+if (( ! _DIU_IN_PREEXEC )); then
+    autoload -Uz add-zsh-hook
+    add-zsh-hook -d preexec _diu_preexec 2>/dev/null || true
+    add-zsh-hook preexec _diu_preexec
+fi
 `
 
 func installZshShellIntegration(config *core.Config) error {
@@ -52,20 +113,23 @@ func installZshShellIntegration(config *core.Config) error {
 
 func refreshZshShellIntegration(config *core.Config) error {
 	targets := discoverExecutables(config)
-	contents, err := renderZshIntegration(targets)
+	path := zshIntegrationPath(config)
+	contents, err := renderZshIntegration(targets, path)
 	if err != nil {
 		return err
 	}
-	return safefs.WriteFileAtomic(zshIntegrationPath(config), []byte(contents), core.PrivateFileMode)
+	return safefs.WriteFileAtomic(path, []byte(contents), core.PrivateFileMode)
 }
 
 func zshIntegrationPath(config *core.Config) string {
 	return filepath.Join(config.Daemon.DataDir, zshIntegrationFileName)
 }
 
-func renderZshIntegration(targets []executableTarget) (string, error) {
+func renderZshIntegration(targets []executableTarget, integrationPath string) (string, error) {
 	var source strings.Builder
 	source.WriteString(zshIntegrationGeneratedMarker + "\n")
+	source.WriteString("typeset -g _DIU_INTEGRATION_FILE=" + zshSingleQuote(integrationPath) + "\n")
+	source.WriteString("(( ${+_DIU_IN_PREEXEC} )) || typeset -gi _DIU_IN_PREEXEC=0\n")
 	source.WriteString("typeset -gA _DIU_TOOL_MAP _DIU_PACKAGE_MAP _DIU_EXECUTABLE_MAP\n")
 	source.WriteString("_DIU_TOOL_MAP=() _DIU_PACKAGE_MAP=() _DIU_EXECUTABLE_MAP=()\n")
 	for _, target := range targets {
@@ -250,7 +314,24 @@ func joinShellConfig(prefix, suffix string) string {
 }
 
 func readShellConfigIfPresent(path string) ([]byte, error) {
-	contents, err := safefs.ReadFile(path)
+	target, info, err := resolveShellConfigTarget(path)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve shell config %s: %w", path, err)
+	}
+	if info == nil {
+		return nil, nil
+	}
+	return readResolvedShellConfig(path, target, info)
+}
+
+func readResolvedShellConfig(path, target string, info os.FileInfo) ([]byte, error) {
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("refusing to read non-regular shell config: %s", path)
+	}
+	contents, err := safefs.ReadFile(target)
 	if os.IsNotExist(err) {
 		return nil, nil
 	}
@@ -261,17 +342,36 @@ func readShellConfigIfPresent(path string) ([]byte, error) {
 }
 
 func writeShellConfig(path string, contents []byte) error {
-	info, err := safefs.Lstat(path)
+	target, info, err := resolveShellConfigTarget(path)
 	if os.IsNotExist(err) {
 		return safefs.WriteFileAtomic(path, contents, core.PrivateFileMode)
 	}
 	if err != nil {
 		return err
 	}
+	if info == nil {
+		return safefs.WriteFileAtomic(path, contents, core.PrivateFileMode)
+	}
 	if !info.Mode().IsRegular() {
 		return fmt.Errorf("refusing to update non-regular shell config: %s", path)
 	}
-	return safefs.WriteFileAtomic(path, contents, info.Mode().Perm())
+	return safefs.WriteFileAtomic(target, contents, info.Mode().Perm())
+}
+
+func resolveShellConfigTarget(path string) (string, os.FileInfo, error) {
+	info, err := safefs.Lstat(path)
+	if err != nil {
+		return "", nil, err
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		return path, info, nil
+	}
+	target, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return "", nil, err
+	}
+	info, err = safefs.Lstat(target)
+	return target, info, err
 }
 
 func removeZshShellIntegration(config *core.Config) error {

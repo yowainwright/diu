@@ -11,17 +11,65 @@ import (
 
 func TestRenderZshIntegrationEscapesExecutableMapEntries(t *testing.T) {
 	target := executableTarget{Name: "fmt'check", Tool: core.ToolNPM, Package: "@acme/fmt'check"}
-	contents, err := renderZshIntegration([]executableTarget{target})
+	integrationPath := "/tmp/diu's integration.zsh"
+	contents, err := renderZshIntegration([]executableTarget{target}, integrationPath)
 	if err != nil {
 		t.Fatalf("renderZshIntegration failed: %v", err)
 	}
 	assertShellIntegrationContains(t, contents,
+		"typeset -g _DIU_INTEGRATION_FILE="+zshSingleQuote(integrationPath),
 		`_DIU_TOOL_MAP+=('fmt'\''check' '"npm"')`,
 		`_DIU_PACKAGE_MAP+=('fmt'\''check' '"@acme/fmt'\''check"')`,
 		`_DIU_EXECUTABLE_MAP+=('fmt'\''check' '"fmt'\''check"')`,
 		"add-zsh-hook preexec _diu_preexec",
+		"source \"$_DIU_INTEGRATION_FILE\"",
+		"command_position=1",
+		"skip_redirection_target=1",
 		"record --background",
 	)
+}
+
+func TestInstallZshSourceBlockWritesThroughSymlink(t *testing.T) {
+	path, target, integrationPath := createSymlinkedZshConfig(t)
+	if err := installZshSourceBlock(path, integrationPath); err != nil {
+		t.Fatalf("installZshSourceBlock failed for symlink: %v", err)
+	}
+	assertFileContents(t, target, "# dotfiles\n\n\n"+zshSourceBlock(integrationPath)+"\n")
+	assertShellConfigSymlinkPreserved(t, path, target)
+}
+
+func createSymlinkedZshConfig(t *testing.T) (string, string, string) {
+	t.Helper()
+	home := t.TempDir()
+	dotfiles := t.TempDir()
+	path := filepath.Join(home, ".zshrc")
+	target := filepath.Join(dotfiles, "zshrc")
+	if err := os.WriteFile(target, []byte("# dotfiles\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, path); err != nil {
+		t.Fatal(err)
+	}
+	integrationPath := filepath.Join(t.TempDir(), "shell-integration.zsh")
+	return path, target, integrationPath
+}
+
+func assertShellConfigSymlinkPreserved(t *testing.T, path, target string) {
+	t.Helper()
+	info, err := os.Lstat(path)
+	if err != nil {
+		t.Fatalf("failed to inspect zshrc symlink: %v", err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("zshrc symlink was replaced: info=%v", info)
+	}
+	info, err = os.Stat(target)
+	if err != nil {
+		t.Fatalf("failed to inspect dotfiles target: %v", err)
+	}
+	if info.Mode().Perm() != 0o640 {
+		t.Fatalf("dotfiles permissions changed: info=%v", info)
+	}
 }
 
 func assertShellIntegrationContains(t *testing.T, contents string, values ...string) {

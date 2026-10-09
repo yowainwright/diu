@@ -1,20 +1,157 @@
 package record
 
 import (
+	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/yowainwright/diu/internal/core"
 	"github.com/yowainwright/diu/internal/dx"
+	"github.com/yowainwright/diu/internal/storage"
 )
 
 func TestRecordExecutionWritesToConfiguredStorage(t *testing.T) {
 	config := setupTestHomeConfig(t)
 	runRecordExecution(t, homebrewExecutionPayload)
 	assertStoredHomebrewExecution(t, config)
+}
+
+func TestRunExecutionRejectsInvalidConfig(t *testing.T) {
+	setInvalidRecordConfig(t)
+	withStdin(t, "", func() {
+		err := RunExecution(NewCommand(), nil)
+		hasError := err != nil
+		hasExpectedMessage := hasError && strings.Contains(err.Error(), "failed to parse config")
+		if !hasExpectedMessage {
+			t.Fatalf("RunExecution error = %v", err)
+		}
+	})
+}
+
+func TestRunExecutionUsesBackgroundRecorderWhenRequested(t *testing.T) {
+	config := setupTestHomeConfig(t)
+	locks := lockAllRecorderSlots(t, config.Daemon.DataDir)
+	defer closeRecorderLocks(locks)
+	command := NewCommand()
+	setBackgroundRecordFlag(t, command)
+	withStdin(t, `{"kind":"launch_attempt"}`, func() {
+		if err := RunExecution(command, nil); err != nil {
+			t.Fatal(err)
+		}
+	})
+}
+
+func TestStoreFallbackExecutionRejectsMalformedPayload(t *testing.T) {
+	config := setupTestHomeConfig(t)
+	err := storeFallbackExecutionFrom(config, 0, strings.NewReader("{"))
+	hasError := err != nil
+	hasExpectedMessage := hasError && strings.Contains(err.Error(), "failed to decode execution record")
+	if !hasExpectedMessage {
+		t.Fatalf("storeFallbackExecutionFrom error = %v", err)
+	}
+}
+
+func TestStoreFallbackExecutionReportsStorageOpenFailure(t *testing.T) {
+	config := setupTestHomeConfig(t)
+	config.Storage.JSONFile = storagePathInsideFile(t)
+	payload := strings.NewReader(`{"tool":"brew","command":"brew install jq"}`)
+	err := storeFallbackExecutionFrom(config, 0, payload)
+	hasError := err != nil
+	hasExpectedMessage := hasError && strings.Contains(err.Error(), "failed to open storage")
+	if !hasExpectedMessage {
+		t.Fatalf("storeFallbackExecutionFrom error = %v", err)
+	}
+}
+
+func TestWithFallbackRecordLockPropagatesCallbackErrors(t *testing.T) {
+	config := setupTestHomeConfig(t)
+	assertFallbackCallbackError(t, config, errors.New("record failed"))
+	assertFallbackCallbackError(t, config, context.DeadlineExceeded)
+}
+
+func TestWithFallbackRecordLockReportsLockDirectoryFailure(t *testing.T) {
+	config := setupTestHomeConfig(t)
+	config.Storage.JSONFile = storagePathInsideFile(t)
+	err := withFallbackRecordLock(config, func(time.Duration) error { return nil })
+	hasError := err != nil
+	hasExpectedMessage := hasError && strings.Contains(err.Error(), "failed to create fallback lock directory")
+	if !hasExpectedMessage {
+		t.Fatalf("withFallbackRecordLock error = %v", err)
+	}
+}
+
+func TestCloseStorageHandlesCloseFailure(t *testing.T) {
+	closeStorage(closeFailureStorage{err: errors.New("close failed")})
+}
+
+func TestRecorderMonitorDispatchesSupportedTools(t *testing.T) {
+	for _, tool := range []string{core.ToolHomebrew, core.ToolGo, core.ToolNPM, core.ToolPNPM, core.ToolBun, core.ToolPip, core.ToolUV, core.ToolPoetry} {
+		assertRecorderMonitorAvailable(t, tool)
+	}
+	if _, err := recorderMonitor("unsupported"); err == nil {
+		t.Fatal("recorderMonitor accepted an unsupported tool")
+	}
+}
+
+func setInvalidRecordConfig(t *testing.T) {
+	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+	if err := os.MkdirAll(filepath.Dir(testConfigPath()), core.OwnerDirectoryMode); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(testConfigPath(), []byte("{"), core.PrivateFileMode); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func setBackgroundRecordFlag(t *testing.T, command *dx.Command) {
+	t.Helper()
+	_, err := command.Flags().Parse([]string{"--background"})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func storagePathInsideFile(t *testing.T) string {
+	t.Helper()
+	blocker := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(blocker, []byte("block"), core.PrivateFileMode); err != nil {
+		t.Fatal(err)
+	}
+	return filepath.Join(blocker, "executions.json")
+}
+
+func assertFallbackCallbackError(t *testing.T, config *core.Config, callbackErr error) {
+	t.Helper()
+	err := withFallbackRecordLock(config, func(time.Duration) error { return callbackErr })
+	if !errors.Is(err, callbackErr) {
+		t.Fatalf("withFallbackRecordLock error = %v, want %v", err, callbackErr)
+	}
+}
+
+func assertRecorderMonitorAvailable(t *testing.T, tool string) {
+	t.Helper()
+	monitor, err := recorderMonitor(tool)
+	hasError := err != nil
+	missingMonitor := monitor == nil
+	invalidMonitor := hasError || missingMonitor
+	if invalidMonitor {
+		t.Fatalf("recorderMonitor(%q) = %v, %v", tool, monitor, err)
+	}
+}
+
+type closeFailureStorage struct {
+	storage.Storage
+	err error
+}
+
+func (s closeFailureStorage) Close() error {
+	return s.err
 }
 
 func TestRecordExecutionDropsConcurrentFallback(t *testing.T) {

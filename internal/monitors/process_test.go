@@ -2,7 +2,9 @@ package monitors
 
 import (
 	"context"
+	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -41,6 +43,50 @@ func TestProcessMonitorFindOriginalBinaryUsesAbsolutePath(t *testing.T) {
 		t.Fatalf("findOriginalBinary failed: %v", err)
 	}
 	assertResolvedExecutablePath(t, originalPath, binaryPath)
+}
+
+func TestProcessMonitorFindOriginalBinaryReportsMissing(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	monitor := NewProcessMonitor("missing", "missing")
+	_, err := monitor.findOriginalBinary()
+	if !errors.Is(err, exec.ErrNotFound) {
+		t.Fatalf("findOriginalBinary error = %v, want exec.ErrNotFound", err)
+	}
+}
+
+func TestProcessMonitorExecuteAndTrackRejectsInvalidExecutable(t *testing.T) {
+	monitor := NewProcessMonitor("tool", "missing")
+	monitor.originalPath = filepath.Join(t.TempDir(), "missing")
+	if _, err := monitor.ExecuteAndTrack("tool", nil); err == nil {
+		t.Fatal("ExecuteAndTrack accepted a missing executable")
+	}
+}
+
+func TestCommandExitCodeHandlesSuccessAndNonExitErrors(t *testing.T) {
+	if code := commandExitCode(nil); code != 0 {
+		t.Fatalf("commandExitCode(nil) = %d, want 0", code)
+	}
+	if code := commandExitCode(errors.New("start failed")); code != 0 {
+		t.Fatalf("commandExitCode(start error) = %d, want 0", code)
+	}
+}
+
+func TestExecutableCandidateSkipsInvalidEntries(t *testing.T) {
+	directory := t.TempDir()
+	nonExecutable := filepath.Join(directory, "notes")
+	if err := os.WriteFile(nonExecutable, []byte("notes"), core.PrivateFileMode); err != nil {
+		t.Fatal(err)
+	}
+	assertExecutableCandidateRejected(t, directory)
+	assertExecutableCandidateRejected(t, nonExecutable)
+	assertExecutableCandidateRejected(t, filepath.Join(directory, "missing"))
+}
+
+func assertExecutableCandidateRejected(t *testing.T, path string) {
+	t.Helper()
+	if _, ok := executableCandidate(path); ok {
+		t.Fatalf("executableCandidate accepted %q", path)
+	}
 }
 
 func TestProcessMonitorInitializeKeepsRequestedPathWhenMissing(t *testing.T) {
