@@ -16,11 +16,11 @@ import (
 const cliBinary = "/usr/local/bin/diu"
 
 type cliFixture struct {
-	home     string
-	bin      string
-	managed  string
-	config   *core.Config
-	env      []string
+	home    string
+	bin     string
+	managed string
+	config  *core.Config
+	env     []string
 }
 
 func newCLIFixture(t *testing.T) *cliFixture {
