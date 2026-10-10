@@ -20,7 +20,7 @@ const (
 )
 
 const zshPreexecHook = `_diu_preexec() {
-    local submitted="$3" word tool package executable diu_binary command_position=1 skip_redirection_target=0 loop_header=0 case_header=0 case_pattern=0
+    local submitted="$3" word tool package executable diu_binary command_position=1 skip_redirection_target=0 loop_header=0 case_header=0 case_pattern=0 exec_prefix=0 skip_exec_argument=0
     if [[ ! -r "$_DIU_INTEGRATION_FILE" ]]; then
         add-zsh-hook -d preexec _diu_preexec 2>/dev/null || true
         unset _DIU_TOOL_MAP _DIU_PACKAGE_MAP _DIU_EXECUTABLE_MAP
@@ -32,6 +32,10 @@ const zshPreexecHook = `_diu_preexec() {
     diu_binary="${commands[diu]-}"
     [[ -x "$diu_binary" ]] || return 0
     for word in ${(z)submitted}; do
+        if (( skip_exec_argument )); then
+            skip_exec_argument=0
+            continue
+        fi
         if (( skip_redirection_target )); then
             skip_redirection_target=0
             continue
@@ -71,11 +75,24 @@ const zshPreexecHook = `_diu_preexec() {
             in) continue ;;
             if|then|elif|else|while|until|do|!|coproc) command_position=1; continue ;;
             fi|done|esac) command_position=0; continue ;;
-            ';'|'&&'|'||'|'|'|'|&'|'&'|'('|')') command_position=1; continue ;;
+            '{') command_position=1; continue ;;
+            '}') command_position=0; continue ;;
+            ';'|'&&'|'||'|'|'|'|&'|'&'|'('|')') command_position=1; exec_prefix=0; continue ;;
         esac
         case "$word" in
-            command|builtin|exec|noglob|nocorrect|time) continue ;;
+            exec) exec_prefix=1; continue ;;
+            command|builtin|noglob|nocorrect|time) continue ;;
+            --)
+                if (( exec_prefix )); then
+                    exec_prefix=0
+                    continue
+                fi
+                ;;
         esac
+        if (( exec_prefix )) && [[ "$word" == -* ]]; then
+            [[ "$word" == *a* ]] && skip_exec_argument=1
+            continue
+        fi
         if [[ "$word" == *=* ]]; then
             continue
         fi
@@ -83,6 +100,7 @@ const zshPreexecHook = `_diu_preexec() {
             continue
         fi
         command_position=0
+        exec_prefix=0
         word="${word:t}"
         tool="${_DIU_TOOL_MAP[$word]-}"
         [[ -n "$tool" ]] || continue
