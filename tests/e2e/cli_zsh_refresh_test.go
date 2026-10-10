@@ -36,6 +36,7 @@ func TestCLIZshListenerRefreshesOpenShellAndMatchesCommands(t *testing.T) {
 		"if listener-tool; then true; fi",
 		"(exec -a custom-name listener-tool || true)",
 		"{ listener-tool; }",
+		"echo exec -a; listener-tool || true",
 		"print -r -- DIU_DONE",
 	}, "\n") + "\n"
 	writeZshInput(t, input, commands)
@@ -46,9 +47,9 @@ func TestCLIZshListenerRefreshesOpenShellAndMatchesCommands(t *testing.T) {
 		t.Fatalf("interactive zsh failed: %v; stderr=%s", err, stderr.String())
 	}
 
-	records := waitCLIRecords(t, f, 4)
-	if len(records) != 4 {
-		t.Fatalf("record count = %d, want the pipeline, if, exec -a, and brace-group commands: %#v", len(records), records)
+	records := waitCLIRecords(t, f, 5)
+	if len(records) != 5 {
+		t.Fatalf("record count = %d, want the pipeline, if, exec -a, brace-group, and later command after an argument named exec: %#v", len(records), records)
 	}
 	for _, record := range records {
 		assertCLIRecordedLaunchIdentity(t, record, "homebrew", "listener-tool")

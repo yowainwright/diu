@@ -80,7 +80,12 @@ const zshPreexecHook = `_diu_preexec() {
             ';'|'&&'|'||'|'|'|'|&'|'&'|'('|')') command_position=1; exec_prefix=0; continue ;;
         esac
         case "$word" in
-            exec) exec_prefix=1; continue ;;
+            exec)
+                if (( command_position )); then
+                    exec_prefix=1
+                    continue
+                fi
+                ;;
             command|builtin|noglob|nocorrect|time) continue ;;
             --)
                 if (( exec_prefix )); then
