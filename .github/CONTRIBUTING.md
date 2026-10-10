@@ -13,7 +13,7 @@ DIU tracks tool usage locally and uses only the Go standard library.
 ## Development Setup
 
 <!-- Development requirements derived from go.mod, .mise.toml, and .github/workflows/ci.yml -->
-Use Go 1.25.12 or later. `mise install` selects Go 1.26.6 and the configured build tools. Go 1.25 and 1.26 require macOS 12 or later; see [Go's platform requirements](https://go.dev/wiki/MinimumRequirements). Docker is needed for Docker E2E tests.
+Use Go 1.25.12 or later. `mise install` selects Go 1.26.9 and the configured build tools. Go 1.25 and 1.26 require macOS 12 or later; see [Go's platform requirements](https://go.dev/wiki/MinimumRequirements). Docker is needed for Docker E2E tests.
 
 Common commands:
 
