@@ -28,26 +28,40 @@ func TestCLIZshListenerRefreshesOpenShellAndMatchesCommands(t *testing.T) {
 	writeCLIFile(t, filepath.Join(f.managed, "listener-tool"), "#!/bin/sh\nexit 17\n", 0o700)
 	assertCLIExit(t, f.cli(t, "scan"), 0)
 
-	commands := strings.Join([]string{
+	untrackedCommands := strings.Join([]string{
 		"echo listener-tool",
 		"cat < /dev/null > listener-tool",
 		"probe || true",
+	}, "\n") + "\nprint -r -- DIU_'UNTRACKED_DONE'\n"
+	writeZshInput(t, input, untrackedCommands)
+	waitCLIZshOutput(t, output, "DIU_UNTRACKED_DONE")
+	records := waitCLIRecords(t, f, 0)
+	if len(records) != 0 {
+		t.Fatalf("untracked commands produced launch records: %#v", records)
+	}
+
+	trackedCommands := []string{
 		"true | listener-tool || true",
 		"if listener-tool; then true; fi",
 		"(exec -a custom-name listener-tool || true)",
 		"{ listener-tool; }",
 		"echo exec -a; listener-tool || true",
-		"print -r -- DIU_DONE",
-	}, "\n") + "\n"
-	writeZshInput(t, input, commands)
-	waitCLIZshOutput(t, output, "DIU_DONE")
+	}
+	for index, trackedCommand := range trackedCommands {
+		writeZshInput(t, input, trackedCommand+"\nprint -r -- DIU_'TRACKED_DONE'\n")
+		waitCLIZshOutput(t, output, "DIU_TRACKED_DONE")
+		records = waitCLIRecords(t, f, index+1)
+		if len(records) != index+1 {
+			t.Fatalf("record count = %d after launch %d, want %d: %#v", len(records), index+1, index+1, records)
+		}
+	}
 	writeZshInput(t, input, "exit\n")
 	_ = input.Close()
 	if err := command.Wait(); err != nil {
 		t.Fatalf("interactive zsh failed: %v; stderr=%s", err, stderr.String())
 	}
 
-	records := waitCLIRecords(t, f, 5)
+	records = waitCLIRecords(t, f, 5)
 	if len(records) != 5 {
 		t.Fatalf("record count = %d, want the pipeline, if, exec -a, brace-group, and later command after an argument named exec: %#v", len(records), records)
 	}
