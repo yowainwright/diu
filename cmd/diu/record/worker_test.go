@@ -2,6 +2,7 @@ package record
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"net"
 	"os"
@@ -15,6 +16,56 @@ import (
 	"github.com/yowainwright/diu/internal/core"
 	"github.com/yowainwright/diu/internal/storage"
 )
+
+func TestWriteRecorderPayloadWritesAllBytes(t *testing.T) {
+	var output bytes.Buffer
+	if err := writeRecorderPayload(&output, []byte("payload")); err != nil {
+		t.Fatal(err)
+	}
+	if output.String() != "payload" {
+		t.Fatalf("payload = %q", output.String())
+	}
+}
+
+func TestWriteRecorderPayloadReportsWriteFailures(t *testing.T) {
+	writeErr := errors.New("write failed")
+	for _, test := range []struct {
+		writer recorderPayloadWriter
+		want   error
+	}{
+		{recorderPayloadWriter{err: writeErr}, writeErr},
+		{recorderPayloadWriter{size: 1, err: writeErr}, writeErr},
+		{recorderPayloadWriter{}, io.ErrShortWrite},
+		{recorderPayloadWriter{size: 1}, io.ErrShortWrite},
+	} {
+		if err := writeRecorderPayload(test.writer, []byte("payload")); !errors.Is(err, test.want) {
+			t.Fatalf("write error = %v, want %v", err, test.want)
+		}
+	}
+}
+
+type recorderPayloadWriter struct {
+	size int
+	err  error
+}
+
+func (w recorderPayloadWriter) Write(payload []byte) (int, error) {
+	return min(w.size, len(payload)), w.err
+}
+
+func TestReadRecorderPayloadRejectsOversizeInput(t *testing.T) {
+	payload := bytes.Repeat([]byte("x"), core.MaxRecorderPayloadBytes+1)
+	if _, err := readRecorderPayload(bytes.NewReader(payload)); err == nil {
+		t.Fatal("oversized worker payload was accepted")
+	}
+}
+
+func TestReadRecorderPayloadReturnsReaderError(t *testing.T) {
+	want := errors.New("read failed")
+	if _, err := readRecorderPayload(recorderErrorReader{err: want}); !errors.Is(err, want) {
+		t.Fatalf("read error = %v, want %v", err, want)
+	}
+}
 
 func TestSendRecorderPayloadWritesUnixSocket(t *testing.T) {
 	socketDir, err := os.MkdirTemp(".", "sock-")

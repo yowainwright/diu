@@ -22,13 +22,27 @@ func TestRecorderPayloadFileCopiesAndUnlinksInput(t *testing.T) {
 	assertPathMissing(t, file.Name())
 }
 
-func TestRecorderPayloadHelpersRejectOversizeInput(t *testing.T) {
+func TestCopyRecorderPayloadRejectsOversizeInput(t *testing.T) {
 	payload := bytes.Repeat([]byte("x"), core.MaxRecorderPayloadBytes+1)
 	if err := copyRecorderPayload(newRecorderTempFile(t), bytes.NewReader(payload)); err == nil {
 		t.Fatal("oversized payload copy was accepted")
 	}
-	if _, err := readRecorderPayload(bytes.NewReader(payload)); err == nil {
-		t.Fatal("oversized worker payload was accepted")
+}
+
+func TestBackgroundRecorderDropsWhenSlotsAreFull(t *testing.T) {
+	config := setupTestHomeConfig(t)
+	locks := acquireAllRecorderSlots(t, config.Daemon.DataDir)
+	defer closeRecorderSlots(t, locks)
+
+	if err := startBackgroundRecorder(config, strings.NewReader(`{"kind":"launch_attempt"}`)); err != nil {
+		t.Fatalf("full recorder pool returned error: %v", err)
+	}
+	payloads, err := filepath.Glob(filepath.Join(config.Daemon.DataDir, ".recorder-payload-*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(payloads) != 0 {
+		t.Fatalf("full recorder pool created payload files: %v", payloads)
 	}
 }
 
@@ -38,6 +52,15 @@ func TestCopyRecorderPayloadReturnsReaderError(t *testing.T) {
 	if err := copyRecorderPayload(file, recorderErrorReader{err: wantErr}); !errors.Is(err, wantErr) {
 		t.Fatalf("payload copy error = %v, want %v", err, wantErr)
 	}
+}
+
+func TestCopyRecorderPayloadAcceptsExactSizeLimit(t *testing.T) {
+	payload := bytes.Repeat([]byte("x"), core.MaxRecorderPayloadBytes)
+	file := newRecorderTempFile(t)
+	if err := copyRecorderPayload(file, bytes.NewReader(payload)); err != nil {
+		t.Fatal(err)
+	}
+	assertReaderContents(t, file, string(payload))
 }
 
 func newRecorderTempFile(t *testing.T) *os.File {

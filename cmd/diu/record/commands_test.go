@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/yowainwright/diu/internal/core"
 	"github.com/yowainwright/diu/internal/dx"
@@ -36,8 +35,8 @@ func TestRunExecutionRejectsInvalidConfig(t *testing.T) {
 
 func TestRunExecutionUsesBackgroundRecorderWhenRequested(t *testing.T) {
 	config := setupTestHomeConfig(t)
-	locks := lockAllRecorderSlots(t, config.Daemon.DataDir)
-	defer closeRecorderLocks(locks)
+	locks := acquireAllRecorderSlots(t, config.Daemon.DataDir)
+	defer closeRecorderSlots(t, locks)
 	command := NewCommand()
 	setBackgroundRecordFlag(t, command)
 	withStdin(t, `{"kind":"launch_attempt"}`, func() {
@@ -69,20 +68,20 @@ func TestStoreFallbackExecutionReportsStorageOpenFailure(t *testing.T) {
 	}
 }
 
-func TestWithFallbackRecordLockPropagatesCallbackErrors(t *testing.T) {
+func TestRecordFallbackExecutionPropagatesReaderErrors(t *testing.T) {
 	config := setupTestHomeConfig(t)
-	assertFallbackCallbackError(t, config, errors.New("record failed"))
-	assertFallbackCallbackError(t, config, context.DeadlineExceeded)
+	assertFallbackRecordingError(t, config, errors.New("record failed"))
+	assertFallbackRecordingError(t, config, context.DeadlineExceeded)
 }
 
-func TestWithFallbackRecordLockReportsLockDirectoryFailure(t *testing.T) {
+func TestRecordFallbackExecutionReportsLockDirectoryFailure(t *testing.T) {
 	config := setupTestHomeConfig(t)
 	config.Storage.JSONFile = storagePathInsideFile(t)
-	err := withFallbackRecordLock(config, func(time.Duration) error { return nil })
+	err := recordFallbackExecution(config, strings.NewReader(""))
 	hasError := err != nil
 	hasExpectedMessage := hasError && strings.Contains(err.Error(), "failed to create fallback lock directory")
 	if !hasExpectedMessage {
-		t.Fatalf("withFallbackRecordLock error = %v", err)
+		t.Fatalf("recordFallbackExecution error = %v", err)
 	}
 }
 
@@ -92,6 +91,9 @@ func TestCloseStorageHandlesCloseFailure(t *testing.T) {
 
 func TestRecorderMonitorDispatchesSupportedTools(t *testing.T) {
 	for _, tool := range []string{core.ToolHomebrew, core.ToolGo, core.ToolNPM, core.ToolPNPM, core.ToolBun, core.ToolPip, core.ToolUV, core.ToolPoetry} {
+		assertRecorderMonitorAvailable(t, tool)
+	}
+	for _, tool := range []string{"brew", "golang", "pip3", "python", "python3", " NPM ", " PNPM ", " BUN ", " UV ", " POETRY "} {
 		assertRecorderMonitorAvailable(t, tool)
 	}
 	if _, err := recorderMonitor("unsupported"); err == nil {
@@ -127,11 +129,11 @@ func storagePathInsideFile(t *testing.T) string {
 	return filepath.Join(blocker, "executions.json")
 }
 
-func assertFallbackCallbackError(t *testing.T, config *core.Config, callbackErr error) {
+func assertFallbackRecordingError(t *testing.T, config *core.Config, recordErr error) {
 	t.Helper()
-	err := withFallbackRecordLock(config, func(time.Duration) error { return callbackErr })
-	if !errors.Is(err, callbackErr) {
-		t.Fatalf("withFallbackRecordLock error = %v, want %v", err, callbackErr)
+	err := recordFallbackExecution(config, recorderErrorReader{err: recordErr})
+	if !errors.Is(err, recordErr) {
+		t.Fatalf("recordFallbackExecution error = %v, want %v", err, recordErr)
 	}
 }
 
@@ -143,6 +145,9 @@ func assertRecorderMonitorAvailable(t *testing.T, tool string) {
 	invalidMonitor := hasError || missingMonitor
 	if invalidMonitor {
 		t.Fatalf("recorderMonitor(%q) = %v, %v", tool, monitor, err)
+	}
+	if monitor.Name() != core.NormalizeToolName(tool) {
+		t.Fatalf("recorderMonitor(%q) selected %q", tool, monitor.Name())
 	}
 }
 
@@ -184,50 +189,6 @@ func TestLaunchAttemptEnrichmentPreservesResolvedIdentity(t *testing.T) {
 	}
 	if record.Timestamp.IsZero() {
 		t.Fatal("launch timestamp was not filled")
-	}
-}
-
-func TestBackgroundRecorderDropsWhenSlotsAreFull(t *testing.T) {
-	config := setupTestHomeConfig(t)
-	locks := lockAllRecorderSlots(t, config.Daemon.DataDir)
-	defer closeRecorderLocks(locks)
-
-	if err := startBackgroundRecorder(config, strings.NewReader(`{"kind":"launch_attempt"}`)); err != nil {
-		t.Fatalf("full recorder pool returned error: %v", err)
-	}
-	payloads, err := filepath.Glob(filepath.Join(config.Daemon.DataDir, ".recorder-payload-*"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(payloads) != 0 {
-		t.Fatalf("full recorder pool created payload files: %v", payloads)
-	}
-}
-
-func lockAllRecorderSlots(t *testing.T, dataDir string) []*os.File {
-	t.Helper()
-	if err := os.MkdirAll(dataDir, core.OwnerDirectoryMode); err != nil {
-		t.Fatal(err)
-	}
-	locks := make([]*os.File, 0, core.MaxRecorderWorkers)
-	for slot := range core.MaxRecorderWorkers {
-		path := core.RecorderSlotPath(dataDir, slot)
-		file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, core.PrivateFileMode)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := lockFallbackRecorder(file); err != nil {
-			_ = file.Close()
-			t.Fatal(err)
-		}
-		locks = append(locks, file)
-	}
-	return locks
-}
-
-func closeRecorderLocks(locks []*os.File) {
-	for _, lock := range locks {
-		_ = lock.Close()
 	}
 }
 
@@ -431,11 +392,11 @@ func assertFallbackRecordDropped(t *testing.T, config *core.Config) {
 
 func acquireFallbackRecordLockForTest(t *testing.T, config *core.Config) *os.File {
 	t.Helper()
-	lock, acquired, err := tryAcquireFallbackRecordLock(config.Storage.JSONFile)
+	lock, err := tryAcquireFallbackRecordLock(config.Storage.JSONFile)
 	if err != nil {
 		t.Fatalf("tryAcquireFallbackRecordLock error = %v", err)
 	}
-	if !acquired {
+	if lock == nil {
 		t.Fatal("tryAcquireFallbackRecordLock did not acquire the lock")
 	}
 	return lock

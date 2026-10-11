@@ -49,9 +49,7 @@ func RunExecution(cmd *dx.Command, _ []string) error {
 	if background {
 		return startBackgroundRecorder(config, dx.TerminalOut().Stdin())
 	}
-	return withFallbackRecordLock(config, func(wait time.Duration) error {
-		return storeFallbackExecutionFrom(config, wait, dx.TerminalOut().Stdin())
-	})
+	return recordFallbackExecution(config, dx.TerminalOut().Stdin())
 }
 
 func storeFallbackExecutionFrom(config *core.Config, wait time.Duration, input io.Reader) error {
@@ -75,7 +73,7 @@ func storeFallbackExecutionFrom(config *core.Config, wait time.Duration, input i
 	return nil
 }
 
-func withFallbackRecordLock(config *core.Config, record func(time.Duration) error) (err error) {
+func recordFallbackExecution(config *core.Config, input io.Reader) (err error) {
 	lock, wait, err := acquireFallbackRecordLock(config.Storage.JSONFile)
 	if err != nil {
 		return err
@@ -90,14 +88,14 @@ func withFallbackRecordLock(config *core.Config, record func(time.Duration) erro
 		}
 		err = errors.Join(err, releaseFallbackRecordLock(lock))
 	}()
-	return record(wait)
+	return storeFallbackExecutionFrom(config, wait, input)
 }
 
 func acquireFallbackRecordLock(storagePath string) (*os.File, time.Duration, error) {
 	wait := fallbackRecordLockWait
 	for attempt := 0; attempt < fallbackRecordLockAttempts; attempt++ {
-		lock, acquired, err := tryAcquireFallbackRecordLock(storagePath)
-		finished := err != nil || acquired
+		lock, err := tryAcquireFallbackRecordLock(storagePath)
+		finished := err != nil || lock != nil
 		if finished {
 			return lock, wait, err
 		}
@@ -116,19 +114,19 @@ func waitForFallbackRecordRetry(wait time.Duration) time.Duration {
 	return max(0, wait-time.Since(started))
 }
 
-func tryAcquireFallbackRecordLock(storagePath string) (*os.File, bool, error) {
+func tryAcquireFallbackRecordLock(storagePath string) (*os.File, error) {
 	lock, err := openFallbackRecordLock(storagePath)
 	if err != nil {
-		return nil, false, err
+		return nil, err
 	}
 	if err := lockFallbackRecorder(lock); err != nil {
 		_ = lock.Close()
 		if isFallbackLockContention(err) {
-			return nil, false, nil
+			return nil, nil
 		}
-		return nil, false, fmt.Errorf("failed to lock fallback recorder: %w", err)
+		return nil, fmt.Errorf("failed to lock fallback recorder: %w", err)
 	}
-	return lock, true, nil
+	return lock, nil
 }
 
 func openFallbackRecordLock(storagePath string) (*os.File, error) {
@@ -236,38 +234,32 @@ func enrichRecord(config *core.Config, record *core.ExecutionRecord) {
 }
 
 func recorderMonitor(tool string) (monitors.Monitor, error) {
-	switch core.NormalizeToolName(tool) {
+	normalizedTool := core.NormalizeToolName(tool)
+	switch normalizedTool {
 	case core.ToolHomebrew:
 		return monitors.NewHomebrewMonitor(), nil
 	case core.ToolGo:
 		return monitors.NewGoMonitor(), nil
-	case core.ToolNPM, core.ToolPNPM, core.ToolBun:
-		return javascriptRecorderMonitor(core.NormalizeToolName(tool))
+	case core.ToolNPM:
+		return monitors.NewNPMMonitor(), nil
+	case core.ToolPNPM:
+		return monitors.NewPNPMMonitor(), nil
+	case core.ToolBun:
+		return monitors.NewBunMonitor(), nil
 	case core.ToolPip, core.ToolUV, core.ToolPoetry:
-		return pythonRecorderMonitor(core.NormalizeToolName(tool))
+		return pythonRecorderMonitor(normalizedTool), nil
 	default:
 		return nil, fmt.Errorf("unsupported tool: %s", tool)
 	}
 }
 
-func javascriptRecorderMonitor(tool string) (monitors.Monitor, error) {
-	switch tool {
-	case core.ToolNPM:
-		return monitors.NewNPMMonitor(), nil
-	case core.ToolPNPM:
-		return monitors.NewPNPMMonitor(), nil
-	default:
-		return monitors.NewBunMonitor(), nil
-	}
-}
-
-func pythonRecorderMonitor(tool string) (monitors.Monitor, error) {
+func pythonRecorderMonitor(tool string) monitors.Monitor {
 	switch tool {
 	case core.ToolPip:
-		return monitors.NewPipMonitor(), nil
+		return monitors.NewPipMonitor()
 	case core.ToolUV:
-		return monitors.NewUVMonitor(), nil
+		return monitors.NewUVMonitor()
 	default:
-		return monitors.NewPoetryMonitor(), nil
+		return monitors.NewPoetryMonitor()
 	}
 }
