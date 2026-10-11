@@ -24,6 +24,16 @@ func TestScanPackagesDiscoversExecutables(t *testing.T) {
 	assertScannedExecutablePackage(t, config, binDir)
 }
 
+func TestScanPackagesDoesNotInstallZshIntegration(t *testing.T) {
+	config := setupTestHomeConfig(t)
+	captureStderr(t, func() {
+		if err := scanPackages(&command{}, nil); err != nil {
+			t.Fatal(err)
+		}
+	})
+	assertShellIntegrationMissing(t, zshIntegrationPath(config))
+}
+
 func TestMergeExistingPackageMigratesLegacyGoUsage(t *testing.T) {
 	legacy, lastUsed := legacyGoPackageFixture()
 	inventory := legacyGoInventory(legacy)

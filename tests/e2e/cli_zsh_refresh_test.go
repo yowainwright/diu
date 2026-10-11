@@ -31,6 +31,8 @@ func TestCLIZshListenerRefreshesOpenShellAndMatchesCommands(t *testing.T) {
 		"echo listener-tool",
 		"echo if listener-tool",
 		"echo else listener-tool",
+		"echo ';' listener-tool",
+		"echo 'if' listener-tool",
 		"cat < /dev/null > listener-tool",
 		"builtin listener-tool",
 		"builtin -- listener-tool",
@@ -51,6 +53,11 @@ func TestCLIZshListenerRefreshesOpenShellAndMatchesCommands(t *testing.T) {
 
 	trackedCommands := []string{
 		"listener-tool || true",
+		`"listener-tool" || true`,
+		"'listener-tool' || true",
+		`listener\-tool || true`,
+		`"` + filepath.Join(f.managed, "listener-tool") + `" || true`,
+		"'" + filepath.Join(f.managed, "listener-tool") + "' || true",
 		"true | listener-tool || true",
 		"if listener-tool; then true; fi",
 		"(exec -a custom-name listener-tool || true)",
@@ -74,11 +81,7 @@ func TestCLIZshListenerRefreshesOpenShellAndMatchesCommands(t *testing.T) {
 			t.Fatalf("record count = %d after launch %d, want %d: %#v", len(records), index+1, index+1, records)
 		}
 	}
-	writeZshInput(t, input, "exit\n")
-	_ = input.Close()
-	if err := command.Wait(); err != nil {
-		t.Fatalf("interactive zsh failed: %v; stderr=%s", err, stderr.String())
-	}
+	finishCLIZsh(t, command, input, stderr)
 
 	time.Sleep(100 * time.Millisecond)
 	records = waitCLIRecords(t, f, len(trackedCommands))
@@ -87,6 +90,34 @@ func TestCLIZshListenerRefreshesOpenShellAndMatchesCommands(t *testing.T) {
 	}
 	for _, record := range records {
 		assertCLIZshRecordedLaunchAttempt(t, record)
+	}
+}
+
+func TestCLIZshScanDoesNotReviveUninstalledListener(t *testing.T) {
+	f := newCLIFixture(t)
+	writeCLIFile(t, filepath.Join(f.managed, "listener-tool"), "#!/bin/sh\nexit 17\n", 0o700)
+	f.setup(t)
+	command, input, output, stderr := startCLIZsh(t, f)
+	writeZshInput(t, input, "listener-tool || true\nprint -r -- DIU_'BEFORE_UNINSTALL'\n")
+	waitCLIZshOutput(t, output, "DIU_BEFORE_UNINSTALL")
+	waitCLIRecords(t, f, 1)
+	assertCLIExit(t, f.cli(t, "uninstall"), 0)
+	assertCLIExit(t, f.cli(t, "scan"), 0)
+	assertCLIMissing(t, filepath.Join(f.config.Daemon.DataDir, "shell-integration.zsh"))
+	writeZshInput(t, input, "listener-tool || true\nprint -r -- DIU_'AFTER_UNINSTALL'\n")
+	waitCLIZshOutput(t, output, "DIU_AFTER_UNINSTALL")
+	finishCLIZsh(t, command, input, stderr)
+	if records := waitCLIRecords(t, f, 1); len(records) != 1 {
+		t.Fatalf("uninstalled listener recorded launches: %#v", records)
+	}
+}
+
+func finishCLIZsh(t *testing.T, command *exec.Cmd, input io.WriteCloser, stderr *bytes.Buffer) {
+	t.Helper()
+	writeZshInput(t, input, "exit\n")
+	_ = input.Close()
+	if err := command.Wait(); err != nil {
+		t.Fatalf("interactive zsh failed: %v; stderr=%s", err, stderr.String())
 	}
 }
 
