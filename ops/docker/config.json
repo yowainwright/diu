@@ -9,10 +9,6 @@
   },
   "monitoring": {
     "enabled_tools": [],
-    "process": {
-      "wrapper_dir": "/var/lib/diu/wrappers",
-      "auto_install_wrappers": false
-    },
     "filesystem": {
       "watch_paths": {}
     }

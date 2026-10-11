@@ -5,6 +5,7 @@ package e2e
 import (
 	"encoding/json"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/yowainwright/diu/internal/core"
@@ -25,12 +26,21 @@ func TestCLIZshListenerRecordsSubmittedCommand(t *testing.T) {
 	f := newCLIFixture(t)
 	writeCLIFile(t, filepath.Join(f.managed, "listener-tool"), "#!/bin/sh\nexit 17\n", 0o700)
 	f.setup(t)
-	pty := f.command(t, "script", "-q", "-e", "-c", "zsh -i", "/dev/null")
-	result := runCLICommand(t, pty, "listener-tool || true\nexit\n")
-	assertCLIExit(t, result, 0)
+	integration := readCLIFile(t, filepath.Join(f.config.Daemon.DataDir, "shell-integration.zsh"))
+	if !strings.Contains(integration, "_DIU_TOOL_MAP+=('listener-tool'") {
+		t.Fatal("setup did not include listener-tool in the executable map")
+	}
+	command, input, output, stderr := startCLIZsh(t, f)
+	writeZshInput(t, input, "listener-tool || true\nprint -r -- DIU_RECORDED\n")
+	waitCLIZshOutput(t, output, "DIU_RECORDED")
 	records := waitCLIRecords(t, f, 1)
 	assertCLIZshRecordedLaunchAttempt(t, records[0])
 	assertCLIZshRecordedPackageUse(t, f)
+	writeZshInput(t, input, "exit\n")
+	_ = input.Close()
+	if err := command.Wait(); err != nil {
+		t.Fatalf("interactive zsh failed: %v; stderr=%s", err, stderr.String())
+	}
 }
 
 func submitCLIBackgroundLaunch(t *testing.T, f *cliFixture) cliResult {
@@ -65,6 +75,9 @@ func assertCLIRecordedLaunchAttempt(t *testing.T, record core.ExecutionRecord) {
 func assertCLIZshRecordedLaunchAttempt(t *testing.T, record core.ExecutionRecord) {
 	t.Helper()
 	assertCLIRecordedLaunchIdentity(t, record, core.ToolHomebrew, "listener-tool")
+	if record.Timestamp.IsZero() {
+		t.Fatal("zsh launch timestamp is missing")
+	}
 	assertCLIRecordedExecutable(t, record, "listener-tool")
 }
 

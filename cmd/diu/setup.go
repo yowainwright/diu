@@ -24,10 +24,6 @@ func setupProject(cmd *command, args []string) error {
 }
 
 func runSetupProject(activity *dx.Activity) error {
-	legacyArtifacts, err := loadLegacyShellArtifacts()
-	if err != nil {
-		return err
-	}
 	config, err := loadSetupConfig()
 	if err != nil {
 		return err
@@ -36,11 +32,8 @@ func runSetupProject(activity *dx.Activity) error {
 	if err != nil {
 		return err
 	}
-	err = configureSetupProject(config, activity)
-	if err == nil {
-		err = removeLegacyShellArtifacts(legacyArtifacts)
-	}
-	return restoreRecorderAfterSetupFailure(config, wasRunning, err)
+	setupErr := configureSetupProject(config, activity)
+	return restoreRecorderAfterSetupFailure(config, wasRunning, setupErr)
 }
 
 func waitForSetupDaemonExit(config *core.Config, pid int, pidErr error) error {
@@ -115,17 +108,13 @@ func initializeSetupStorage(config *core.Config) error {
 func uninstallProject(cmd *command, args []string) error {
 	activity := cliOutput().StartActivity("Removing DIU setup")
 	defer activity.Stop()
-	legacyArtifacts, legacyErr := loadLegacyShellArtifacts()
 	config, err := core.LoadConfig("")
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
 	cleanupErr := uninstallBackgroundTracking()
 	shellErr := removeZshShellIntegration(config)
-	if legacyErr == nil {
-		legacyErr = removeLegacyShellArtifacts(legacyArtifacts)
-	}
-	if err := errors.Join(cleanupErr, shellErr, legacyErr); err != nil {
+	if err := errors.Join(cleanupErr, shellErr); err != nil {
 		return err
 	}
 	activity.Success("DIU setup removed; configuration and usage data preserved")

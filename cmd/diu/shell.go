@@ -19,102 +19,136 @@ const (
 	zshIntegrationFileName        = "shell-integration.zsh"
 )
 
-const zshPreexecHook = `_diu_preexec() {
-    local submitted="$3" word tool package executable diu_binary command_position=1 skip_redirection_target=0 loop_header=0 case_header=0 case_pattern=0 exec_prefix=0 skip_exec_argument=0
+const zshPreexecHook = `_diu_load_maps() {
     if [[ ! -r "$_DIU_INTEGRATION_FILE" ]]; then
         add-zsh-hook -d preexec _diu_preexec 2>/dev/null || true
         unset _DIU_TOOL_MAP _DIU_PACKAGE_MAP _DIU_EXECUTABLE_MAP
-        return 0
+        return 1
     fi
     typeset -gi _DIU_IN_PREEXEC=1
     source "$_DIU_INTEGRATION_FILE"
     typeset -gi _DIU_IN_PREEXEC=0
+}
+_diu_skip_pending_word() {
+    if (( skip_exec_argument )); then skip_exec_argument=0; return 0; fi
+    if (( skip_prefix_argument )); then skip_prefix_argument=0; return 0; fi
+    if (( skip_redirection_target )); then skip_redirection_target=0; return 0; fi
+    return 1
+}
+_diu_skip_redirection() {
+    local word="$1" operator="${1#${1%%[!0-9]*}}"
+    case "$word" in
+        '>'|'>>'|'<'|'<<'|'<<<'|'<<-'|'<&'|'>&'|'<>'|'&>'|'&>>') skip_redirection_target=1; return 0 ;;
+    esac
+    if [[ "$word" == '&>'* || "$word" == '&>>'* || "$operator" == '>'* || "$operator" == '<'* ]]; then
+        case "$operator" in
+            '>'|'>>'|'<'|'<<'|'<<<'|'<<-'|'<&'|'>&'|'<>' ) skip_redirection_target=1 ;;
+        esac
+        return 0
+    fi
+    return 1
+}
+_diu_skip_control_header() {
+    if (( loop_header )); then
+        if [[ "$1" == do ]]; then loop_header=0; command_position=1; fi
+        return 0
+    fi
+    if (( case_pattern )); then
+        if [[ "$1" == ')' ]]; then case_pattern=0; command_position=1; fi
+        return 0
+    fi
+    if (( case_header )); then
+        if [[ "$1" == in ]]; then case_header=0; case_pattern=1; fi
+        return 0
+    fi
+    return 1
+}
+_diu_skip_reserved_word() {
+    case "$1" in
+        ';'|'&&'|'||'|'|'|'|&'|'&'|'('|')'|';;'|';&'|';;&') command_position=1; command_prefix=""; command_lookup=0; exec_prefix=0; return 0 ;;
+    esac
+    (( command_position )) || return 1
+    case "$1" in
+        command|builtin|noglob|nocorrect|time|env|sudo) command_prefix="$1"; return 0 ;;
+        case) case_header=1; command_position=0; return 0 ;;
+        for|select) loop_header=1; command_position=0; return 0 ;;
+        in|if|then|elif|else|while|until|do|!|coproc|'{') return 0 ;;
+        fi|done|esac|'}') command_position=0; return 0 ;;
+    esac
+    return 1
+}
+_diu_skip_prefix_option() {
+    (( command_position )) && [[ -n "$command_prefix" ]] || return 1
+    if [[ "$1" == -- ]]; then command_prefix=""; return 0; fi
+    case "$command_prefix:$1" in
+        env:-u|env:--unset|sudo:-u|sudo:--user) skip_prefix_argument=1; return 0 ;;
+        command:-*v*|command:-*V*) command_lookup=1; return 0 ;;
+        command:-*|env:-*|sudo:-*|builtin:-*) return 0 ;;
+    esac
+    return 1
+}
+_diu_skip_exec_option() {
+    case "$1" in
+        exec) if (( command_position )); then exec_prefix=1; return 0; fi ;;
+        --) if (( exec_prefix )); then exec_prefix=0; return 0; fi ;;
+    esac
+    if (( exec_prefix )) && [[ "$1" == -* ]]; then
+        [[ "$1" == *a* ]] && skip_exec_argument=1
+        return 0
+    fi
+    return 1
+}
+_diu_emit_record() {
+    local timestamp_json=""
+    [[ -n "$timestamp" ]] && timestamp_json=",\"timestamp\":\"$timestamp\""
+    printf '{"kind":"launch_attempt","tool":%s,"command":%s%s,"packages_affected":[%s],"metadata":{"executable":%s}}\n' \
+        "$1" "$3" "$timestamp_json" "$2" "$3" |
+        "$diu_binary" record --background >/dev/null 2>&1 &!
+}
+_diu_record_command() {
+    (( command_position )) && [[ "$1" != *=* ]] || return 1
+    local word="${1:t}" tool package executable
+    command_position=0
+    exec_prefix=0
+    if [[ "$command_prefix" == builtin ]] || (( command_lookup )); then
+        command_prefix=""
+        command_lookup=0
+        return 0
+    fi
+    command_prefix=""
+    tool="${_DIU_TOOL_MAP[$word]-}"
+    [[ -n "$tool" ]] || return 0
+    package="${_DIU_PACKAGE_MAP[$word]}"
+    executable="${_DIU_EXECUTABLE_MAP[$word]}"
+    _diu_emit_record "$tool" "$package" "$executable"
+}
+_diu_parse_submitted() {
+    local word
+    for word in ${(z)submitted}; do
+        _diu_skip_pending_word "$word" && continue
+        _diu_skip_redirection "$word" && continue
+        _diu_skip_control_header "$word" && continue
+        _diu_skip_reserved_word "$word" && continue
+        _diu_skip_prefix_option "$word" && continue
+        _diu_skip_exec_option "$word" && continue
+        _diu_record_command "$word"
+    done
+}
+_diu_capture_timestamp() {
+    zmodload zsh/datetime 2>/dev/null || return 1
+    local -a now=($epochtime)
+    local formatted
+    TZ=UTC0 strftime -s formatted '%Y-%m-%dT%H:%M:%S.%3.Z' "$now[1]" "$now[2]" || return 1
+    timestamp="$formatted"
+}
+_diu_preexec() {
+    local submitted="$3" diu_binary timestamp
+    _diu_load_maps || return 0
     diu_binary="${commands[diu]-}"
     [[ -x "$diu_binary" ]] || return 0
-    for word in ${(z)submitted}; do
-        if (( skip_exec_argument )); then
-            skip_exec_argument=0
-            continue
-        fi
-        if (( skip_redirection_target )); then
-            skip_redirection_target=0
-            continue
-        fi
-        case "$word" in
-            '>'|'>>'|'<'|'<<'|'<<<'|'<<-'|'<&'|'>&'|'<>'|'&>'|'&>>') skip_redirection_target=1; continue ;;
-        esac
-        local operator="${word#${word%%[!0-9]*}}"
-        if [[ "$word" == '&>'* || "$word" == '&>>'* || "$operator" == '>'* || "$operator" == '<'* ]]; then
-            [[ "$operator" == '>' || "$operator" == '>>' || "$operator" == '<' || "$operator" == '<<' || "$operator" == '<<<' || "$operator" == '<<-' || "$operator" == '<&' || "$operator" == '>&' || "$operator" == '<>' ]] && skip_redirection_target=1
-            continue
-        fi
-        if (( loop_header )); then
-            if [[ "$word" == do ]]; then
-                loop_header=0
-                command_position=1
-            fi
-            continue
-        fi
-        if (( case_pattern )); then
-            if [[ "$word" == ')' ]]; then
-                case_pattern=0
-                command_position=1
-            fi
-            continue
-        fi
-        if (( case_header )); then
-            if [[ "$word" == in ]]; then
-                case_header=0
-                case_pattern=1
-            fi
-            continue
-        fi
-        case "$word" in
-            case) case_header=1; command_position=0; continue ;;
-            for|select) loop_header=1; command_position=0; continue ;;
-            in) continue ;;
-            if|then|elif|else|while|until|do|!|coproc) command_position=1; continue ;;
-            fi|done|esac) command_position=0; continue ;;
-            '{') command_position=1; continue ;;
-            '}') command_position=0; continue ;;
-            ';'|'&&'|'||'|'|'|'|&'|'&'|'('|')') command_position=1; exec_prefix=0; continue ;;
-        esac
-        case "$word" in
-            exec)
-                if (( command_position )); then
-                    exec_prefix=1
-                    continue
-                fi
-                ;;
-            command|builtin|noglob|nocorrect|time) continue ;;
-            --)
-                if (( exec_prefix )); then
-                    exec_prefix=0
-                    continue
-                fi
-                ;;
-        esac
-        if (( exec_prefix )) && [[ "$word" == -* ]]; then
-            [[ "$word" == *a* ]] && skip_exec_argument=1
-            continue
-        fi
-        if [[ "$word" == *=* ]]; then
-            continue
-        fi
-        if (( ! command_position )); then
-            continue
-        fi
-        command_position=0
-        exec_prefix=0
-        word="${word:t}"
-        tool="${_DIU_TOOL_MAP[$word]-}"
-        [[ -n "$tool" ]] || continue
-        package="${_DIU_PACKAGE_MAP[$word]}"
-        executable="${_DIU_EXECUTABLE_MAP[$word]}"
-        printf '{"kind":"launch_attempt","tool":%s,"command":%s,"packages_affected":[%s],"metadata":{"executable":%s}}\n' \
-            "$tool" "$executable" "$package" "$executable" |
-            "$diu_binary" record --background >/dev/null 2>&1 &!
-    done
+    _diu_capture_timestamp || timestamp=""
+    local command_position=1 command_prefix="" command_lookup=0 skip_prefix_argument=0 skip_redirection_target=0 loop_header=0 case_header=0 case_pattern=0 exec_prefix=0 skip_exec_argument=0
+    _diu_parse_submitted
 }
 if (( ! _DIU_IN_PREEXEC )); then
     autoload -Uz add-zsh-hook
@@ -141,7 +175,42 @@ func refreshZshShellIntegration(config *core.Config) error {
 	if err != nil {
 		return err
 	}
+	if err := requireGeneratedZshIntegration(path); err != nil {
+		return err
+	}
 	return safefs.WriteFileAtomic(path, []byte(contents), core.PrivateFileMode)
+}
+
+func requireGeneratedZshIntegration(path string) error {
+	info, err := safefs.Lstat(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	return validateGeneratedZshIntegration(path, info)
+}
+
+func validateGeneratedZshIntegration(path string, info os.FileInfo) error {
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("refusing to replace non-regular zsh integration file: %s", path)
+	}
+	contents, err := safefs.ReadFile(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !isGeneratedZshIntegration(contents) {
+		return fmt.Errorf("refusing to replace unowned zsh integration file: %s", path)
+	}
+	return nil
+}
+
+func isGeneratedZshIntegration(contents []byte) bool {
+	return strings.HasPrefix(string(contents), zshIntegrationGeneratedMarker+"\n")
 }
 
 func zshIntegrationPath(config *core.Config) string {
@@ -412,7 +481,7 @@ func removeGeneratedZshIntegration(config *core.Config) error {
 	if err != nil {
 		return err
 	}
-	if !strings.HasPrefix(string(contents), zshIntegrationGeneratedMarker+"\n") {
+	if !isGeneratedZshIntegration(contents) {
 		return nil
 	}
 	return os.Remove(path)

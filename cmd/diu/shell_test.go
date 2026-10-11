@@ -152,6 +152,19 @@ func TestRemoveGeneratedZshIntegrationPreservesUnownedFile(t *testing.T) {
 	assertShellIntegrationMissing(t, path)
 }
 
+func TestRefreshZshShellIntegrationPreservesUnownedFile(t *testing.T) {
+	config := core.DefaultConfig()
+	config.Daemon.DataDir = t.TempDir()
+	path := zshIntegrationPath(config)
+	if err := os.WriteFile(path, []byte("user content\n"), core.PrivateFileMode); err != nil {
+		t.Fatal(err)
+	}
+	if err := refreshZshShellIntegration(config); err == nil {
+		t.Fatal("refreshZshShellIntegration replaced an unowned file")
+	}
+	assertFileContents(t, path, "user content\n")
+}
+
 func assertFileContents(t *testing.T, path, expected string) {
 	t.Helper()
 	contents, err := os.ReadFile(path)

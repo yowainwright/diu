@@ -18,7 +18,7 @@ If private reporting is unavailable, open a minimal public issue asking for a se
 
 Security-sensitive areas include:
 
-- wrapper generation and shell integration
+- zsh launch tracking and shell integration
 - command execution and uninstall flows
 - JSON storage file handling
 - Unix socket ingestion

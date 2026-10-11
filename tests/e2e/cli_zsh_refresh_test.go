@@ -19,18 +19,23 @@ func TestCLIZshListenerRefreshesOpenShellAndMatchesCommands(t *testing.T) {
 	f := newCLIFixture(t)
 	f.setup(t)
 	command, input, output, stderr := startCLIZsh(t, f)
-	writeZshInput(t, input, "print -r -- DIU_READY\n")
-	waitCLIZshOutput(t, output, "DIU_READY")
 
 	if err := os.Remove(filepath.Join(f.managed, "probe")); err != nil {
 		t.Fatal(err)
 	}
 	writeCLIFile(t, filepath.Join(f.managed, "listener-tool"), "#!/bin/sh\nexit 17\n", 0o700)
 	assertCLIExit(t, f.cli(t, "scan"), 0)
+	writeCLIFile(t, filepath.Join(f.managed, "sudo"), "#!/bin/sh\nif [ \"$1\" = \"-u\" ]; then shift 2; fi\nexec \"$@\"\n", 0o700)
 
 	untrackedCommands := strings.Join([]string{
 		"echo listener-tool",
+		"echo if listener-tool",
+		"echo else listener-tool",
 		"cat < /dev/null > listener-tool",
+		"builtin listener-tool",
+		"command -v listener-tool",
+		"command -V listener-tool",
+		"command -pv listener-tool",
 		"probe || true",
 	}, "\n") + "\nprint -r -- DIU_'UNTRACKED_DONE'\n"
 	writeZshInput(t, input, untrackedCommands)
@@ -41,11 +46,18 @@ func TestCLIZshListenerRefreshesOpenShellAndMatchesCommands(t *testing.T) {
 	}
 
 	trackedCommands := []string{
+		"listener-tool || true",
 		"true | listener-tool || true",
 		"if listener-tool; then true; fi",
 		"(exec -a custom-name listener-tool || true)",
 		"{ listener-tool; }",
 		"echo exec -a; listener-tool || true",
+		"echo case; listener-tool || true",
+		"echo for; listener-tool || true",
+		"command -p " + filepath.Join(f.managed, "listener-tool") + " || true",
+		"env -i PATH=" + f.basePath() + " DIU_TEST_PREFIX=1 listener-tool || true",
+		"sudo -u nobody listener-tool || true",
+		filepath.Join(f.managed, "listener-tool") + " || true",
 	}
 	for index, trackedCommand := range trackedCommands {
 		writeZshInput(t, input, trackedCommand+"\nprint -r -- DIU_'TRACKED_DONE'\n")
@@ -61,12 +73,13 @@ func TestCLIZshListenerRefreshesOpenShellAndMatchesCommands(t *testing.T) {
 		t.Fatalf("interactive zsh failed: %v; stderr=%s", err, stderr.String())
 	}
 
-	records = waitCLIRecords(t, f, 5)
-	if len(records) != 5 {
-		t.Fatalf("record count = %d, want the pipeline, if, exec -a, brace-group, and later command after an argument named exec: %#v", len(records), records)
+	time.Sleep(100 * time.Millisecond)
+	records = waitCLIRecords(t, f, len(trackedCommands))
+	if len(records) != len(trackedCommands) {
+		t.Fatalf("record count = %d, want %d tracked launches and no argument matches: %#v", len(records), len(trackedCommands), records)
 	}
 	for _, record := range records {
-		assertCLIRecordedLaunchIdentity(t, record, "homebrew", "listener-tool")
+		assertCLIZshRecordedLaunchAttempt(t, record)
 	}
 }
 
@@ -99,6 +112,8 @@ func startCLIZsh(t *testing.T, f *cliFixture) (*exec.Cmd, io.WriteCloser, <-chan
 		}
 		close(output)
 	}()
+	writeZshInput(t, input, "print -r -- DIU_READY_$((1+1))\n")
+	waitCLIZshOutput(t, output, "DIU_READY_2")
 	return command, input, output, stderr
 }
 
