@@ -351,7 +351,6 @@ func initializedUVMonitor(t *testing.T) *UVMonitor {
 
 func pythonProcessConfig() *core.Config {
 	config := core.DefaultConfig()
-	config.Monitoring.Process.ShouldAutoInstallWrappers = false
 	return config
 }
 

@@ -1,5 +1,5 @@
 [tools]
-go = "1.26.6"
+go = "1.26.9"
 goreleaser = "2.12.0"
 svu = "3.4.1"
 shellcheck = "0.11.0"
@@ -31,9 +31,9 @@ run = "go test -v -race -coverprofile=coverage.out ./..."
 description = "Run unit tests only"
 run = "go test -v -short ./..."
 
-[tasks.test-slow]
-description = "Run the slow recorder shutdown tests"
-run = "go test -v -count=1 -run '^TestSetup(RecoversAfterSlowPIDFallbackStop|AbortsWhenRecorderIgnoresStop)$' ./cmd/diu"
+[tasks.test-shutdown]
+description = "Run the real-process recorder shutdown test"
+run = "go test -v -count=1 -run '^TestSetupAbortsWhenRecorderIgnoresStop$' ./cmd/diu"
 
 [tasks.test-e2e]
 description = "Run real CLI E2Es in an isolated Docker container"

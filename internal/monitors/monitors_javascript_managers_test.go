@@ -196,7 +196,6 @@ func initializedPNPMMonitor(t *testing.T) *PNPMMonitor {
 	t.Helper()
 
 	config := core.DefaultConfig()
-	config.Monitoring.Process.ShouldAutoInstallWrappers = false
 	monitor := NewPNPMMonitor().(*PNPMMonitor)
 	if err := monitor.Initialize(config); err != nil {
 		t.Fatalf("Initialize failed: %v", err)
@@ -259,7 +258,6 @@ func initializedBunMonitor(t *testing.T) *BunMonitor {
 	t.Helper()
 
 	config := core.DefaultConfig()
-	config.Monitoring.Process.ShouldAutoInstallWrappers = false
 	monitor := NewBunMonitor().(*BunMonitor)
 	if err := monitor.Initialize(config); err != nil {
 		t.Fatalf("Initialize failed: %v", err)
@@ -319,7 +317,6 @@ exit 2
 `)
 
 	config := core.DefaultConfig()
-	config.Monitoring.Process.ShouldAutoInstallWrappers = false
 
 	monitor := NewBunMonitor().(*BunMonitor)
 	if err := monitor.Initialize(config); err != nil {

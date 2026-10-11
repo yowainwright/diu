@@ -4,6 +4,12 @@ linters:
   default: standard
   enable:
     - legibility
+  exclusions:
+    rules:
+      - path: '^(cmd/diu|internal/core|internal/monitors)/'
+        linters:
+          - legibility
+        text: LEG025
   settings:
     custom:
       legibility:

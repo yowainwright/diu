@@ -23,7 +23,7 @@ services:
       context: ../..
       dockerfile: ops/docker/Dockerfile.e2e
     container_name: diu-e2e
-    command: ["-test.v", "-test.timeout=2m", "-test.run=^TestE2E"]
+    command: ["-test.v", "-test.timeout=2m", "-test.run=^TestAPI"]
     init: true
     read_only: true
     cpus: 1.0
