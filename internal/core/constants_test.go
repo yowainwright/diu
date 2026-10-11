@@ -1,6 +1,9 @@
 package core
 
-import "testing"
+import (
+	"path/filepath"
+	"testing"
+)
 
 func TestResolveVersion(t *testing.T) {
 	tests := []struct {
@@ -31,5 +34,32 @@ func TestCurrentVersionUsesLinkedVersion(t *testing.T) {
 
 	if got := CurrentVersion(); got != "4.5.6" {
 		t.Fatalf("CurrentVersion() = %q, want 4.5.6", got)
+	}
+}
+
+func TestRecorderSlotPathUsesStableSlotName(t *testing.T) {
+	dir := t.TempDir()
+	want := filepath.Join(dir, "recorder-3.lock")
+	if got := RecorderSlotPath(dir, 3); got != want {
+		t.Fatalf("recorder slot path = %q, want %q", got, want)
+	}
+}
+
+func TestNormalizeToolName(t *testing.T) {
+	for input, expected := range normalizeToolNameCases() {
+		if got := NormalizeToolName(input); got != expected {
+			t.Errorf("NormalizeToolName(%q) = %q, want %q", input, got, expected)
+		}
+	}
+}
+
+func normalizeToolNameCases() map[string]string {
+	return map[string]string{
+		"brew":     ToolHomebrew,
+		"Homebrew": ToolHomebrew,
+		"golang":   ToolGo,
+		" npm ":    ToolNPM,
+		"pip3":     ToolPip,
+		"python3":  ToolPip,
 	}
 }
