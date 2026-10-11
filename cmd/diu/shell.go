@@ -196,11 +196,11 @@ func installZshShellIntegration(config *core.Config) error {
 	if err := writeZshShellIntegration(config); err != nil {
 		return err
 	}
-	homeDirs, err := currentShellHomeDirs()
+	homeDir, err := currentShellHomeDir()
 	if err != nil {
 		return fmt.Errorf("failed to find home directory: %w", err)
 	}
-	return installZshSourceBlock(filepath.Join(homeDirs[0], ".zshrc"), zshIntegrationPath(config))
+	return installZshSourceBlock(filepath.Join(homeDir, ".zshrc"), zshIntegrationPath(config))
 }
 
 func refreshZshShellIntegration(config *core.Config) error {
@@ -353,11 +353,11 @@ func upsertMarkedShellBlock(content, block string) (string, error) {
 }
 
 func removeZshSourceBlock() error {
-	homeDirs, err := currentShellHomeDirs()
+	homeDir, err := currentShellHomeDir()
 	if err != nil {
 		return fmt.Errorf("failed to find home directory: %w", err)
 	}
-	path := filepath.Join(homeDirs[0], ".zshrc")
+	path := filepath.Join(homeDir, ".zshrc")
 	return removeZshSourceBlockAt(path)
 }
 

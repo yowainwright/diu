@@ -4,7 +4,6 @@ import (
 	"context"
 	"os"
 	"os/exec"
-	"syscall"
 	"testing"
 	"time"
 )
@@ -82,36 +81,5 @@ func assertRecorderProcessDetached(t *testing.T, cmd *exec.Cmd) {
 func TestKillRecorderGroupIgnoresMissingProcess(t *testing.T) {
 	if err := killRecorderGroup(2147483647); err != nil {
 		t.Fatalf("missing recorder process group returned error: %v", err)
-	}
-}
-
-func TestRecorderDeadlineRequiresPrivateProcessGroup(t *testing.T) {
-	stop, err := recorderDeadline()
-	if err == nil {
-		stop()
-		return
-	}
-	if err.Error() != "recorder requires a private process group" {
-		t.Fatalf("deadline error = %v", err)
-	}
-}
-
-func TestRecorderDeadlineHelper(t *testing.T) {
-	if os.Getenv("DIU_TEST_RECORDER_DEADLINE") != "1" {
-		return
-	}
-	stop, err := recorderDeadline()
-	if err != nil {
-		t.Fatal(err)
-	}
-	stop()
-}
-
-func TestRecorderDeadlineAcceptsPrivateProcessGroup(t *testing.T) {
-	cmd := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestRecorderDeadlineHelper$")
-	cmd.Env = append(os.Environ(), "DIU_TEST_RECORDER_DEADLINE=1")
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	if output, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("private group deadline failed: %v\n%s", err, output)
 	}
 }

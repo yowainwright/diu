@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 
 	"github.com/yowainwright/diu/cmd/diu/record"
@@ -336,4 +337,17 @@ func exitStatus(err error) int {
 		return 1
 	}
 	return code
+}
+
+func runRootCommand(cmd *command, args []string) error {
+	if flagBool(cmd, "styleguide") {
+		renderStyleguide(commandStyleguideOutput(cmd))
+		return nil
+	}
+	if len(args) > 0 {
+		cmd.PrintErrorUsage()
+		return fmt.Errorf("unknown command: %s", args[0])
+	}
+	cmd.PrintUsage()
+	return nil
 }

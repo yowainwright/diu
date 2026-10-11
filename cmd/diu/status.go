@@ -46,7 +46,7 @@ func showStatus(cmd *command, args []string) error {
 }
 
 func collectUsageStatus(config *core.Config) usageStatus {
-	snapshot, storageErr := readLocalStorage(config.Storage.JSONFile)
+	snapshot, storageErr := storage.InspectJSONFile(config.Storage.JSONFile)
 	status := baseUsageStatus(config, snapshot.HasFile, storageErr)
 	status.ExecutionCount = snapshot.ExecutionCount
 	status.PackageCount = snapshot.PackageCount

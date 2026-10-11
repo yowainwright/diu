@@ -21,9 +21,7 @@ import (
 	"github.com/yowainwright/diu/internal/safefs"
 )
 
-type DaemonChecker func(config *core.Config) bool
-
-var defaultDaemonChecker DaemonChecker = daemon.IsRunning
+var defaultDaemonChecker = daemon.IsRunning
 var daemonStopRequester = daemon.RequestStop
 
 var daemonProcessStarter = func(execPath string, args []string, procAttr *syscall.ProcAttr) error {
@@ -31,14 +29,6 @@ var daemonProcessStarter = func(execPath string, args []string, procAttr *syscal
 		return err
 	}
 	return nil
-}
-
-func SetDaemonChecker(checker DaemonChecker) func() {
-	old := defaultDaemonChecker
-	defaultDaemonChecker = checker
-	return func() {
-		defaultDaemonChecker = old
-	}
 }
 
 func startDaemon(cmd *command, args []string) error {
