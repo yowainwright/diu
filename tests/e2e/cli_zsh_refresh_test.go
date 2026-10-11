@@ -39,6 +39,7 @@ func TestCLIZshListenerRefreshesOpenShellAndMatchesCommands(t *testing.T) {
 		"command -pv listener-tool",
 		"sudo -l listener-tool || true",
 		"case x in x) true ;; listener-tool) true ;; esac",
+		"case x in x ) true ;; listener-tool ) true ;; esac",
 		"probe || true",
 	}, "\n") + "\nprint -r -- DIU_'UNTRACKED_DONE'\n"
 	writeZshInput(t, input, untrackedCommands)
@@ -57,6 +58,8 @@ func TestCLIZshListenerRefreshesOpenShellAndMatchesCommands(t *testing.T) {
 		"echo exec -a; listener-tool || true",
 		"echo case; listener-tool || true",
 		"echo for; listener-tool || true",
+		"case x in x) listener-tool || true ;; esac",
+		"case x in x ) listener-tool || true ;; esac",
 		"command -p " + filepath.Join(f.managed, "listener-tool") + " || true",
 		"env -i PATH=" + f.basePath() + " DIU_TEST_PREFIX=1 listener-tool || true",
 		"sudo -u nobody listener-tool || true",
