@@ -31,6 +31,8 @@ When re-running setup, DIU stops the recorder before updating storage. If shutdo
 
 DIU matches executable names in command lines submitted at an interactive zsh prompt. A match records a launch attempt, even if shell control flow later skips that command. Arguments, exit status, duration, working directory, and environment are not recorded.
 
+Each shell allows up to four recorder handoffs at a time. The recorder also limits active recording jobs to four per data directory. Excess attempts may be dropped to keep your commands responsive.
+
 DIU does not observe commands inside scripts, launches from other applications, or commands entered in other shells. Treat missing history as “not seen,” not proof that a tool was never used.
 
 ## Get Insights
@@ -59,6 +61,8 @@ DIU refreshes its inventory and executable map in the background to find install
 
 Rerun `diu setup` after upgrading DIU, moving its binary, or changing package-manager paths. Setup refreshes the zsh listener and its executable map; it does not change command resolution through `PATH`.
 
+`diu uninstall` removes the listener. Running `diu scan` afterward updates inventory without enabling tracking; run `diu setup` to enable it again.
+
 <!-- supported package managers from DefaultEnabledTools and discoverExecutables -->
 ## Supported Managers
 
@@ -69,10 +73,7 @@ Rerun `diu setup` after upgrading DIU, moving its binary, or changing package-ma
 | Go | Go | Binaries in `GOBIN` or `GOPATH/bin` and matched launch attempts. |
 | Python | pip, uv, Poetry | pip packages, uv tools, and matched executable launch attempts. |
 
-UV inventory scans use `uv tool list`. Project commands such as `uv add`, `uv remove`, and `uv pip` remain in execution history without changing tool inventory.
-
-For `uv tool run`, DIU attributes usage to the command's package, or the package specified by `--from`. Arguments passed to the tool are not recorded as package names.
-
+UV inventory scans use `uv tool list`. DIU tracks matched executables installed by uv when you launch them directly. Commands through `uv`, including `uv add`, `uv pip`, and `uv tool run --from`, do not produce launch records.
 
 ## License
 

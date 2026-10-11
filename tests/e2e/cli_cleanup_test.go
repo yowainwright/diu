@@ -26,6 +26,8 @@ func TestCLIUninstallRemovesZshListenerAndPreservesHistory(t *testing.T) {
 		assertCLIMissing(t, filepath.Join(f.config.Daemon.DataDir, "shell-integration.zsh"))
 		assertCLIFile(t, historyPath, history)
 		assertCLIFile(t, filepath.Join(f.home, "personal.txt"), "retain this\n")
+		assertCLIExit(t, f.cli(t, "scan"), 0)
+		assertCLIMissing(t, filepath.Join(f.config.Daemon.DataDir, "shell-integration.zsh"))
 	}
 }
 

@@ -122,15 +122,26 @@ _diu_skip_exec_option() {
     return 1
 }
 _diu_emit_record() {
+    (( ${#_DIU_RECORDER_PIDS} < _DIU_RECORDER_LIMIT )) || return 0
     local timestamp_json=""
     [[ -n "$timestamp" ]] && timestamp_json=",\"timestamp\":\"$timestamp\""
     printf '{"kind":"launch_attempt","tool":%s,"command":%s%s,"packages_affected":[%s],"metadata":{"executable":%s}}\n' \
         "$1" "$3" "$timestamp_json" "$2" "$3" |
         "$diu_binary" record --background >/dev/null 2>&1 &!
+    _DIU_RECORDER_PIDS+=("$!")
+}
+_diu_prune_recorders() {
+    local pid
+    local -a active=()
+    for pid in "${_DIU_RECORDER_PIDS[@]}"; do
+        builtin kill -0 "$pid" 2>/dev/null && active+=("$pid")
+    done
+    _DIU_RECORDER_PIDS=("${active[@]}")
 }
 _diu_record_command() {
     (( command_position )) && [[ "$1" != *=* ]] || return 1
-    local word="${1:t}" tool package executable
+    local word="${(Q)1}" tool package executable
+    word="${word:t}"
     command_position=0
     exec_prefix=0
     if [[ "$command_prefix" == builtin ]] || (( command_lookup )); then
@@ -169,6 +180,7 @@ _diu_preexec() {
     _diu_load_maps || return 0
     diu_binary="${commands[diu]-}"
     [[ -x "$diu_binary" ]] || return 0
+    _diu_prune_recorders
     _diu_capture_timestamp || timestamp=""
     local command_position=1 command_prefix="" command_lookup=0 skip_prefix_argument=0 skip_redirection_target=0 loop_header=0 case_header=0 case_pattern=0 case_depth=0 exec_prefix=0 skip_exec_argument=0
     _diu_parse_submitted
@@ -181,7 +193,7 @@ fi
 `
 
 func installZshShellIntegration(config *core.Config) error {
-	if err := refreshZshShellIntegration(config); err != nil {
+	if err := writeZshShellIntegration(config); err != nil {
 		return err
 	}
 	homeDirs, err := currentShellHomeDirs()
@@ -192,6 +204,17 @@ func installZshShellIntegration(config *core.Config) error {
 }
 
 func refreshZshShellIntegration(config *core.Config) error {
+	_, err := safefs.Lstat(zshIntegrationPath(config))
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	return writeZshShellIntegration(config)
+}
+
+func writeZshShellIntegration(config *core.Config) error {
 	targets := discoverExecutables(config)
 	path := zshIntegrationPath(config)
 	contents, err := renderZshIntegration(targets, path)
@@ -245,6 +268,8 @@ func renderZshIntegration(targets []executableTarget, integrationPath string) (s
 	source.WriteString(zshIntegrationGeneratedMarker + "\n")
 	source.WriteString("typeset -g _DIU_INTEGRATION_FILE=" + zshSingleQuote(integrationPath) + "\n")
 	source.WriteString("(( ${+_DIU_IN_PREEXEC} )) || typeset -gi _DIU_IN_PREEXEC=0\n")
+	source.WriteString("(( ${+_DIU_RECORDER_PIDS} )) || typeset -ga _DIU_RECORDER_PIDS=()\n")
+	fmt.Fprintf(&source, "typeset -gi _DIU_RECORDER_LIMIT=%d\n", core.MaxRecorderWorkers)
 	source.WriteString("typeset -gA _DIU_TOOL_MAP _DIU_PACKAGE_MAP _DIU_EXECUTABLE_MAP\n")
 	source.WriteString("_DIU_TOOL_MAP=() _DIU_PACKAGE_MAP=() _DIU_EXECUTABLE_MAP=()\n")
 	for _, target := range targets {

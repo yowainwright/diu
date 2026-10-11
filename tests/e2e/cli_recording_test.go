@@ -36,11 +36,46 @@ func TestCLIZshListenerRecordsSubmittedCommand(t *testing.T) {
 	records := waitCLIRecords(t, f, 1)
 	assertCLIZshRecordedLaunchAttempt(t, records[0])
 	assertCLIZshRecordedPackageUse(t, f)
-	writeZshInput(t, input, "exit\n")
-	_ = input.Close()
-	if err := command.Wait(); err != nil {
-		t.Fatalf("interactive zsh failed: %v; stderr=%s", err, stderr.String())
+	finishCLIZsh(t, command, input, stderr)
+}
+
+func TestCLIZshTracksUVExecutablesWithoutProjectArguments(t *testing.T) {
+	f := uvCLIFixture(t)
+	f.setup(t)
+	command, input, output, stderr := startCLIZsh(t, f)
+	commands := `uv add listener-tool
+uv remove listener-tool
+uv pip install listener-tool
+uv tool run --from listener-tool listener-tool
+`
+	writeZshInput(t, input, commands+"print -r -- DIU_'UV_COMMANDS_DONE'\n")
+	waitCLIZshOutput(t, output, "DIU_UV_COMMANDS_DONE")
+	assertCLINoRecordedEvents(t, f)
+	writeZshInput(t, input, "listener-tool\nprint -r -- DIU_'UV_EXECUTABLE_DONE'\n")
+	waitCLIZshOutput(t, output, "DIU_UV_EXECUTABLE_DONE")
+	records := waitCLIRecords(t, f, 1)
+	if len(records) != 1 {
+		t.Fatalf("uv project arguments produced launches: %#v", records)
 	}
+	assertCLIRecordedLaunchIdentity(t, records[0], core.ToolUV, "listener-tool")
+	finishCLIZsh(t, command, input, stderr)
+}
+
+func uvCLIFixture(t *testing.T) *cliFixture {
+	t.Helper()
+	f := newCLIFixture(t)
+	f.config.Monitoring.EnabledTools = []string{core.ToolUV}
+	paths := []string{f.managed}
+	f.config.Monitoring.Filesystem.WatchPaths = map[string][]string{core.ToolUV: paths}
+	writeCLIConfig(t, f)
+	writeCLIFile(t, filepath.Join(f.managed, "listener-tool"), "#!/bin/sh\nexit 0\n", 0o700)
+	uv := `#!/bin/sh
+if [ "$1 $2" = 'tool list' ]; then
+    printf 'listener-tool v1.0.0\n- listener-tool\n'
+fi
+`
+	writeCLIFile(t, filepath.Join(f.bin, "uv"), uv, 0o700)
+	return f
 }
 
 func submitCLIBackgroundLaunch(t *testing.T, f *cliFixture) cliResult {
