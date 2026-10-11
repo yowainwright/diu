@@ -157,7 +157,7 @@ func diagnosticAPIExposure(enabled bool, host string) string {
 }
 
 func inspectDiagnosticStorage(path string) (diagnosticStorage, error) {
-	snapshot, err := readLocalStorage(path)
+	snapshot, err := storage.InspectJSONFile(path)
 	if err != nil {
 		return diagnosticStorage{}, err
 	}

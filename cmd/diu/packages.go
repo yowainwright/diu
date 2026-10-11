@@ -2,16 +2,21 @@ package main
 
 import (
 	"bufio"
+	"cmp"
+	"context"
 	"encoding/csv"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/yowainwright/diu/internal/core"
 	"github.com/yowainwright/diu/internal/dx"
+	"github.com/yowainwright/diu/internal/safefs"
 	"github.com/yowainwright/diu/internal/storage"
 )
 
@@ -737,43 +742,7 @@ func runUninstall(pkg *core.PackageInfo) error {
 	if removesGoBinary(plan) {
 		return removeGoBinary(pkg)
 	}
-	return runPackageManagerUninstall(pkg)
-}
-
-func runPackageManagerUninstall(pkg *core.PackageInfo) error {
-	switch pkg.Tool {
-	case core.ToolHomebrew, homebrewCaskTool:
-		return runHomebrewPackageUninstall(pkg)
-	case core.ToolNPM, core.ToolPNPM, core.ToolBun:
-		return runJavaScriptPackageUninstall(pkg)
-	case core.ToolPip, core.ToolUV:
-		return runPythonPackageUninstall(pkg)
-	default:
-		return fmt.Errorf("uninstall is not supported for %s packages", pkg.Tool)
-	}
-}
-
-func runHomebrewPackageUninstall(pkg *core.PackageInfo) error {
-	isCask := pkg.Tool == homebrewCaskTool
-	return runHomebrewUninstall(pkg.Name, isCask)
-}
-
-func runJavaScriptPackageUninstall(pkg *core.PackageInfo) error {
-	switch pkg.Tool {
-	case core.ToolNPM:
-		return runNPMUninstall(pkg.Name)
-	case core.ToolPNPM:
-		return runPNPMUninstall(pkg.Name)
-	default:
-		return runBunUninstall(pkg.Name)
-	}
-}
-
-func runPythonPackageUninstall(pkg *core.PackageInfo) error {
-	if pkg.Tool == core.ToolPip {
-		return runPipUninstall(pkg.Name)
-	}
-	return runUVUninstall(pkg.Name)
+	return runCommand(plan[0], plan[1:]...)
 }
 
 func removesGoBinary(plan []string) bool {
@@ -812,4 +781,269 @@ func deletePackageStateError(deleteErr error, closeErr error) error {
 		return fmt.Errorf("failed to delete package state: %w; additionally failed to close storage: %v", deleteErr, closeErr)
 	}
 	return fmt.Errorf("failed to delete package state: %w", deleteErr)
+}
+
+const (
+	defaultListLimit             = 20
+	defaultPageSize              = 12
+	homebrewCommandName          = "brew"
+	npmCommandName               = "npm"
+	pnpmCommandName              = "pnpm"
+	bunCommandName               = "bun"
+	pipCommandName               = "pip"
+	pip3CommandName              = "pip3"
+	uvCommandName                = "uv"
+	homebrewCaskTool             = core.ToolHomebrewCask
+	homebrewCaskFlag             = "--cask"
+	npmGlobalFlag                = "-g"
+	pipYesFlag                   = "-y"
+	uninstallSubcommand          = "uninstall"
+	removeSubcommand             = "remove"
+	actionQuit                   = "q"
+	actionNext                   = "n"
+	actionPrevious               = "p"
+	actionSearch                 = "/"
+	actionUninstall              = "u"
+	removeFilePlan               = "remove-file"
+	packageNameAllowedCharacters = "@._+-/"
+	packageIndexColumnWidth      = 3
+	packageToolColumnWidth       = 14
+	packageNameColumnWidth       = 34
+)
+
+func formatLastUsed(lastUsed time.Time) string {
+	if lastUsed.IsZero() {
+		return "never"
+	}
+	return lastUsed.Format("2006-01-02")
+}
+
+func validatePackageManagerName(name string) error {
+	if err := validatePackageNameShape(name); err != nil {
+		return err
+	}
+	return validatePackageNameCharacters(name)
+}
+
+func validatePackageNameShape(name string) error {
+	if strings.TrimSpace(name) == "" {
+		return fmt.Errorf("package name cannot be empty")
+	}
+	if strings.TrimSpace(name) != name {
+		return fmt.Errorf("package name cannot contain leading or trailing whitespace")
+	}
+	if strings.HasPrefix(name, "-") {
+		return fmt.Errorf("package name cannot start with a flag prefix: %s", name)
+	}
+	absoluteOrIncomplete := strings.HasPrefix(name, "/") || strings.HasSuffix(name, "/")
+	if absoluteOrIncomplete {
+		return fmt.Errorf("package name cannot be an absolute or incomplete path: %s", name)
+	}
+	unsafePath := strings.Contains(name, "..") || strings.Contains(name, "//")
+	if unsafePath {
+		return fmt.Errorf("package name contains an unsafe path segment: %s", name)
+	}
+	return nil
+}
+
+func validatePackageNameCharacters(name string) error {
+	hasAlnum := false
+	for _, char := range name {
+		if packageNameAlphaNumeric(char) {
+			hasAlnum = true
+			continue
+		}
+		if strings.ContainsRune(packageNameAllowedCharacters, char) {
+			continue
+		}
+		return fmt.Errorf("package name contains unsupported character %q", char)
+	}
+	if !hasAlnum {
+		return fmt.Errorf("package name must contain a letter or number")
+	}
+	return nil
+}
+
+func packageNameAlphaNumeric(char rune) bool {
+	isLower := char >= 'a' && char <= 'z'
+	isUpper := char >= 'A' && char <= 'Z'
+	isDigit := char >= '0' && char <= '9'
+	isAlnum := isLower || isUpper || isDigit
+	return isAlnum
+}
+
+func validateRemovableExecutablePath(path string) (string, error) {
+	if err := rejectEmptyExecutablePath(path); err != nil {
+		return "", err
+	}
+	if err := rejectParentPathSegments(path); err != nil {
+		return "", err
+	}
+	cleanPath, err := cleanAbsoluteExecutablePath(path)
+	if err != nil {
+		return "", err
+	}
+	if err := validateRemovableExecutableFile(cleanPath); err != nil {
+		return "", err
+	}
+	return cleanPath, nil
+}
+
+func validateRemovableExecutableFile(cleanPath string) error {
+	info, err := os.Stat(cleanPath)
+	if err != nil {
+		return fmt.Errorf("failed to inspect executable %s: %w", cleanPath, err)
+	}
+	if info.IsDir() {
+		return fmt.Errorf("refusing to remove directory: %s", cleanPath)
+	}
+	if info.Mode()&core.ExecutableModeMask == 0 {
+		return fmt.Errorf("refusing to remove non-executable file: %s", cleanPath)
+	}
+	return nil
+}
+
+func supportsUninstall(pkg *core.PackageInfo) bool {
+	switch pkg.Tool {
+	case core.ToolHomebrew, homebrewCaskTool, core.ToolNPM, core.ToolPNPM, core.ToolBun, core.ToolPip, core.ToolUV, core.ToolGo, core.ToolGoBinary:
+		return true
+	default:
+		return false
+	}
+}
+
+func runCommand(name string, args ...string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
+	defer cancel()
+	out := cliOutput()
+	runner := dx.NewRunner(out.Stdin(), out.Stderr(), out.Stderr())
+	if err := runner.Run(ctx, name, args...); err != nil {
+		return fmt.Errorf("uninstall failed: %w", err)
+	}
+	return nil
+}
+
+func removeGoBinary(pkg *core.PackageInfo) error {
+	binaryPath, err := validateRemovableExecutablePath(pkg.Path)
+	if err != nil {
+		return err
+	}
+	if pkg.Fingerprint == "" {
+		return fmt.Errorf("go binary %s has no scan fingerprint; run diu scan before uninstalling", pkg.Name)
+	}
+	currentFingerprint, err := safefs.SHA256(binaryPath)
+	if err != nil {
+		return fmt.Errorf("failed to fingerprint %s: %w", binaryPath, err)
+	}
+	if currentFingerprint != pkg.Fingerprint {
+		return fmt.Errorf("go binary %s changed since the last scan; refusing to remove %s", pkg.Name, binaryPath)
+	}
+	return removeGoBinaryPath(binaryPath)
+}
+
+func removeGoBinaryPath(binaryPath string) error {
+	if err := os.Remove(binaryPath); err != nil {
+		return fmt.Errorf("failed to remove %s: %w", binaryPath, err)
+	}
+	return nil
+}
+
+func uninstallPlan(pkg *core.PackageInfo) ([]string, error) {
+	switch pkg.Tool {
+	case core.ToolHomebrew, homebrewCaskTool:
+		return homebrewUninstallPlan(pkg)
+	case core.ToolNPM, core.ToolPNPM, core.ToolBun:
+		return javascriptUninstallPlan(pkg)
+	case core.ToolPip:
+		return pipUninstallPlan(pkg)
+	case core.ToolUV:
+		return namedPackageUninstallPlan(pkg, uvCommandName, "tool", uninstallSubcommand)
+	case core.ToolGo, core.ToolGoBinary:
+		return goBinaryUninstallPlan(pkg)
+	default:
+		return nil, fmt.Errorf("uninstall is not supported for %s packages", pkg.Tool)
+	}
+}
+
+func homebrewUninstallPlan(pkg *core.PackageInfo) ([]string, error) {
+	if pkg.Tool == homebrewCaskTool {
+		return namedPackageUninstallPlan(pkg, homebrewCommandName, uninstallSubcommand, homebrewCaskFlag)
+	}
+	return namedPackageUninstallPlan(pkg, homebrewCommandName, uninstallSubcommand)
+}
+
+func javascriptUninstallPlan(pkg *core.PackageInfo) ([]string, error) {
+	switch pkg.Tool {
+	case core.ToolNPM:
+		return namedPackageUninstallPlan(pkg, npmCommandName, uninstallSubcommand, npmGlobalFlag)
+	case core.ToolPNPM:
+		return namedPackageUninstallPlan(pkg, pnpmCommandName, removeSubcommand, npmGlobalFlag)
+	default:
+		return namedPackageUninstallPlan(pkg, bunCommandName, removeSubcommand, npmGlobalFlag)
+	}
+}
+
+func namedPackageUninstallPlan(pkg *core.PackageInfo, commandName string, args ...string) ([]string, error) {
+	if err := validatePackageManagerName(pkg.Name); err != nil {
+		return nil, err
+	}
+	plan := append([]string{commandName}, args...)
+	return append(plan, pkg.Name), nil
+}
+
+func pipUninstallPlan(pkg *core.PackageInfo) ([]string, error) {
+	if err := validatePackageManagerName(pkg.Name); err != nil {
+		return nil, err
+	}
+	commandName, err := firstExistingCommand(pip3CommandName, pipCommandName)
+	if err != nil {
+		return nil, fmt.Errorf("pip not found: %w", err)
+	}
+	return []string{commandName, uninstallSubcommand, pipYesFlag, pkg.Name}, nil
+}
+
+func goBinaryUninstallPlan(pkg *core.PackageInfo) ([]string, error) {
+	if pkg.Path == "" {
+		return nil, fmt.Errorf("go package %s has no executable path to remove", pkg.Name)
+	}
+	return []string{removeFilePlan}, nil
+}
+
+func printableUninstallPlan(pkg *core.PackageInfo, plan []string) []string {
+	if len(plan) != 1 {
+		return plan
+	}
+	if plan[0] != removeFilePlan {
+		return plan
+	}
+	return []string{"rm", pkg.Path}
+}
+
+func packageMatchesSearch(pkg *core.PackageInfo, search string) bool {
+	haystack := strings.ToLower(strings.Join([]string{
+		pkg.Name,
+		pkg.Tool,
+		pkg.Version,
+		pkg.Path,
+	}, " "))
+	return strings.Contains(haystack, search)
+}
+
+func packageUnusedSince(pkg *core.PackageInfo, cutoff time.Time) bool {
+	return pkg.LastUsed.IsZero() || pkg.LastUsed.Before(cutoff)
+}
+
+func sortPackages(packages []*core.PackageInfo) {
+	slices.SortFunc(packages, func(a, b *core.PackageInfo) int {
+		if order := cmp.Compare(b.UsageCount, a.UsageCount); order != 0 {
+			return order
+		}
+		if order := b.LastUsed.Compare(a.LastUsed); order != 0 {
+			return order
+		}
+		if order := strings.Compare(a.Tool, b.Tool); order != 0 {
+			return order
+		}
+		return strings.Compare(a.Name, b.Name)
+	})
 }

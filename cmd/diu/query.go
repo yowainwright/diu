@@ -13,7 +13,8 @@ import (
 	"github.com/yowainwright/diu/internal/storage"
 )
 
-type executionSummarizer interface {
+type statsStorage interface {
+	storage.Storage
 	SummarizeExecutions(storage.QueryOptions) (storage.ExecutionSummary, error)
 }
 
@@ -223,7 +224,7 @@ func validateStatsFlags(cmd *command) error {
 	return validateResultCount("top", flagInt(cmd, "top"))
 }
 
-func printStats(store storage.Storage, options statsCommandOptions) error {
+func printStats(store statsStorage, options statsCommandOptions) error {
 	report, err := collectStatsReport(store, options)
 	if err != nil {
 		return err
@@ -240,8 +241,8 @@ func printStats(store storage.Storage, options statsCommandOptions) error {
 	return nil
 }
 
-func collectStatsReport(store storage.Storage, options statsCommandOptions) (statsReport, error) {
-	summary, err := summarizeExecutions(store, options.query)
+func collectStatsReport(store statsStorage, options statsCommandOptions) (statsReport, error) {
+	summary, err := store.SummarizeExecutions(options.query)
 	if err != nil {
 		return statsReport{}, fmt.Errorf("failed to summarize executions: %w", err)
 	}
@@ -379,20 +380,4 @@ func printTopPackage(out *dx.Out, index int, pkg *core.PackageInfo) {
 		pkg.Tool,
 		pkg.UsageCount,
 	)
-}
-
-func summarizeExecutions(store storage.Storage, opts storage.QueryOptions) (storage.ExecutionSummary, error) {
-	if summarizer, ok := store.(executionSummarizer); ok {
-		return summarizer.SummarizeExecutions(opts)
-	}
-	executions, err := store.GetExecutions(opts)
-	if err != nil {
-		return storage.ExecutionSummary{}, err
-	}
-	toolCounts := make(map[string]int)
-	for _, execution := range executions {
-		toolCounts[execution.Tool]++
-	}
-	summary := storage.ExecutionSummary{Total: len(executions), ToolCounts: toolCounts}
-	return summary, nil
 }

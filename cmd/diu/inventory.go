@@ -6,6 +6,7 @@ import (
 
 	"github.com/yowainwright/diu/internal/core"
 	"github.com/yowainwright/diu/internal/dx"
+	"github.com/yowainwright/diu/internal/monitors"
 	"github.com/yowainwright/diu/internal/safefs"
 	"github.com/yowainwright/diu/internal/storage"
 )
@@ -17,7 +18,7 @@ type inventoryScan struct {
 
 type packageScanner struct {
 	config          *core.Config
-	store           storage.Storage
+	store           *storage.JSONStorage
 	activity        *dx.Activity
 	scan            *inventoryScan
 	existing        map[string]map[string]*core.PackageInfo
@@ -25,18 +26,6 @@ type packageScanner struct {
 	scannedPackages map[string]*core.PackageInfo
 	seenExecutables map[string]bool
 	total           int
-}
-
-type packageReconciler interface {
-	ReconcilePackages(map[string]map[string]struct{}, time.Time) error
-}
-
-type packageBatchUpdater interface {
-	UpdatePackages([]*core.PackageInfo) error
-}
-
-type packageScanApplier interface {
-	ApplyPackageScan([]*core.PackageInfo, map[string]map[string]struct{}, time.Time) error
 }
 
 func newInventoryScan() *inventoryScan {
@@ -92,7 +81,7 @@ func scanInventory(config *core.Config, activity *dx.Activity) (int, error) {
 	return scanner.total, err
 }
 
-func newPackageScanner(config *core.Config, store storage.Storage, activity *dx.Activity) (*packageScanner, error) {
+func newPackageScanner(config *core.Config, store *storage.JSONStorage, activity *dx.Activity) (*packageScanner, error) {
 	existing, err := store.AllPackages()
 	if err != nil {
 		return nil, fmt.Errorf("failed to read package inventory: %w", err)
@@ -179,12 +168,7 @@ func (s *packageScanner) prepareGoSignature(pkg *core.PackageInfo) {
 		return
 	}
 	err := populateGoBinarySignature(pkg)
-	if err == nil {
-		return
-	}
-	if s.activity != nil {
-		s.activity.Notice(dx.Warning, err.Error())
-	}
+	s.noticePackageScanError(err)
 }
 
 func (s *packageScanner) prepareGoFingerprint(pkg *core.PackageInfo) {
@@ -401,47 +385,47 @@ func addPackageToInventory(inventory map[string]map[string]*core.PackageInfo, pk
 	inventory[pkg.Tool][pkg.Name] = pkg
 }
 
-func updateScannedPackages(store storage.Storage, packages []*core.PackageInfo) error {
-	if len(packages) == 0 {
-		return nil
-	}
-	if batchStore, ok := store.(packageBatchUpdater); ok {
-		if err := batchStore.UpdatePackages(packages); err != nil {
-			return fmt.Errorf("failed to update package inventory: %w", err)
-		}
-		return nil
-	}
-	for _, pkg := range packages {
-		if err := store.UpdatePackage(pkg); err != nil {
-			return fmt.Errorf("failed to update package %s/%s: %w", pkg.Tool, pkg.Name, err)
-		}
-	}
-	return nil
-}
-
-func commitPackageScan(store storage.Storage, packages []*core.PackageInfo, scan *inventoryScan) error {
-	if applier, ok := store.(packageScanApplier); ok {
-		return applyPackageScan(applier, packages, scan)
-	}
-	if err := updateScannedPackages(store, packages); err != nil {
-		return err
-	}
-	if reconciler, ok := store.(packageReconciler); ok {
-		return reconcilePackageScan(reconciler, scan)
-	}
-	return nil
-}
-
-func applyPackageScan(applier packageScanApplier, packages []*core.PackageInfo, scan *inventoryScan) error {
-	if err := applier.ApplyPackageScan(packages, scan.seen, scan.startedAt); err != nil {
+func commitPackageScan(store *storage.JSONStorage, packages []*core.PackageInfo, scan *inventoryScan) error {
+	if err := store.ApplyPackageScan(packages, scan.seen, scan.startedAt); err != nil {
 		return fmt.Errorf("failed to apply package scan: %w", err)
 	}
 	return nil
 }
 
-func reconcilePackageScan(reconciler packageReconciler, scan *inventoryScan) error {
-	if err := reconciler.ReconcilePackages(scan.seen, scan.startedAt); err != nil {
-		return fmt.Errorf("failed to reconcile package inventory: %w", err)
+func newMonitor(tool string) (monitors.Monitor, error) {
+	normalizedTool := core.NormalizeToolName(tool)
+	switch normalizedTool {
+	case core.ToolHomebrew:
+		return monitors.NewHomebrewMonitor(), nil
+	case core.ToolNPM, core.ToolPNPM, core.ToolBun:
+		return newJavaScriptMonitor(normalizedTool)
+	case core.ToolGo:
+		return monitors.NewGoMonitor(), nil
+	case core.ToolPip, core.ToolUV, core.ToolPoetry:
+		return newPythonMonitor(normalizedTool)
+	default:
+		return nil, fmt.Errorf("unsupported tool: %s", tool)
 	}
-	return nil
+}
+
+func newJavaScriptMonitor(tool string) (monitors.Monitor, error) {
+	switch tool {
+	case core.ToolNPM:
+		return monitors.NewNPMMonitor(), nil
+	case core.ToolPNPM:
+		return monitors.NewPNPMMonitor(), nil
+	default:
+		return monitors.NewBunMonitor(), nil
+	}
+}
+
+func newPythonMonitor(tool string) (monitors.Monitor, error) {
+	switch tool {
+	case core.ToolPip:
+		return monitors.NewPipMonitor(), nil
+	case core.ToolUV:
+		return monitors.NewUVMonitor(), nil
+	default:
+		return monitors.NewPoetryMonitor(), nil
+	}
 }

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -234,7 +233,5 @@ func listConfig(cmd *command, args []string) error {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
 
-	enc := json.NewEncoder(cliOutput().Stdout())
-	enc.SetIndent("", "  ")
-	return enc.Encode(config)
+	return printJSON(config)
 }
