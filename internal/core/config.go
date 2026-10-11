@@ -87,7 +87,7 @@ type ReportingConfig struct {
 
 func DefaultConfig() *Config {
 	dataDir := DefaultDataDir()
-	config := &Config{
+	return &Config{
 		Version:    ConfigVersion,
 		Daemon:     defaultDaemonConfig(dataDir),
 		Storage:    defaultStorageConfig(dataDir),
@@ -96,7 +96,6 @@ func DefaultConfig() *Config {
 		API:        defaultAPIConfig(),
 		Reporting:  defaultReportingConfig(),
 	}
-	return config
 }
 
 func defaultDaemonConfig(dataDir string) DaemonConfig {
@@ -104,8 +103,8 @@ func defaultDaemonConfig(dataDir string) DaemonConfig {
 		Port:       DefaultDaemonPort,
 		LogLevel:   DefaultLogLevel,
 		DataDir:    dataDir,
-		PIDFile:    DefaultPIDFilePath(dataDir),
-		SocketPath: DefaultSocketPath(dataDir),
+		PIDFile:    filepath.Join(dataDir, DefaultPIDFileName),
+		SocketPath: filepath.Join(dataDir, DefaultSocketFileName),
 	}
 }
 
@@ -128,15 +127,24 @@ func defaultMonitoringConfig() MonitoringConfig {
 		homeDir = dir
 	}
 	return MonitoringConfig{
-		EnabledTools: DefaultEnabledTools,
-		Methods:      DefaultMonitorMethods,
-		Filesystem:   defaultFilesystemConfig(homeDir),
+		EnabledTools: []string{
+			ToolHomebrew,
+			ToolNPM,
+			ToolPNPM,
+			ToolBun,
+			ToolGo,
+			ToolPip,
+			ToolUV,
+			ToolPoetry,
+		},
+		Methods:    []string{MonitorMethodProcess},
+		Filesystem: defaultFilesystemConfig(homeDir),
 	}
 }
 
 func defaultFilesystemConfig(homeDir string) FilesystemConfig {
 	watchPaths := map[string][]string{
-		ToolHomebrew: HomebrewBinPaths,
+		ToolHomebrew: {"/usr/local/bin", "/opt/homebrew/bin"},
 		ToolNPM:      {filepath.Join(homeDir, ".npm", "bin"), "/usr/local/lib/node_modules"},
 		ToolPNPM:     {filepath.Join(homeDir, "Library", "pnpm"), filepath.Join(homeDir, ".local", "share", "pnpm")},
 		ToolBun:      {filepath.Join(homeDir, ".bun", "bin")},
@@ -147,7 +155,7 @@ func defaultFilesystemConfig(homeDir string) FilesystemConfig {
 func defaultToolsConfig() ToolsConfig {
 	return ToolsConfig{
 		Homebrew: HomebrewConfig{
-			CellarPaths:         HomebrewCellarPaths,
+			CellarPaths:         []string{"/usr/local/Cellar", "/opt/homebrew/Cellar"},
 			ShouldTrackCasks:    true,
 			ShouldTrackServices: true,
 		},
@@ -202,9 +210,7 @@ func parseConfig(data []byte) (*Config, error) {
 }
 
 func (c *Config) Save() error {
-	homeDir, _ := os.UserHomeDir()
-	path := filepath.Join(homeDir, ".config", "diu", "config.json")
-	return c.SaveTo(path)
+	return c.SaveTo(defaultConfigPath())
 }
 
 func (c *Config) SaveExisting() error {
@@ -286,10 +292,11 @@ func (c *Config) EnsureDirectories() error {
 	}
 
 	for _, dir := range dirs {
-		if dir != "" {
-			if err := os.MkdirAll(dir, OwnerDirectoryMode); err != nil {
-				return fmt.Errorf("failed to create directory %s: %w", dir, err)
-			}
+		if dir == "" {
+			continue
+		}
+		if err := os.MkdirAll(dir, OwnerDirectoryMode); err != nil {
+			return fmt.Errorf("failed to create directory %s: %w", dir, err)
 		}
 	}
 

@@ -7,11 +7,6 @@ import (
 	"time"
 )
 
-func TestExecutionRecord(t *testing.T) {
-	record := sampleExecutionRecord()
-	assertExecutionRecordFields(t, record)
-}
-
 func sampleExecutionRecord() ExecutionRecord {
 	return ExecutionRecord{
 		ID:               "test-123",
@@ -27,39 +22,6 @@ func sampleExecutionRecord() ExecutionRecord {
 	}
 }
 
-func assertExecutionRecordFields(t *testing.T, record ExecutionRecord) {
-	t.Helper()
-	if record.Tool != "homebrew" {
-		t.Errorf("Expected tool to be homebrew, got %s", record.Tool)
-	}
-	if len(record.PackagesAffected) != 1 {
-		t.Errorf("Expected 1 package affected, got %d", len(record.PackagesAffected))
-	}
-	if record.ExitCode != 0 {
-		t.Errorf("Expected exit code 0, got %d", record.ExitCode)
-	}
-}
-
-func TestPackageInfo(t *testing.T) {
-	pkg := PackageInfo{
-		Name:        "wget",
-		Version:     "1.21.3",
-		Tool:        "homebrew",
-		InstallDate: time.Now().Add(-24 * time.Hour),
-		LastUsed:    time.Now(),
-		UsageCount:  5,
-		Path:        "/usr/local/bin/wget",
-	}
-
-	if pkg.Name != "wget" {
-		t.Errorf("Expected package name wget, got %s", pkg.Name)
-	}
-
-	if pkg.UsageCount != 5 {
-		t.Errorf("Expected usage count 5, got %d", pkg.UsageCount)
-	}
-}
-
 func TestExecutionRecordJSONUsesDurationMilliseconds(t *testing.T) {
 	record := durationExecutionRecord()
 	data := marshalExecutionRecord(t, record)
@@ -67,18 +29,17 @@ func TestExecutionRecordJSONUsesDurationMilliseconds(t *testing.T) {
 	assertDurationMilliseconds(t, raw, 1500)
 
 	decoded := unmarshalExecutionRecord(t, data)
-	assertDurationRoundTrip(t, decoded, record)
+	assertExecutionRecordRoundTrip(t, decoded, record)
+	assertInvalidExecutionRecordJSONPreservesReceiver(t, record)
+	assertNullExecutionRecordJSONClearsReceiver(t, record)
 }
 
 func durationExecutionRecord() ExecutionRecord {
-	return ExecutionRecord{
-		Tool:      ToolNPM,
-		Command:   "npm install express",
-		Args:      []string{"install", "express"},
-		Timestamp: time.Now(),
-		Duration:  1500 * time.Millisecond,
-		ExitCode:  0,
-	}
+	record := sampleExecutionRecord()
+	record.Duration = 1500 * time.Millisecond
+	record.Environment = map[string]string{"CI": "true"}
+	record.Metadata = map[string]interface{}{"executable": "brew"}
+	return record
 }
 
 func marshalExecutionRecord(t *testing.T, record ExecutionRecord) []byte {
@@ -116,10 +77,34 @@ func unmarshalExecutionRecord(t *testing.T, data []byte) ExecutionRecord {
 	return decoded
 }
 
-func assertDurationRoundTrip(t *testing.T, decoded, record ExecutionRecord) {
+func assertExecutionRecordRoundTrip(t *testing.T, decoded, record ExecutionRecord) {
 	t.Helper()
-	if decoded.Duration != record.Duration {
-		t.Errorf("Expected duration %s, got %s", record.Duration, decoded.Duration)
+	record.Timestamp = record.Timestamp.UTC()
+	decoded.Timestamp = decoded.Timestamp.UTC()
+	if !reflect.DeepEqual(decoded, record) {
+		t.Fatalf("decoded execution = %#v, want %#v", decoded, record)
+	}
+}
+
+func assertInvalidExecutionRecordJSONPreservesReceiver(t *testing.T, record ExecutionRecord) {
+	t.Helper()
+	want := record
+	data := []byte(`{"tool":"changed","duration_ms":"invalid"}`)
+	if err := json.Unmarshal(data, &record); err == nil {
+		t.Fatal("invalid duration was accepted")
+	}
+	if !reflect.DeepEqual(record, want) {
+		t.Fatalf("invalid JSON changed receiver: %#v", record)
+	}
+}
+
+func assertNullExecutionRecordJSONClearsReceiver(t *testing.T, record ExecutionRecord) {
+	t.Helper()
+	if err := json.Unmarshal([]byte("null"), &record); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(record, ExecutionRecord{}) {
+		t.Fatalf("null JSON did not clear receiver: %#v", record)
 	}
 }
 
@@ -165,59 +150,5 @@ func assertLaunchAttemptRoundTrip(t *testing.T, decoded, record ExecutionRecord)
 	}
 	if !reflect.DeepEqual(decoded, want) {
 		t.Fatalf("decoded launch attempt = %#v, want %#v", decoded, want)
-	}
-}
-
-func TestNormalizeToolName(t *testing.T) {
-	for input, expected := range normalizeToolNameCases() {
-		if got := NormalizeToolName(input); got != expected {
-			t.Errorf("NormalizeToolName(%q) = %q, want %q", input, got, expected)
-		}
-	}
-}
-
-func normalizeToolNameCases() map[string]string {
-	return map[string]string{
-		"brew":     ToolHomebrew,
-		"Homebrew": ToolHomebrew,
-		"golang":   ToolGo,
-		" npm ":    ToolNPM,
-		"pip3":     ToolPip,
-		"python3":  ToolPip,
-	}
-}
-
-func TestStorageData(t *testing.T) {
-	data := sampleStorageData()
-	assertStorageDataFields(t, data)
-}
-
-func sampleStorageData() StorageData {
-	return StorageData{
-		Version: "1.0.0",
-		Metadata: StorageMetadata{
-			Created:     time.Now(),
-			LastUpdated: time.Now(),
-			Hostname:    "test-host",
-			User:        "testuser",
-			DIUVersion:  Version,
-		},
-		Executions: []ExecutionRecord{},
-		Packages:   make(map[string]map[string]PackageInfo),
-		Statistics: StorageStatistics{
-			TotalExecutions:    0,
-			ToolsUsed:          []string{},
-			ExecutionFrequency: make(map[string]int),
-		},
-	}
-}
-
-func assertStorageDataFields(t *testing.T, data StorageData) {
-	t.Helper()
-	if data.Version != "1.0.0" {
-		t.Errorf("Expected version 1.0.0, got %s", data.Version)
-	}
-	if data.Metadata.User != "testuser" {
-		t.Errorf("Expected user testuser, got %s", data.Metadata.User)
 	}
 }

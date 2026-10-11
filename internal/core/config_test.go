@@ -3,6 +3,7 @@ package core
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 )
 
@@ -12,6 +13,27 @@ func TestDefaultConfig(t *testing.T) {
 	assertDefaultStorageConfig(t, config)
 	assertDefaultMonitoringConfig(t, config)
 	assertDefaultAPIConfig(t, config)
+	assertIndependentConfigDefaults(t, config)
+}
+
+func assertIndependentConfigDefaults(t *testing.T, config *Config) {
+	t.Helper()
+	for _, values := range collectConfigDefaultSlices(config) {
+		values[0] = "changed"
+	}
+	want := []string{ToolHomebrew, MonitorMethodProcess, "/usr/local/bin", "/usr/local/Cellar"}
+	for index, values := range collectConfigDefaultSlices(DefaultConfig()) {
+		if values[0] != want[index] {
+			t.Fatalf("config defaults share mutable slices: %v", values)
+		}
+	}
+}
+
+func collectConfigDefaultSlices(config *Config) [][]string {
+	monitoring := config.Monitoring
+	watchPaths := monitoring.Filesystem.WatchPaths
+	homebrew := config.Tools.Homebrew
+	return [][]string{monitoring.EnabledTools, monitoring.Methods, watchPaths[ToolHomebrew], homebrew.CellarPaths}
 }
 
 func assertDefaultDaemonConfig(t *testing.T, config *Config) {
@@ -55,7 +77,7 @@ func assertDefaultMonitoringConfig(t *testing.T, config *Config) {
 		t.Error("Expected enabled tools to be configured")
 	}
 	for _, tool := range []string{ToolPNPM, ToolBun, ToolPip, ToolUV, ToolPoetry} {
-		if !containsString(config.Monitoring.EnabledTools, tool) {
+		if !slices.Contains(config.Monitoring.EnabledTools, tool) {
 			t.Errorf("Expected %s to be enabled by default, got %#v", tool, config.Monitoring.EnabledTools)
 		}
 	}
@@ -287,19 +309,138 @@ func assertDirectoriesCreated(t *testing.T, dirs []string) {
 	}
 }
 
-func TestShellEscapeString(t *testing.T) {
-	got := ShellEscapeString("a\\b\"$c`date`")
-	want := "a\\\\b\\\"\\$c\\`date\\`"
-	if got != want {
-		t.Fatalf("ShellEscapeString = %q, want %q", got, want)
+func TestSaveExistingDoesNotCreateMissingConfig(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	config := DefaultConfig()
+	if err := config.SaveExisting(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Dir(defaultConfigPath())); !os.IsNotExist(err) {
+		t.Fatalf("saving an absent config created its directory: %v", err)
 	}
 }
 
-func containsString(values []string, target string) bool {
-	for _, value := range values {
-		if value == target {
-			return true
-		}
+func TestSaveExistingDoesNotRecreateRemovedConfig(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	config := DefaultConfig()
+	if err := config.Save(); err != nil {
+		t.Fatal(err)
 	}
-	return false
+	if err := os.Remove(defaultConfigPath()); err != nil {
+		t.Fatal(err)
+	}
+	if err := config.SaveExisting(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(defaultConfigPath()); !os.IsNotExist(err) {
+		t.Fatalf("removed config was recreated: %v", err)
+	}
+}
+
+func TestSaveExistingPersistsChanges(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	config := DefaultConfig()
+	if err := config.Save(); err != nil {
+		t.Fatal(err)
+	}
+	config.Monitoring.EnabledTools = []string{ToolNPM}
+	if err := config.SaveExisting(); err != nil {
+		t.Fatal(err)
+	}
+	saved, err := LoadConfig("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hasUpdatedTool := len(saved.Monitoring.EnabledTools) == 1 && saved.Monitoring.EnabledTools[0] == ToolNPM
+	if !hasUpdatedTool {
+		t.Fatalf("enabled tools = %v, want [%s]", saved.Monitoring.EnabledTools, ToolNPM)
+	}
+}
+
+func TestSaveExistingUpdatesSymlinkedConfig(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	config := DefaultConfig()
+	configPath, linkTarget := createSymlinkedConfig(t, config)
+	config.Monitoring.EnabledTools = []string{ToolNPM}
+	if err := config.SaveExisting(); err != nil {
+		t.Fatal(err)
+	}
+	assertConfigSymlink(t, configPath, linkTarget)
+	saved, err := LoadConfig("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hasUpdatedTool := len(saved.Monitoring.EnabledTools) == 1 && saved.Monitoring.EnabledTools[0] == ToolNPM
+	if !hasUpdatedTool {
+		t.Fatalf("symlinked enabled tools = %v, want [%s]", saved.Monitoring.EnabledTools, ToolNPM)
+	}
+}
+
+func TestSaveExistingRejectsSymlinkOutsideConfigDirectory(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	configPath := defaultConfigPath()
+	outsidePath := filepath.Join(t.TempDir(), "outside.json")
+	createExternalConfigSymlink(t, configPath, outsidePath)
+	if err := DefaultConfig().SaveExisting(); err == nil {
+		t.Fatal("saving through an external symlink must fail")
+	}
+	assertFileContents(t, outsidePath, "keep this file")
+}
+
+func createSymlinkedConfig(t *testing.T, config *Config) (string, string) {
+	t.Helper()
+	configPath := defaultConfigPath()
+	targetPath := filepath.Join(filepath.Dir(configPath), "config.data")
+	linkTarget := filepath.Base(targetPath)
+	if err := config.SaveTo(targetPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(linkTarget, configPath); err != nil {
+		t.Fatal(err)
+	}
+	return configPath, linkTarget
+}
+
+func createExternalConfigSymlink(t *testing.T, configPath, targetPath string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(configPath), OwnerDirectoryMode); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(targetPath, []byte("keep this file"), PrivateFileMode); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(targetPath, configPath); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func assertFileContents(t *testing.T, path, want string) {
+	t.Helper()
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(contents) != want {
+		t.Fatalf("file contents = %q; want %q", contents, want)
+	}
+}
+
+func assertConfigSymlink(t *testing.T, configPath, wantTarget string) {
+	t.Helper()
+	target, err := os.Readlink(configPath)
+	targetMatches := err == nil && target == wantTarget
+	if !targetMatches {
+		t.Fatalf("config symlink target = %q, %v; want %q", target, err, wantTarget)
+	}
+}
+
+func TestSaveExistingReportsWriteFailure(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	if err := os.MkdirAll(defaultConfigPath(), OwnerDirectoryMode); err != nil {
+		t.Fatal(err)
+	}
+	config := DefaultConfig()
+	if err := config.SaveExisting(); err == nil {
+		t.Fatal("saving over a directory must report failure")
+	}
 }

@@ -23,20 +23,11 @@ type ExecutionRecord struct {
 	Metadata         map[string]interface{} `json:"metadata,omitempty"`
 }
 
+type executionRecordFields ExecutionRecord
+
 type executionRecordJSON struct {
-	ID               string                 `json:"id"`
-	Kind             string                 `json:"kind,omitempty"`
-	Tool             string                 `json:"tool"`
-	Command          string                 `json:"command"`
-	Args             []string               `json:"args"`
-	Timestamp        time.Time              `json:"timestamp"`
-	DurationMS       int64                  `json:"duration_ms"`
-	ExitCode         int                    `json:"exit_code"`
-	WorkingDir       string                 `json:"working_dir"`
-	User             string                 `json:"user"`
-	Environment      map[string]string      `json:"environment,omitempty"`
-	PackagesAffected []string               `json:"packages_affected,omitempty"`
-	Metadata         map[string]interface{} `json:"metadata,omitempty"`
+	*executionRecordFields
+	DurationMS int64 `json:"duration_ms"`
 }
 
 type launchAttemptRecordJSON struct {
@@ -70,55 +61,20 @@ func marshalLaunchAttemptRecord(record ExecutionRecord) ([]byte, error) {
 
 func marshalCompletedExecutionRecord(record ExecutionRecord) ([]byte, error) {
 	return json.Marshal(executionRecordJSON{
-		ID:               record.ID,
-		Kind:             record.Kind,
-		Tool:             record.Tool,
-		Command:          record.Command,
-		Args:             record.Args,
-		Timestamp:        record.Timestamp,
-		DurationMS:       record.Duration.Milliseconds(),
-		ExitCode:         record.ExitCode,
-		WorkingDir:       record.WorkingDir,
-		User:             record.User,
-		Environment:      record.Environment,
-		PackagesAffected: record.PackagesAffected,
-		Metadata:         record.Metadata,
+		executionRecordFields: (*executionRecordFields)(&record),
+		DurationMS:            record.Duration.Milliseconds(),
 	})
 }
 
 func (r *ExecutionRecord) UnmarshalJSON(data []byte) error {
-	raw, err := decodeExecutionRecord(data)
-	if err != nil {
+	var fields executionRecordFields
+	raw := executionRecordJSON{executionRecordFields: &fields}
+	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
 	}
-	r.assignExecutionRecord(raw)
+	*r = ExecutionRecord(fields)
+	r.Duration = time.Duration(raw.DurationMS) * time.Millisecond
 	return nil
-}
-
-func decodeExecutionRecord(data []byte) (executionRecordJSON, error) {
-	var record executionRecordJSON
-	err := json.Unmarshal(data, &record)
-	return record, err
-}
-
-func (r *ExecutionRecord) assignExecutionRecord(record executionRecordJSON) {
-	r.ID = record.ID
-	r.Kind = record.Kind
-	r.Tool = record.Tool
-	r.Command = record.Command
-	r.Args = record.Args
-	r.Timestamp = record.Timestamp
-	r.Duration = durationFromJSONMilliseconds(record.DurationMS)
-	r.ExitCode = record.ExitCode
-	r.WorkingDir = record.WorkingDir
-	r.User = record.User
-	r.Environment = record.Environment
-	r.PackagesAffected = record.PackagesAffected
-	r.Metadata = record.Metadata
-}
-
-func durationFromJSONMilliseconds(value int64) time.Duration {
-	return time.Duration(value) * time.Millisecond
 }
 
 type PackageInfo struct {
@@ -159,26 +115,4 @@ type StorageStatistics struct {
 	ToolsUsed          []string       `json:"tools_used"`
 	MostActiveDay      string         `json:"most_active_day"`
 	ExecutionFrequency map[string]int `json:"execution_frequency"`
-}
-
-type QueryOptions struct {
-	Tool    string
-	Package string
-	Since   time.Time
-	Last    time.Duration
-	Limit   int
-	Format  string
-}
-
-type StatsOptions struct {
-	ShouldShowDaily  bool
-	ShouldShowWeekly bool
-	Tool             string
-	Top              int
-}
-
-type PackageOptions struct {
-	Tool              string
-	Unused            time.Duration
-	ShouldIncludeSize bool
 }

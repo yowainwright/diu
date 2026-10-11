@@ -1,6 +1,7 @@
 package core
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime/debug"
@@ -41,8 +42,6 @@ const (
 	ToolPip          = "pip"
 	ToolUV           = "uv"
 	ToolPoetry       = "poetry"
-	ToolGem          = "gem"
-	ToolCargo        = "cargo"
 	ToolGoBinary     = "go-binary"
 	ToolHomebrewCask = "homebrew-cask"
 
@@ -70,45 +69,15 @@ const (
 
 	MonitorMethodProcess    = "process"
 	MonitorMethodFilesystem = "filesystem"
+
+	MaxRecorderWorkers      = 4
+	RecorderTimeout         = 2 * time.Second
+	MaxRecorderPayloadBytes = 1024 * 1024
 )
-
-var (
-	DefaultEnabledTools = []string{
-		ToolHomebrew,
-		ToolNPM,
-		ToolPNPM,
-		ToolBun,
-		ToolGo,
-		ToolPip,
-		ToolUV,
-		ToolPoetry,
-	}
-
-	DefaultMonitorMethods = []string{
-		MonitorMethodProcess,
-	}
-
-	HomebrewCellarPaths = []string{
-		"/usr/local/Cellar",
-		"/opt/homebrew/Cellar",
-	}
-
-	HomebrewBinPaths = []string{
-		"/usr/local/bin",
-		"/opt/homebrew/bin",
-	}
-)
-
-func ShellEscapeString(s string) string {
-	s = strings.ReplaceAll(s, `\`, `\\`)
-	s = strings.ReplaceAll(s, `"`, `\"`)
-	s = strings.ReplaceAll(s, `$`, `\$`)
-	s = strings.ReplaceAll(s, "`", "\\`")
-	return s
-}
 
 func NormalizeToolName(tool string) string {
-	switch strings.ToLower(strings.TrimSpace(tool)) {
+	normalized := strings.ToLower(strings.TrimSpace(tool))
+	switch normalized {
 	case "brew":
 		return ToolHomebrew
 	case "golang":
@@ -116,7 +85,7 @@ func NormalizeToolName(tool string) string {
 	case "pip3", "python", "python3":
 		return ToolPip
 	default:
-		return strings.ToLower(strings.TrimSpace(tool))
+		return normalized
 	}
 }
 
@@ -131,10 +100,7 @@ func DefaultDataDir() string {
 	return filepath.Join(homeDir, ".local", "share", "diu")
 }
 
-func DefaultPIDFilePath(dataDir string) string {
-	return filepath.Join(dataDir, DefaultPIDFileName)
-}
-
-func DefaultSocketPath(dataDir string) string {
-	return filepath.Join(dataDir, DefaultSocketFileName)
+func RecorderSlotPath(dataDir string, slot int) string {
+	name := fmt.Sprintf("recorder-%d.lock", slot)
+	return filepath.Join(dataDir, name)
 }
