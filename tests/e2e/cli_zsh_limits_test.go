@@ -3,6 +3,7 @@
 package e2e
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -19,17 +20,31 @@ func TestCLIZshBoundsRecorderHandoffsAndReusesCapacity(t *testing.T) {
 	f.setup(t)
 	starts := stallCLIZshRecorders(t, f)
 	_, input, output, _ := startCLIZsh(t, f)
-	burst := "false" + strings.Repeat(" && listener-tool", 24)
-	for range 2 {
-		writeZshInput(t, input, burst+"\nprint -r -- DIU_'BURST_DONE'\n")
-		waitCLIZshOutput(t, output, "DIU_BURST_DONE")
-		awaitCLI(t, func() bool { return len(readCLIZshRecorderStarts(t, starts)) >= core.MaxRecorderWorkers })
-		assertCLIZshHandoffBound(t, starts)
-	}
+	runCLIZshHandoffBurst(t, input, output, "listener-tool")
+	awaitCLI(t, func() bool { return len(readCLIZshRecorderStarts(t, starts)) >= core.MaxRecorderWorkers })
+	assertCLIZshHandoffBound(t, starts)
+	refreshCLIZshHandoffMap(t, f, input, output)
+	runCLIZshHandoffBurst(t, input, output, "reloaded-tool")
+	assertCLIZshHandoffBound(t, starts)
 	releaseCLIZshRecorder(t, starts)
-	writeZshInput(t, input, "false && listener-tool\nprint -r -- DIU_'CAPACITY_REUSED'\n")
+	writeZshInput(t, input, "false && reloaded-tool\nprint -r -- DIU_'CAPACITY_REUSED'\n")
 	waitCLIZshOutput(t, output, "DIU_CAPACITY_REUSED")
 	awaitCLI(t, func() bool { return len(readCLIZshRecorderStarts(t, starts)) == core.MaxRecorderWorkers+1 })
+}
+
+func runCLIZshHandoffBurst(t *testing.T, input io.Writer, output <-chan string, executable string) {
+	t.Helper()
+	burst := "false" + strings.Repeat(" && "+executable, 24)
+	writeZshInput(t, input, burst+"\nprint -r -- DIU_'BURST_DONE'\n")
+	waitCLIZshOutput(t, output, "DIU_BURST_DONE")
+}
+
+func refreshCLIZshHandoffMap(t *testing.T, f *cliFixture, input io.Writer, output <-chan string) {
+	t.Helper()
+	writeCLIFile(t, filepath.Join(f.managed, "reloaded-tool"), "#!/bin/sh\nexit 0\n", 0o700)
+	assertCLIExit(t, f.cli(t, "scan"), 0)
+	writeZshInput(t, input, "print -r -- DIU_RELOADED_${+_DIU_TOOL_MAP[reloaded-tool]}\n")
+	waitCLIZshOutput(t, output, "DIU_RELOADED_1")
 }
 
 const stalledCLIZshRecorder = `#!/bin/bash
