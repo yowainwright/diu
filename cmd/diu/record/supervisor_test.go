@@ -2,6 +2,7 @@ package record
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"testing"
@@ -81,5 +82,21 @@ func assertRecorderProcessDetached(t *testing.T, cmd *exec.Cmd) {
 func TestKillRecorderGroupIgnoresMissingProcess(t *testing.T) {
 	if err := killRecorderGroup(2147483647); err != nil {
 		t.Fatalf("missing recorder process group returned error: %v", err)
+	}
+}
+
+func TestSupervisedRecorderCommandHonorsCancellationBeforeStart(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	cmd, err := supervisedRecorderCommand(ctx, nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); !errors.Is(err, context.Canceled) {
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+		}
+		t.Fatalf("start error = %v, want cancellation", err)
 	}
 }

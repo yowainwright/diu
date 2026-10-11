@@ -25,17 +25,14 @@ func runRecorderWorker(config *core.Config, _ *os.File, _ int) error {
 	if sendRecorderPayload(config.Daemon.SocketPath, payload) == nil {
 		return nil
 	}
-	return withFallbackRecordLock(config, func(wait time.Duration) error {
-		return storeFallbackExecutionFrom(config, wait, bytes.NewReader(payload))
-	})
+	input := bytes.NewReader(payload)
+	return recordFallbackExecution(config, input)
 }
 
 func recorderDeadline() (func(), error) {
 	pid := os.Getpid()
 	group, err := syscall.Getpgid(pid)
-	hasGroupError := err != nil
-	isPrivateGroup := group == pid
-	invalidGroup := hasGroupError || !isPrivateGroup
+	invalidGroup := err != nil || group != pid
 	if invalidGroup {
 		return nil, fmt.Errorf("recorder requires a private process group")
 	}
@@ -66,16 +63,8 @@ func sendRecorderPayload(socket string, payload []byte) error {
 	return writeRecorderPayload(connection, payload)
 }
 
-func writeRecorderPayload(connection net.Conn, payload []byte) error {
-	for len(payload) > 0 {
-		written, err := connection.Write(payload)
-		if err != nil {
-			return err
-		}
-		if written == 0 {
-			return io.ErrShortWrite
-		}
-		payload = payload[written:]
-	}
-	return nil
+func writeRecorderPayload(connection io.Writer, payload []byte) error {
+	input := bytes.NewReader(payload)
+	_, err := io.Copy(connection, input)
+	return err
 }
