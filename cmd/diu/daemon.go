@@ -219,10 +219,14 @@ func requestDaemonStop(config *core.Config) (bool, error) {
 }
 
 func waitForDaemonExit(config *core.Config, pid int, pidErr error) error {
+	return waitForDaemonExitWithTimeout(config, pid, pidErr, daemonStopTimeout)
+}
+
+func waitForDaemonExitWithTimeout(config *core.Config, pid int, pidErr error, timeout time.Duration) error {
 	if pidErr == nil {
-		return waitForDaemonProcessStopped(pid, daemonStopTimeout)
+		return waitForDaemonProcessStopped(pid, timeout)
 	}
-	return waitForDaemonStopped(config, daemonStopTimeout)
+	return waitForDaemonStopped(config, timeout)
 }
 
 func waitForDaemonStarted(config *core.Config, timeout time.Duration) error {
@@ -246,7 +250,7 @@ func waitForDaemonStopped(config *core.Config, timeout time.Duration) error {
 		if !defaultDaemonChecker(config) {
 			return nil
 		}
-		time.Sleep(daemonStopPollInterval)
+		sleepUntilNextPoll(deadline, daemonStopPollInterval)
 	}
 	return fmt.Errorf("timed out after %s waiting for daemon to stop", timeout)
 }
@@ -257,9 +261,19 @@ func waitForDaemonProcessStopped(pid int, timeout time.Duration) error {
 		if !daemon.ProcessRunning(pid) {
 			return nil
 		}
-		time.Sleep(daemonStopPollInterval)
+		sleepUntilNextPoll(deadline, daemonStopPollInterval)
 	}
 	return fmt.Errorf("timed out after %s waiting for daemon process %d to stop", timeout, pid)
+}
+
+func sleepUntilNextPoll(deadline time.Time, interval time.Duration) {
+	wait := time.Until(deadline)
+	if interval < wait {
+		wait = interval
+	}
+	if wait > 0 {
+		time.Sleep(wait)
+	}
 }
 
 func restartDaemon(cmd *command, args []string) error {

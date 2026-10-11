@@ -301,28 +301,37 @@ func writeSetupFallbackPID(t *testing.T, config *core.Config) {
 	}
 }
 
-func TestSetupRecoversAfterSlowPIDFallbackStop(t *testing.T) {
-	config, state := setupSlowRecorderTest(t)
-	t.Setenv("PATH", t.TempDir())
-	stopped := startSlowSetupRecorder(t, config.Daemon.PIDFile)
+func TestSetupRecoversAfterStopTimeout(t *testing.T) {
+	const stopTimeout = 5 * time.Millisecond
+	config, state := setupShutdownRecorderTest(t)
+	writeSetupFallbackPID(t, config)
+	daemonStopRequester = func(*core.Config) error { return nil }
 	rejectSetupAfterStopTimeout(t)
-	err := setupProject(&command{}, nil)
+	waitCalls := 0
+	waitForExit := func(_ *core.Config, _ int, _ error, timeout time.Duration) error {
+		waitCalls++
+		if timeout != stopTimeout {
+			t.Fatalf("stop timeout = %s, want %s", timeout, stopTimeout)
+		}
+		if waitCalls == 1 {
+			return fmt.Errorf("timed out after %s waiting for daemon process", timeout)
+		}
+		return nil
+	}
+	err := setupProjectWithStopTimeout(stopTimeout, waitForExit)
 	if err == nil {
 		t.Fatal("setup should report the original stop timeout")
 	}
 	assertOutputContains(t, err.Error(), "timed out")
 	assertSetupRecorderRestored(t, state)
-	assertFileMissing(t, storage.ExecutionLogPath(config.Storage.JSONFile))
-	if err := <-stopped; err != nil {
-		t.Fatalf("recorder process failed: %v", err)
+	if waitCalls != 2 {
+		t.Fatalf("daemon exit checks = %d, want 2", waitCalls)
 	}
+	assertFileMissing(t, storage.ExecutionLogPath(config.Storage.JSONFile))
 }
 
-func setupSlowRecorderTest(t *testing.T) (*core.Config, *setupRecorderState) {
+func setupShutdownRecorderTest(t *testing.T) (*core.Config, *setupRecorderState) {
 	t.Helper()
-	if testing.Short() {
-		t.Skip("uses real recorder shutdown deadlines; run mise run test-slow")
-	}
 	config := setupTestHomeConfig(t)
 	requireConfigDirectories(t, config)
 	state := stubSetupRecorder(t)
@@ -339,11 +348,6 @@ func rejectSetupAfterStopTimeout(t *testing.T) {
 	}
 }
 
-func startSlowSetupRecorder(t *testing.T, pidPath string) <-chan error {
-	t.Helper()
-	return startSetupRecorderProcess(t, pidPath, "TestSlowSetupRecorderHelper")
-}
-
 func startSetupRecorderProcess(t *testing.T, pidPath, helper string) <-chan error {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), 40*time.Second)
@@ -357,12 +361,13 @@ func startSetupRecorderProcess(t *testing.T, pidPath, helper string) <-chan erro
 }
 
 func TestSetupAbortsWhenRecorderIgnoresStop(t *testing.T) {
-	config, state := setupSlowRecorderTest(t)
+	const stopTimeout = 5 * time.Millisecond
+	config, state := setupShutdownRecorderTest(t)
 	startSetupRecorderProcess(t, config.Daemon.PIDFile, "TestHungSetupRecorderHelper")
 	rejectSetupAfterStopTimeout(t)
 	started := time.Now()
-	err := setupProject(&command{}, nil)
-	assertHungRecorderSetupError(t, err, time.Since(started))
+	err := setupProjectWithStopTimeout(stopTimeout, waitForDaemonExitWithTimeout)
+	assertHungRecorderSetupError(t, err, time.Since(started), stopTimeout)
 	if state.starts != 0 {
 		t.Fatal("setup tried to restart while the original recorder was still alive")
 	}
@@ -382,12 +387,12 @@ func assertSetupRecorderStillAlive(t *testing.T, config *core.Config) {
 	}
 }
 
-func assertHungRecorderSetupError(t *testing.T, err error, elapsed time.Duration) {
+func assertHungRecorderSetupError(t *testing.T, err error, elapsed, stopTimeout time.Duration) {
 	t.Helper()
 	if err == nil {
 		t.Fatal("setup accepted a recorder that ignored shutdown")
 	}
-	if elapsed > 3*daemonStopTimeout {
+	if elapsed > 3*stopTimeout+daemonStopPollInterval {
 		t.Fatalf("setup exceeded its stop and recovery deadlines: %s", elapsed)
 	}
 	if !strings.Contains(err.Error(), "diu daemon start") {
@@ -420,20 +425,6 @@ func startAndWaitForRecorderReady(t *testing.T, cmd *exec.Cmd) {
 		_ = cmd.Wait()
 		t.Fatal(err)
 	}
-}
-
-func TestSlowSetupRecorderHelper(t *testing.T) {
-	pidPath := os.Getenv("DIU_TEST_SLOW_RECORDER_PID")
-	if pidPath == "" {
-		return
-	}
-	signals := make(chan os.Signal, 1)
-	signal.Notify(signals, syscall.SIGTERM)
-	defer signal.Stop(signals)
-	lockSlowSetupRecorderPID(t, pidPath)
-	fmt.Println("ready")
-	<-signals
-	time.Sleep(daemonStopTimeout + 2*daemonStopPollInterval)
 }
 
 func lockSlowSetupRecorderPID(t *testing.T, path string) {

@@ -13,22 +13,31 @@ import (
 var setupBackgroundTracking = installLaunchAgent
 
 func setupProject(cmd *command, args []string) error {
+	return setupProjectWithStopTimeout(daemonStopTimeout, waitForDaemonExitWithTimeout)
+}
+
+type daemonExitWaiter func(*core.Config, int, error, time.Duration) error
+
+func setupProjectWithStopTimeout(stopTimeout time.Duration, waitForExit daemonExitWaiter) error {
 	activity := cliOutput().StartActivity("Setting up DIU")
 	defer activity.Stop()
 
-	if err := runSetupProject(activity); err != nil {
+	if err := runSetupProject(activity, stopTimeout, waitForExit); err != nil {
 		return err
 	}
 	activity.Success("DIU setup completed")
 	return nil
 }
 
-func runSetupProject(activity *dx.Activity) error {
+func runSetupProject(activity *dx.Activity, stopTimeout time.Duration, daemonWaiter daemonExitWaiter) error {
 	config, err := loadSetupConfig()
 	if err != nil {
 		return err
 	}
-	wasRunning, err := stopDaemonWithState(config, waitForSetupDaemonExit)
+	waitForStop := func(config *core.Config, pid int, pidErr error) error {
+		return waitForSetupDaemonExit(config, pid, pidErr, stopTimeout, daemonWaiter)
+	}
+	wasRunning, err := stopDaemonWithState(config, waitForStop)
 	if err != nil {
 		return err
 	}
@@ -36,17 +45,20 @@ func runSetupProject(activity *dx.Activity) error {
 	return restoreRecorderAfterSetupFailure(config, wasRunning, setupErr)
 }
 
-func waitForSetupDaemonExit(config *core.Config, pid int, pidErr error) error {
-	stopErr := waitForDaemonExit(config, pid, pidErr)
+func waitForSetupDaemonExit(config *core.Config, pid int, pidErr error, stopTimeout time.Duration, waitForDaemonExit daemonExitWaiter) error {
+	checkExit := func() error {
+		return waitForDaemonExit(config, pid, pidErr, stopTimeout)
+	}
+	stopErr := checkExit()
 	if stopErr == nil {
 		return nil
 	}
 	cliOutput().Status(dx.Warning, "Setup aborted; waiting once more for recorder shutdown before recovery")
-	return recoverRecorderAfterStopTimeout(config, pid, pidErr, stopErr)
+	return recoverRecorderAfterStopTimeout(config, checkExit, stopErr)
 }
 
-func recoverRecorderAfterStopTimeout(config *core.Config, pid int, pidErr, stopErr error) error {
-	if err := waitForDaemonExit(config, pid, pidErr); err != nil {
+func recoverRecorderAfterStopTimeout(config *core.Config, checkExit func() error, stopErr error) error {
+	if err := checkExit(); err != nil {
 		recoveryErr := fmt.Errorf("recorder shutdown is unconfirmed; once it exits, run 'diu daemon start' to restore recording, then retry 'diu setup': %w", err)
 		return errors.Join(stopErr, recoveryErr)
 	}
