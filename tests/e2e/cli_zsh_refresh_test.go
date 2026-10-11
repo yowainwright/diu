@@ -25,7 +25,7 @@ func TestCLIZshListenerRefreshesOpenShellAndMatchesCommands(t *testing.T) {
 	}
 	writeCLIFile(t, filepath.Join(f.managed, "listener-tool"), "#!/bin/sh\nexit 17\n", 0o700)
 	assertCLIExit(t, f.cli(t, "scan"), 0)
-	writeCLIFile(t, filepath.Join(f.managed, "sudo"), "#!/bin/sh\nif [ \"$1\" = \"-u\" ]; then shift 2; fi\nexec \"$@\"\n", 0o700)
+	writeCLIFile(t, filepath.Join(f.managed, "sudo"), "#!/bin/sh\ncase \"$1\" in -u|-g) shift 2 ;; esac\nexec \"$@\"\n", 0o700)
 
 	untrackedCommands := strings.Join([]string{
 		"echo listener-tool",
@@ -33,9 +33,12 @@ func TestCLIZshListenerRefreshesOpenShellAndMatchesCommands(t *testing.T) {
 		"echo else listener-tool",
 		"cat < /dev/null > listener-tool",
 		"builtin listener-tool",
+		"builtin -- listener-tool",
 		"command -v listener-tool",
 		"command -V listener-tool",
 		"command -pv listener-tool",
+		"sudo -l listener-tool || true",
+		"case x in x) true ;; listener-tool) true ;; esac",
 		"probe || true",
 	}, "\n") + "\nprint -r -- DIU_'UNTRACKED_DONE'\n"
 	writeZshInput(t, input, untrackedCommands)
@@ -57,6 +60,7 @@ func TestCLIZshListenerRefreshesOpenShellAndMatchesCommands(t *testing.T) {
 		"command -p " + filepath.Join(f.managed, "listener-tool") + " || true",
 		"env -i PATH=" + f.basePath() + " DIU_TEST_PREFIX=1 listener-tool || true",
 		"sudo -u nobody listener-tool || true",
+		"sudo -g staff listener-tool || true",
 		filepath.Join(f.managed, "listener-tool") + " || true",
 	}
 	for index, trackedCommand := range trackedCommands {

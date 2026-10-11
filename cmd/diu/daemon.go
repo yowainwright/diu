@@ -230,38 +230,50 @@ func waitForDaemonExitWithTimeout(config *core.Config, pid int, pidErr error, ti
 }
 
 func waitForDaemonStarted(config *core.Config, timeout time.Duration) error {
+	return waitForDaemonStartedWithPollInterval(config, timeout, daemonStartPollInterval)
+}
+
+func waitForDaemonStartedWithPollInterval(config *core.Config, timeout, pollInterval time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		if defaultDaemonChecker(config) {
 			return nil
 		}
-		time.Sleep(daemonStartPollInterval)
+		sleepUntilNextPoll(deadline, pollInterval)
 	}
 	return fmt.Errorf("timed out after %s waiting for daemon to start", timeout)
 }
 
 func waitForDaemonStopped(config *core.Config, timeout time.Duration) error {
+	return waitForDaemonStoppedWithPollInterval(config, timeout, daemonStopPollInterval)
+}
+
+func waitForDaemonStoppedWithPollInterval(config *core.Config, timeout, pollInterval time.Duration) error {
 	pid, err := daemon.ReadPID(config)
 	if err == nil {
-		return waitForDaemonProcessStopped(pid, timeout)
+		return waitForDaemonProcessStoppedWithPollInterval(pid, timeout, pollInterval)
 	}
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		if !defaultDaemonChecker(config) {
 			return nil
 		}
-		sleepUntilNextPoll(deadline, daemonStopPollInterval)
+		sleepUntilNextPoll(deadline, pollInterval)
 	}
 	return fmt.Errorf("timed out after %s waiting for daemon to stop", timeout)
 }
 
 func waitForDaemonProcessStopped(pid int, timeout time.Duration) error {
+	return waitForDaemonProcessStoppedWithPollInterval(pid, timeout, daemonStopPollInterval)
+}
+
+func waitForDaemonProcessStoppedWithPollInterval(pid int, timeout, pollInterval time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		if !daemon.ProcessRunning(pid) {
 			return nil
 		}
-		sleepUntilNextPoll(deadline, daemonStopPollInterval)
+		sleepUntilNextPoll(deadline, pollInterval)
 	}
 	return fmt.Errorf("timed out after %s waiting for daemon process %d to stop", timeout, pid)
 }

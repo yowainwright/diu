@@ -152,6 +152,112 @@ func TestRemoveGeneratedZshIntegrationPreservesUnownedFile(t *testing.T) {
 	assertShellIntegrationMissing(t, path)
 }
 
+func TestRefreshZshShellIntegrationRemovesLegacyWrapperArtifacts(t *testing.T) {
+	config, generatedWrapper, userWrapper := createLegacyWrapperArtifacts(t)
+	config.Monitoring.EnabledTools = nil
+	config.Monitoring.Filesystem.WatchPaths = map[string][]string{}
+	if err := refreshZshShellIntegration(config); err != nil {
+		t.Fatal(err)
+	}
+	assertLegacyWrapperArtifactsRemoved(t, generatedWrapper, userWrapper)
+}
+
+func TestRemoveZshShellIntegrationRemovesLegacyWrapperArtifacts(t *testing.T) {
+	config, generatedWrapper, userWrapper := createLegacyWrapperArtifacts(t)
+	if err := removeZshShellIntegration(config); err != nil {
+		t.Fatal(err)
+	}
+	assertLegacyWrapperArtifactsRemoved(t, generatedWrapper, userWrapper)
+}
+
+func createLegacyWrapperArtifacts(t *testing.T) (*core.Config, string, string) {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	wrapperDir, generatedWrapper, userWrapper := writeLegacyWrapperFiles(t, home)
+	writeLegacyWrapperPathBlocks(t, home, wrapperDir)
+	config := legacyWrapperConfig(t, home)
+	return config, generatedWrapper, userWrapper
+}
+
+func writeLegacyWrapperFiles(t *testing.T, home string) (string, string, string) {
+	t.Helper()
+	wrapperDir := filepath.Join(home, filepath.FromSlash(legacyWrapperDirectory))
+	if err := os.MkdirAll(wrapperDir, core.OwnerDirectoryMode); err != nil {
+		t.Fatal(err)
+	}
+	generatedWrapper := filepath.Join(wrapperDir, "jq")
+	generated := "#!/bin/bash\n" + legacyWrapperMarker + "\nDIU_BINARY=\"diu\"\nDIU_SOCKET=\"/tmp/diu.sock\"\nORIGINAL_BINARY=\"/usr/bin/jq\"\nDIU_TOOL=\"homebrew\"\n"
+	if err := os.WriteFile(generatedWrapper, []byte(generated), core.OwnerExecutableMode); err != nil {
+		t.Fatal(err)
+	}
+	userWrapper := filepath.Join(wrapperDir, "personal-tool")
+	if err := os.WriteFile(userWrapper, []byte("#!/bin/sh\necho user-owned\n"), core.OwnerExecutableMode); err != nil {
+		t.Fatal(err)
+	}
+	return wrapperDir, generatedWrapper, userWrapper
+}
+
+func legacyWrapperConfig(t *testing.T, home string) *core.Config {
+	t.Helper()
+	config := core.DefaultConfig()
+	config.Daemon.DataDir = filepath.Join(home, ".local", "share", "diu")
+	if err := os.MkdirAll(config.Daemon.DataDir, core.OwnerDirectoryMode); err != nil {
+		t.Fatal(err)
+	}
+	return config
+}
+
+func writeLegacyWrapperPathBlocks(t *testing.T, home, wrapperDir string) {
+	t.Helper()
+	posixLine := "export PATH=\"" + core.ShellEscapeString(wrapperDir) + ":$PATH\""
+	fishLine := "if not contains \"" + wrapperDir + "\" $PATH\n    set -gx PATH \"" + wrapperDir + "\" $PATH\nend"
+	writeLegacyWrapperPathBlock(t, filepath.Join(home, ".bashrc"), posixLine)
+	writeLegacyWrapperPathBlock(t, filepath.Join(home, ".zshrc"), posixLine)
+	writeLegacyWrapperPathBlock(t, filepath.Join(home, ".config", "fish", "config.fish"), fishLine)
+}
+
+func writeLegacyWrapperPathBlock(t *testing.T, path, line string) {
+	t.Helper()
+	contents := "# personal settings\n" + legacyShellPathMarker + "\n" + line + "\n"
+	if err := os.MkdirAll(filepath.Dir(path), core.OwnerDirectoryMode); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(contents), core.PrivateFileMode); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func assertLegacyWrapperArtifactsRemoved(t *testing.T, generatedWrapper, userWrapper string) {
+	t.Helper()
+	assertLegacyGeneratedWrapperRemoved(t, generatedWrapper)
+	assertUserWrapperRetained(t, userWrapper)
+	assertLegacyShellPathBlocksRemoved(t)
+}
+
+func assertLegacyGeneratedWrapperRemoved(t *testing.T, generatedWrapper string) {
+	t.Helper()
+	if _, err := os.Stat(generatedWrapper); !os.IsNotExist(err) {
+		t.Fatalf("generated wrapper remains, stat error = %v", err)
+	}
+}
+
+func assertUserWrapperRetained(t *testing.T, userWrapper string) {
+	t.Helper()
+	assertFileContents(t, userWrapper, "#!/bin/sh\necho user-owned\n")
+}
+
+func assertLegacyShellPathBlocksRemoved(t *testing.T) {
+	t.Helper()
+	for _, path := range []string{
+		filepath.Join(os.Getenv("HOME"), ".bashrc"),
+		filepath.Join(os.Getenv("HOME"), ".zshrc"),
+		filepath.Join(os.Getenv("HOME"), ".config", "fish", "config.fish"),
+	} {
+		assertFileContents(t, path, "# personal settings\n")
+	}
+}
+
 func TestRefreshZshShellIntegrationPreservesUnownedFile(t *testing.T) {
 	config := core.DefaultConfig()
 	config.Daemon.DataDir = t.TempDir()

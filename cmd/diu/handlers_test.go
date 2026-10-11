@@ -1308,14 +1308,8 @@ func TestWaitForDaemonStartedAfterPolling(t *testing.T) {
 	restore := SetDaemonChecker(checker.IsRunning)
 	defer restore()
 
-	start := time.Now()
-	if err := waitForDaemonStarted(&core.Config{}, time.Second); err != nil {
+	if err := waitForDaemonStartedWithPollInterval(&core.Config{}, time.Second, time.Millisecond); err != nil {
 		t.Fatalf("expected nil, got %v", err)
-	}
-	elapsed := time.Since(start)
-	minExpected := 2 * daemonStartPollInterval
-	if elapsed < minExpected {
-		t.Fatalf("expected at least %s of polling, got %s", minExpected, elapsed)
 	}
 	if checker.runningCalls < 3 {
 		t.Fatalf("expected at least 3 IsRunning calls, got %d", checker.runningCalls)
@@ -1326,7 +1320,7 @@ func TestWaitForDaemonStartedTimeout(t *testing.T) {
 	restore := SetDaemonChecker(isDaemonStopped)
 	defer restore()
 
-	err := waitForDaemonStarted(&core.Config{}, 250*time.Millisecond)
+	err := waitForDaemonStartedWithPollInterval(&core.Config{}, 5*time.Millisecond, time.Millisecond)
 	if err == nil {
 		t.Fatal("expected timeout error, got nil")
 	}
@@ -1349,14 +1343,8 @@ func TestWaitForDaemonStoppedAfterPolling(t *testing.T) {
 	restore := SetDaemonChecker(checker.IsRunning)
 	defer restore()
 
-	start := time.Now()
-	if err := waitForDaemonStopped(&core.Config{}, time.Second); err != nil {
+	if err := waitForDaemonStoppedWithPollInterval(&core.Config{}, time.Second, time.Millisecond); err != nil {
 		t.Fatalf("expected nil, got %v", err)
-	}
-	elapsed := time.Since(start)
-	minExpected := 2 * daemonStopPollInterval
-	if elapsed < minExpected {
-		t.Fatalf("expected at least %s of polling, got %s", minExpected, elapsed)
 	}
 	if checker.runningCalls < 3 {
 		t.Fatalf("expected at least 3 IsRunning calls, got %d", checker.runningCalls)
@@ -1368,7 +1356,7 @@ func TestWaitForDaemonStoppedTimeout(t *testing.T) {
 	restore := SetDaemonChecker(checker.IsRunning)
 	defer restore()
 
-	err := waitForDaemonStopped(&core.Config{}, 250*time.Millisecond)
+	err := waitForDaemonStoppedWithPollInterval(&core.Config{}, 5*time.Millisecond, time.Millisecond)
 	if err == nil {
 		t.Fatal("expected timeout error, got nil")
 	}

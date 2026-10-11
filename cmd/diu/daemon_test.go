@@ -256,15 +256,55 @@ func TestPlistStringEscapesXML(t *testing.T) {
 
 func TestInventoryScanCancellationStopsChildProcesses(t *testing.T) {
 	dir := t.TempDir()
-	marker := filepath.Join(dir, "escaped")
-	script := filepath.Join(dir, "scan")
-	writeExecutableForTest(t, script, "#!/bin/sh\n(sleep 1; echo escaped > \"$DIU_SCAN_MARKER\") &\nwait\n")
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	marker, ready, release := inventoryCancellationPaths(dir)
+	script := writeInventoryCancellationScript(t, dir)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	env := append(os.Environ(), "DIU_SCAN_MARKER="+marker)
-	if err := runInventoryScan(ctx, script, env); err == nil {
+	scanDone := startInventoryCancellationScan(ctx, script, marker, ready, release)
+	waitForFile(t, ready, time.Second)
+	cancel()
+	assertInventoryCancellation(t, scanDone, marker, release)
+}
+
+func inventoryCancellationPaths(dir string) (string, string, string) {
+	return filepath.Join(dir, "escaped"), filepath.Join(dir, "ready"), filepath.Join(dir, "release")
+}
+
+func writeInventoryCancellationScript(t *testing.T, dir string) string {
+	t.Helper()
+	script := filepath.Join(dir, "scan")
+	child := "echo ready > \"$DIU_SCAN_READY\"\nwhile [ ! -e \"$DIU_SCAN_RELEASE\" ]; do sleep 0.001; done\necho escaped > \"$DIU_SCAN_MARKER\""
+	writeExecutableForTest(t, script, "#!/bin/sh\n(\n"+child+"\n) &\nwait\n")
+	return script
+}
+
+func startInventoryCancellationScan(ctx context.Context, script, marker, ready, release string) <-chan error {
+	env := append(os.Environ(), "DIU_SCAN_MARKER="+marker, "DIU_SCAN_READY="+ready, "DIU_SCAN_RELEASE="+release)
+	scanDone := make(chan error, 1)
+	go func() { scanDone <- runInventoryScan(ctx, script, env) }()
+	return scanDone
+}
+
+func assertInventoryCancellation(t *testing.T, scanDone <-chan error, marker, release string) {
+	t.Helper()
+	if err := <-scanDone; err == nil {
 		t.Fatal("canceled scan succeeded")
 	}
-	time.Sleep(1100 * time.Millisecond)
+	if err := os.WriteFile(release, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(30 * time.Millisecond)
 	assertFileMissing(t, marker)
+}
+
+func waitForFile(t *testing.T, path string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(path); err == nil {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %q", path)
 }
