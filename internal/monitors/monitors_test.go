@@ -8,6 +8,37 @@ import (
 	"github.com/yowainwright/diu/internal/core"
 )
 
+func TestNewMonitorSupportsConfiguredTools(t *testing.T) {
+	config := core.DefaultConfig()
+	assertNewMonitorSupportsTools(t, config.Monitoring.EnabledTools)
+	aliases := []string{"brew", "golang", "pip3", "python", "python3", " NPM ", " PNPM ", " BUN ", " UV ", " POETRY "}
+	assertNewMonitorSupportsTools(t, aliases)
+	assertNewMonitorRejectsBogusTool(t)
+}
+
+func assertNewMonitorSupportsTools(t *testing.T, tools []string) {
+	t.Helper()
+	for _, tool := range tools {
+		monitor, err := NewMonitor(tool)
+		hasMonitor := err == nil && monitor != nil
+		if !hasMonitor {
+			t.Fatalf("NewMonitor(%q) = %v, %v", tool, monitor, err)
+		}
+		if monitor.Name() != core.NormalizeToolName(tool) {
+			t.Fatalf("NewMonitor(%q) selected %q", tool, monitor.Name())
+		}
+	}
+}
+
+func assertNewMonitorRejectsBogusTool(t *testing.T) {
+	t.Helper()
+	for _, tool := range []string{"bogus", "unsupported"} {
+		if _, err := NewMonitor(tool); err == nil {
+			t.Fatalf("NewMonitor(%q) accepted an unsupported tool", tool)
+		}
+	}
+}
+
 type mockMonitor struct {
 	*BaseMonitor
 	hasStarted bool

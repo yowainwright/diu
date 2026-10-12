@@ -115,7 +115,7 @@ func (s *packageScanner) scanManagers() {
 func (s *packageScanner) scanManager(tool string) {
 	s.activity.Update("Scanning " + tool + " packages")
 	normalizedTool := core.NormalizeToolName(tool)
-	monitor, err := newMonitor(normalizedTool)
+	monitor, err := monitors.NewMonitor(normalizedTool)
 	if err != nil {
 		return
 	}
@@ -390,42 +390,4 @@ func commitPackageScan(store *storage.JSONStorage, packages []*core.PackageInfo,
 		return fmt.Errorf("failed to apply package scan: %w", err)
 	}
 	return nil
-}
-
-func newMonitor(tool string) (monitors.Monitor, error) {
-	normalizedTool := core.NormalizeToolName(tool)
-	switch normalizedTool {
-	case core.ToolHomebrew:
-		return monitors.NewHomebrewMonitor(), nil
-	case core.ToolNPM, core.ToolPNPM, core.ToolBun:
-		return newJavaScriptMonitor(normalizedTool)
-	case core.ToolGo:
-		return monitors.NewGoMonitor(), nil
-	case core.ToolPip, core.ToolUV, core.ToolPoetry:
-		return newPythonMonitor(normalizedTool)
-	default:
-		return nil, fmt.Errorf("unsupported tool: %s", tool)
-	}
-}
-
-func newJavaScriptMonitor(tool string) (monitors.Monitor, error) {
-	switch tool {
-	case core.ToolNPM:
-		return monitors.NewNPMMonitor(), nil
-	case core.ToolPNPM:
-		return monitors.NewPNPMMonitor(), nil
-	default:
-		return monitors.NewBunMonitor(), nil
-	}
-}
-
-func newPythonMonitor(tool string) (monitors.Monitor, error) {
-	switch tool {
-	case core.ToolPip:
-		return monitors.NewPipMonitor(), nil
-	case core.ToolUV:
-		return monitors.NewUVMonitor(), nil
-	default:
-		return monitors.NewPoetryMonitor(), nil
-	}
 }

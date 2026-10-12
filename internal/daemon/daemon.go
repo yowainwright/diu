@@ -100,8 +100,7 @@ func NewDaemon(config *core.Config) (*Daemon, error) {
 		return nil, fmt.Errorf("failed to initialize storage: %w", err)
 	}
 	registry, startupWarnings := initializedMonitorRegistry(config)
-	d := newDaemon(config, store, registry, startupWarnings)
-	return d, nil
+	return newDaemon(config, store, registry, startupWarnings), nil
 }
 
 func initializedMonitorRegistry(config *core.Config) (*monitors.MonitorRegistry, []string) {
@@ -109,8 +108,8 @@ func initializedMonitorRegistry(config *core.Config) (*monitors.MonitorRegistry,
 	var startupWarnings []string
 	for _, tool := range config.Monitoring.EnabledTools {
 		tool = core.NormalizeToolName(tool)
-		monitor, ok := monitorForTool(tool)
-		if !ok {
+		monitor, err := monitors.NewMonitor(tool)
+		if err != nil {
 			warning := fmt.Sprintf("Unknown tool: %s", tool)
 			startupWarnings = append(startupWarnings, warning)
 			continue
@@ -123,43 +122,6 @@ func initializedMonitorRegistry(config *core.Config) (*monitors.MonitorRegistry,
 		registry.Register(monitor)
 	}
 	return registry, startupWarnings
-}
-
-func monitorForTool(tool string) (monitors.Monitor, bool) {
-	if monitor, ok := primaryMonitorForTool(tool); ok {
-		return monitor, true
-	}
-	return pythonMonitorForTool(tool)
-}
-
-func primaryMonitorForTool(tool string) (monitors.Monitor, bool) {
-	switch tool {
-	case core.ToolHomebrew:
-		return monitors.NewHomebrewMonitor(), true
-	case core.ToolNPM:
-		return monitors.NewNPMMonitor(), true
-	case core.ToolPNPM:
-		return monitors.NewPNPMMonitor(), true
-	case core.ToolBun:
-		return monitors.NewBunMonitor(), true
-	case core.ToolGo:
-		return monitors.NewGoMonitor(), true
-	default:
-		return nil, false
-	}
-}
-
-func pythonMonitorForTool(tool string) (monitors.Monitor, bool) {
-	switch tool {
-	case core.ToolPip:
-		return monitors.NewPipMonitor(), true
-	case core.ToolUV:
-		return monitors.NewUVMonitor(), true
-	case core.ToolPoetry:
-		return monitors.NewPoetryMonitor(), true
-	default:
-		return nil, false
-	}
 }
 
 func newDaemon(
@@ -338,18 +300,14 @@ func (d *Daemon) stop() {
 	stopped := true
 	d.stopped.Store(stopped)
 	d.cancel()
-	d.stopMonitors()
+	d.recordStopError("stopping monitors", d.registry.StopAll())
 	d.stopHTTPServer()
 	d.stopSocketListener()
 	d.wg.Wait()
-	d.closeStorage()
+	d.recordStopError("closing storage", d.storage.Close())
 	d.releaseRuntimePaths()
 	d.logger.Println("DIU daemon stopped")
 	d.closeLogSink()
-}
-
-func (d *Daemon) stopMonitors() {
-	d.recordStopError("stopping monitors", d.registry.StopAll())
 }
 
 func (d *Daemon) stopHTTPServer() {
@@ -365,10 +323,6 @@ func (d *Daemon) stopSocketListener() {
 	if d.socketListener != nil {
 		d.recordStopError("closing socket listener", d.socketListener.Close())
 	}
-}
-
-func (d *Daemon) closeStorage() {
-	d.recordStopError("closing storage", d.storage.Close())
 }
 
 func (d *Daemon) releaseRuntimePaths() {
@@ -818,15 +772,11 @@ func (d *Daemon) handleSocketControl(conn net.Conn, request socketControlRequest
 	pid := os.Getpid()
 	response := socketControlResponse{Status: socketStatusOK, PID: pid}
 	switch request.Type {
-	case socketRequestPing:
+	case socketRequestPing, socketRequestStop:
 		_ = json.NewEncoder(conn).Encode(response)
-	case socketRequestStop:
-		_ = json.NewEncoder(conn).Encode(response)
-		go func() {
-			if err := d.Stop(); err != nil {
-				d.logger.Printf("Error stopping daemon: %v", err)
-			}
-		}()
+		if request.Type == socketRequestStop {
+			go d.stopAfterRequest()
+		}
 	default:
 		d.logger.Printf("Unknown socket control request: %s", request.Type)
 	}
@@ -902,10 +852,7 @@ func (d *Daemon) handleGetExecutions(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(executions); err != nil {
-		d.logger.Printf("Failed to encode executions response: %v", err)
-	}
+	d.writeJSONResponse(w, executions, "executions")
 }
 
 func executionQueryOptions(w http.ResponseWriter, r *http.Request) (storage.QueryOptions, bool) {
@@ -1015,10 +962,7 @@ func (d *Daemon) handlePackages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(packages); err != nil {
-		d.logger.Printf("Failed to encode packages response: %v", err)
-	}
+	d.writeJSONResponse(w, packages, "packages")
 }
 
 func (d *Daemon) handleStats(w http.ResponseWriter, r *http.Request) {
@@ -1033,10 +977,7 @@ func (d *Daemon) handleStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(stats); err != nil {
-		d.logger.Printf("Failed to encode stats response: %v", err)
-	}
+	d.writeJSONResponse(w, stats, "stats")
 }
 
 func (d *Daemon) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -1044,14 +985,13 @@ func (d *Daemon) handleHealth(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	d.writeHealthResponse(w)
+	d.writeJSONResponse(w, d.healthResponse(), "health")
 }
 
-func (d *Daemon) writeHealthResponse(w http.ResponseWriter) {
-	health := d.healthResponse()
+func (d *Daemon) writeJSONResponse(w http.ResponseWriter, value any, resource string) {
 	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(health); err != nil {
-		d.logger.Printf("Failed to encode health response: %v", err)
+	if err := json.NewEncoder(w).Encode(value); err != nil {
+		d.logger.Printf("Failed to encode %s response: %v", resource, err)
 	}
 }
 
@@ -1148,15 +1088,17 @@ func (d *Daemon) handleSignals() {
 		select {
 		case sig := <-sigChan:
 			d.logger.Printf("Received signal: %v", sig)
-			go func() {
-				if err := d.Stop(); err != nil {
-					d.logger.Printf("Error stopping daemon: %v", err)
-				}
-			}()
+			go d.stopAfterRequest()
 		case <-d.ctx.Done():
 			return
 		}
 	}()
+}
+
+func (d *Daemon) stopAfterRequest() {
+	if err := d.Stop(); err != nil {
+		d.logger.Printf("Error stopping daemon: %v", err)
+	}
 }
 
 func IsRunning(config *core.Config) bool {
@@ -1315,10 +1257,7 @@ func tryPIDFileLock(file *os.File) (bool, error) {
 }
 
 func isPIDFileLockedError(err error) bool {
-	if errors.Is(err, syscall.EWOULDBLOCK) {
-		return true
-	}
-	return errors.Is(err, syscall.EAGAIN)
+	return errors.Is(err, syscall.EWOULDBLOCK) || errors.Is(err, syscall.EAGAIN)
 }
 
 func daemonIdentityError(filePID, socketPID int) error {
@@ -1341,12 +1280,11 @@ func readPID(path string) (int, error) {
 }
 
 func parsePID(pidBytes []byte) (int, error) {
-	pid, err := strconv.Atoi(strings.TrimSpace(string(pidBytes)))
-	if err != nil {
-		return 0, fmt.Errorf("invalid PID %q", strings.TrimSpace(string(pidBytes)))
-	}
-	if pid < 1 {
-		return 0, fmt.Errorf("invalid PID %q", strings.TrimSpace(string(pidBytes)))
+	text := strings.TrimSpace(string(pidBytes))
+	pid, err := strconv.Atoi(text)
+	invalidPID := err != nil || pid < 1
+	if invalidPID {
+		return 0, fmt.Errorf("invalid PID %q", text)
 	}
 	return pid, nil
 }
@@ -1396,10 +1334,7 @@ func dialSocketControl(path string) (net.Conn, error) {
 
 func writeSocketControlRequest(conn net.Conn, requestType string) error {
 	request := socketControlRequest{Type: requestType}
-	if err := json.NewEncoder(conn).Encode(request); err != nil {
-		return err
-	}
-	return nil
+	return json.NewEncoder(conn).Encode(request)
 }
 
 func readSocketControlResponse(conn net.Conn) (socketControlResponse, error) {
@@ -1414,10 +1349,8 @@ func readSocketControlResponse(conn net.Conn) (socketControlResponse, error) {
 }
 
 func validateSocketControlResponse(response socketControlResponse) error {
-	if response.Status != socketStatusOK {
-		return fmt.Errorf("invalid daemon response")
-	}
-	if response.PID < 1 {
+	invalidResponse := response.Status != socketStatusOK || response.PID < 1
+	if invalidResponse {
 		return fmt.Errorf("invalid daemon response")
 	}
 	return nil

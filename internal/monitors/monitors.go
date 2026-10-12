@@ -2,6 +2,7 @@ package monitors
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/yowainwright/diu/internal/core"
 )
@@ -14,6 +15,37 @@ type Monitor interface {
 	//nolint:legibility // Existing monitor API uses this method name across implementations.
 	GetInstalledPackages() ([]*core.PackageInfo, error)
 	ParseCommand(cmd string, args []string) (*core.ExecutionRecord, error)
+}
+
+func NewMonitor(tool string) (Monitor, error) {
+	normalizedTool := core.NormalizeToolName(tool)
+	switch normalizedTool {
+	case core.ToolHomebrew:
+		return NewHomebrewMonitor(), nil
+	case core.ToolGo:
+		return NewGoMonitor(), nil
+	case core.ToolNPM:
+		return NewNPMMonitor(), nil
+	case core.ToolPNPM:
+		return NewPNPMMonitor(), nil
+	case core.ToolBun:
+		return NewBunMonitor(), nil
+	case core.ToolPip, core.ToolUV, core.ToolPoetry:
+		return newPythonMonitor(normalizedTool), nil
+	default:
+		return nil, fmt.Errorf("unsupported tool: %s", tool)
+	}
+}
+
+func newPythonMonitor(tool string) Monitor {
+	switch tool {
+	case core.ToolPip:
+		return NewPipMonitor()
+	case core.ToolUV:
+		return NewUVMonitor()
+	default:
+		return NewPoetryMonitor()
+	}
 }
 
 type BaseMonitor struct {

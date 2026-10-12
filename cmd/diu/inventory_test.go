@@ -488,11 +488,6 @@ func assertAdditionalManagerPackages(t *testing.T, config *core.Config) {
 	}
 }
 
-func TestNewMonitorSupportsConfiguredTools(t *testing.T) {
-	assertNewMonitorSupportsTools(t, configuredMonitorTools)
-	assertNewMonitorRejectsBogusTool(t)
-}
-
 var configuredMonitorTools = []string{
 	core.ToolHomebrew,
 	core.ToolNPM,
@@ -502,26 +497,4 @@ var configuredMonitorTools = []string{
 	core.ToolPip,
 	core.ToolUV,
 	core.ToolPoetry,
-}
-
-func assertNewMonitorSupportsTools(t *testing.T, tools []string) {
-	t.Helper()
-
-	for _, tool := range tools {
-		monitor, err := newMonitor(tool)
-		if err != nil {
-			t.Fatalf("newMonitor(%s) failed: %v", tool, err)
-		}
-		if monitor == nil {
-			t.Fatalf("newMonitor(%s) returned nil", tool)
-		}
-	}
-}
-
-func assertNewMonitorRejectsBogusTool(t *testing.T) {
-	t.Helper()
-
-	if _, err := newMonitor("bogus"); err == nil {
-		t.Fatal("newMonitor bogus expected error")
-	}
 }

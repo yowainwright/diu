@@ -223,7 +223,7 @@ func enrichRecord(config *core.Config, record *core.ExecutionRecord) {
 	if record.Kind == core.ExecutionKindLaunchAttempt {
 		return
 	}
-	monitor, err := recorderMonitor(record.Tool)
+	monitor, err := monitors.NewMonitor(record.Tool)
 	if err != nil {
 		return
 	}
@@ -231,35 +231,4 @@ func enrichRecord(config *core.Config, record *core.ExecutionRecord) {
 		return
 	}
 	monitors.EnrichExecutionRecord(monitor, record)
-}
-
-func recorderMonitor(tool string) (monitors.Monitor, error) {
-	normalizedTool := core.NormalizeToolName(tool)
-	switch normalizedTool {
-	case core.ToolHomebrew:
-		return monitors.NewHomebrewMonitor(), nil
-	case core.ToolGo:
-		return monitors.NewGoMonitor(), nil
-	case core.ToolNPM:
-		return monitors.NewNPMMonitor(), nil
-	case core.ToolPNPM:
-		return monitors.NewPNPMMonitor(), nil
-	case core.ToolBun:
-		return monitors.NewBunMonitor(), nil
-	case core.ToolPip, core.ToolUV, core.ToolPoetry:
-		return pythonRecorderMonitor(normalizedTool), nil
-	default:
-		return nil, fmt.Errorf("unsupported tool: %s", tool)
-	}
-}
-
-func pythonRecorderMonitor(tool string) monitors.Monitor {
-	switch tool {
-	case core.ToolPip:
-		return monitors.NewPipMonitor()
-	case core.ToolUV:
-		return monitors.NewUVMonitor()
-	default:
-		return monitors.NewPoetryMonitor()
-	}
 }
