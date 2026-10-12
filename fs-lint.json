@@ -5,7 +5,10 @@
     "allow": [
       "!internal/daemon/**",
       "internal/daemon/{daemon,types,constants,helpers}.go",
-      "internal/daemon/{daemon,types,constants,helpers}_test.go"
+      "internal/daemon/{daemon,types,constants,helpers}_test.go",
+      "!internal/storage/**",
+      "internal/storage/{storage,types,constants,helpers}.go",
+      "internal/storage/{storage,types,constants,helpers}_test.go"
     ]
   }
 }
