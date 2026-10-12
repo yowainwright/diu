@@ -8,7 +8,13 @@
       "internal/daemon/{daemon,types,constants,helpers}_test.go",
       "!internal/storage/**",
       "internal/storage/{storage,types,constants,helpers}.go",
-      "internal/storage/{storage,types,constants,helpers}_test.go"
+      "internal/storage/{storage,types,constants,helpers}_test.go",
+      "!internal/observability/**",
+      "internal/observability/{observability,types,constants,helpers}.go",
+      "internal/observability/{observability,types,constants,helpers}_test.go",
+      "!internal/safefs/**",
+      "internal/safefs/{safefs,types,constants,helpers}.go",
+      "internal/safefs/{safefs,types,constants,helpers}_test.go"
     ]
   }
 }

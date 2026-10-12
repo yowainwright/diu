@@ -10,12 +10,138 @@ import (
 	"testing"
 )
 
-func TestFileOperations(t *testing.T) {
+func TestWriteFileAtomicPreservesOpenReaders(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "wrapper")
+	if err := WriteFileAtomic(path, []byte("original"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	reader, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = reader.Close() }()
+	if err := WriteFileAtomic(path, []byte("replacement"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	assertOpenFileContent(t, reader, "original")
+	assertReadFile(t, path, "replacement")
+}
+
+func TestWriteFileAtomicLeavesUnchangedFileAlone(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "wrapper")
+	data := []byte("original")
+	if err := WriteFileAtomic(path, data, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := os.Stat(path)
+	if err := WriteFileAtomic(path, data, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	after, _ := os.Stat(path)
+	if !os.SameFile(before, after) {
+		t.Fatal("unchanged file was replaced")
+	}
+}
+
+func TestWriteFileAtomicRejectsSymlink(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target")
+	link := filepath.Join(dir, "link")
+	writeTestFile(t, target, "preserved")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteFileAtomic(link, []byte("replacement"), 0o700); err == nil {
+		t.Fatal("expected symlink rejection")
+	}
+	assertReadFile(t, target, "preserved")
+}
+
+func TestSHA256(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "content.txt")
+	content := []byte("hello")
+	if err := os.WriteFile(path, content, 0o600); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+	digest, err := SHA256(path)
+	if err != nil {
+		t.Fatalf("SHA256 failed: %v", err)
+	}
+	expectedBytes := sha256.Sum256(content)
+	expected := hex.EncodeToString(expectedBytes[:])
+	if digest != expected {
+		t.Fatalf("SHA256 = %q, want %q", digest, expected)
+	}
+	if _, err := SHA256(filepath.Join(t.TempDir(), "missing")); err == nil {
+		t.Fatal("SHA256 accepted missing file")
+	}
+}
+
+func TestStatFilesystemRoot(t *testing.T) {
+	info, err := Stat(string(filepath.Separator))
+	if err != nil {
+		t.Fatalf("Stat filesystem root failed: %v", err)
+	}
+	if !info.IsDir() {
+		t.Fatalf("filesystem root IsDir = false")
+	}
+}
+
+func TestStatRejectsEmptyPaths(t *testing.T) {
+	assertEmptyPaths(t, func(path string) error {
+		_, err := Stat(path)
+		return err
+	})
+}
+
+func TestLstatDoesNotFollowSymlink(t *testing.T) {
+	link := createTestSymlink(t)
+	assertLstatSeesSymlink(t, link)
+	assertStatFollowsSymlink(t, link)
+}
+
+func TestLstatRejectsEmptyPaths(t *testing.T) {
+	assertEmptyPaths(t, func(path string) error {
+		_, err := Lstat(path)
+		return err
+	})
+}
+
+func TestReadFileRejectsEmptyPaths(t *testing.T) {
+	assertEmptyPaths(t, func(path string) error {
+		_, err := ReadFile(path)
+		return err
+	})
+}
+
+func TestOpenFileSupportsFileOperations(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "file.txt")
 	writeTestFile(t, path, "hello")
 	assertStatFile(t, path)
 	assertLstatFile(t, path)
 	assertReadFile(t, path, "hello")
+}
+
+func TestOpenFileReportsOpenError(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "missing.txt")
+
+	file, err := OpenFile(path, os.O_RDONLY, 0)
+	if file != nil {
+		_ = file.Close()
+	}
+	if err == nil {
+		t.Fatal("Expected missing file to fail")
+	}
+}
+
+func TestOpenFileRejectsEmptyPaths(t *testing.T) {
+	assertEmptyPaths(t, func(path string) error {
+		file, err := OpenFile(path, os.O_RDONLY, 0)
+		if file != nil {
+			_ = file.Close()
+		}
+		return err
+	})
 }
 
 func writeTestFile(t *testing.T, path, content string) {
@@ -71,64 +197,6 @@ func assertReadFile(t *testing.T, path, expected string) {
 	}
 }
 
-func TestEmptyPathValidation(t *testing.T) {
-	tests := map[string]func(string) error{
-		"Stat": func(path string) error {
-			_, err := Stat(path)
-			return err
-		},
-		"Lstat": func(path string) error {
-			_, err := Lstat(path)
-			return err
-		},
-		"ReadFile": func(path string) error {
-			_, err := ReadFile(path)
-			return err
-		},
-		"OpenFile": func(path string) error {
-			file, err := OpenFile(path, os.O_RDONLY, 0)
-			if file != nil {
-				_ = file.Close()
-			}
-			return err
-		},
-	}
-
-	for name, fn := range tests {
-		assertEmptyPathValidation(t, name, "", fn)
-		assertEmptyPathValidation(t, name, "   ", fn)
-	}
-}
-
-func assertEmptyPathValidation(t *testing.T, name, path string, fn func(string) error) {
-	t.Helper()
-	t.Run(name+"/"+path, func(t *testing.T) {
-		err := fn(path)
-		if err == nil {
-			t.Fatal("Expected empty path to fail")
-		}
-		if !strings.Contains(err.Error(), "path cannot be empty") {
-			t.Fatalf("error = %v, want empty path error", err)
-		}
-	})
-}
-
-func TestStatFilesystemRoot(t *testing.T) {
-	info, err := Stat(string(filepath.Separator))
-	if err != nil {
-		t.Fatalf("Stat filesystem root failed: %v", err)
-	}
-	if !info.IsDir() {
-		t.Fatalf("filesystem root IsDir = false")
-	}
-}
-
-func TestLstatDoesNotFollowSymlink(t *testing.T) {
-	link := createTestSymlink(t)
-	assertLstatSeesSymlink(t, link)
-	assertStatFollowsSymlink(t, link)
-}
-
 func createTestSymlink(t *testing.T) string {
 	t.Helper()
 
@@ -166,55 +234,6 @@ func assertStatFollowsSymlink(t *testing.T, link string) {
 	}
 }
 
-func TestOpenFileReportsOpenError(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "missing.txt")
-
-	file, err := OpenFile(path, os.O_RDONLY, 0)
-	if file != nil {
-		_ = file.Close()
-	}
-	if err == nil {
-		t.Fatal("Expected missing file to fail")
-	}
-}
-
-func TestSHA256(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "content.txt")
-	content := []byte("hello")
-	if err := os.WriteFile(path, content, 0o600); err != nil {
-		t.Fatalf("WriteFile failed: %v", err)
-	}
-	digest, err := SHA256(path)
-	if err != nil {
-		t.Fatalf("SHA256 failed: %v", err)
-	}
-	expectedBytes := sha256.Sum256(content)
-	expected := hex.EncodeToString(expectedBytes[:])
-	if digest != expected {
-		t.Fatalf("SHA256 = %q, want %q", digest, expected)
-	}
-	if _, err := SHA256(filepath.Join(t.TempDir(), "missing")); err == nil {
-		t.Fatal("SHA256 accepted missing file")
-	}
-}
-
-func TestWriteFileAtomicPreservesOpenReaders(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "wrapper")
-	if err := WriteFileAtomic(path, []byte("original"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	reader, err := os.Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = reader.Close() }()
-	if err := WriteFileAtomic(path, []byte("replacement"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	assertOpenFileContent(t, reader, "original")
-	assertReadFile(t, path, "replacement")
-}
-
 func assertOpenFileContent(t *testing.T, file *os.File, want string) {
 	t.Helper()
 	data, err := io.ReadAll(file)
@@ -226,32 +245,17 @@ func assertOpenFileContent(t *testing.T, file *os.File, want string) {
 	}
 }
 
-func TestWriteFileAtomicLeavesUnchangedFileAlone(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "wrapper")
-	data := []byte("original")
-	if err := WriteFileAtomic(path, data, 0o700); err != nil {
-		t.Fatal(err)
+func assertEmptyPaths(t *testing.T, check func(string) error) {
+	t.Helper()
+	for _, path := range []string{"", "   "} {
+		t.Run(path, func(t *testing.T) {
+			err := check(path)
+			if err == nil {
+				t.Fatal("Expected empty path to fail")
+			}
+			if !strings.Contains(err.Error(), "path cannot be empty") {
+				t.Fatalf("error = %v, want empty path error", err)
+			}
+		})
 	}
-	before, _ := os.Stat(path)
-	if err := WriteFileAtomic(path, data, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	after, _ := os.Stat(path)
-	if !os.SameFile(before, after) {
-		t.Fatal("unchanged file was replaced")
-	}
-}
-
-func TestWriteFileAtomicRejectsSymlink(t *testing.T) {
-	dir := t.TempDir()
-	target := filepath.Join(dir, "target")
-	link := filepath.Join(dir, "link")
-	writeTestFile(t, target, "preserved")
-	if err := os.Symlink(target, link); err != nil {
-		t.Fatal(err)
-	}
-	if err := WriteFileAtomic(link, []byte("replacement"), 0o700); err == nil {
-		t.Fatal("expected symlink rejection")
-	}
-	assertReadFile(t, target, "preserved")
 }

@@ -84,7 +84,7 @@ depends = ["lint"]
 
 [tasks.lint-files]
 description = "Enforce internal package filenames"
-run = "find internal/daemon internal/storage -type f -print0 | fs-lint check --stdin0"
+run = "find internal/daemon internal/storage internal/observability internal/safefs -type f -print0 | fs-lint check --stdin0"
 
 [tasks.fmt]
 description = "Format code"
