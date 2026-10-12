@@ -1,11 +1,18 @@
 package storage
 
 import (
+	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -769,7 +776,7 @@ func assertEmptyStatisticsAfterMissingLogRepair(t *testing.T, stats *core.Storag
 	}
 }
 
-func TestReconcilePackagesRemovesMissingInventory(t *testing.T) {
+func TestApplyPackageScanRemovesMissingInventory(t *testing.T) {
 	store := newTestStorage(t)
 	defer closeStorage(t, store)
 	updatePackage(t, store, &core.PackageInfo{Name: "keep", Tool: core.ToolHomebrew})
@@ -778,8 +785,8 @@ func TestReconcilePackagesRemovesMissingInventory(t *testing.T) {
 
 	seenHomebrew := map[string]struct{}{"keep": {}}
 	scanned := map[string]map[string]struct{}{core.ToolHomebrew: seenHomebrew}
-	if err := store.ReconcilePackages(scanned, time.Time{}); err != nil {
-		t.Fatalf("ReconcilePackages failed: %v", err)
+	if err := store.ApplyPackageScan(nil, scanned, time.Time{}); err != nil {
+		t.Fatalf("ApplyPackageScan failed: %v", err)
 	}
 	if _, err := store.GetPackage(core.ToolHomebrew, "remove"); err == nil {
 		t.Fatal("missing Homebrew package was not removed")
@@ -789,7 +796,7 @@ func TestReconcilePackagesRemovesMissingInventory(t *testing.T) {
 	}
 }
 
-func TestReconcilePackagesPreservesPackagesUpdatedDuringScan(t *testing.T) {
+func TestApplyPackageScanPreservesPackagesUpdatedDuringScan(t *testing.T) {
 	store := newTestStorage(t)
 	defer closeStorage(t, store)
 	scanStartedAt := time.Now()
@@ -798,8 +805,8 @@ func TestReconcilePackagesPreservesPackagesUpdatedDuringScan(t *testing.T) {
 	updatePackage(t, store, pkg)
 
 	scanned := map[string]map[string]struct{}{core.ToolHomebrew: {}}
-	if err := store.ReconcilePackages(scanned, scanStartedAt); err != nil {
-		t.Fatalf("ReconcilePackages failed: %v", err)
+	if err := store.ApplyPackageScan(nil, scanned, scanStartedAt); err != nil {
+		t.Fatalf("ApplyPackageScan failed: %v", err)
 	}
 	if _, err := store.GetPackage(core.ToolHomebrew, "new"); err != nil {
 		t.Fatalf("concurrent package was removed: %v", err)
@@ -930,168 +937,6 @@ func TestCaskUninstallRemovesCaskInventory(t *testing.T) {
 	addExecution(t, store, record)
 	if _, err := store.GetPackage(core.ToolHomebrewCask, "firefox"); err == nil {
 		t.Fatal("cask uninstall left the package in inventory")
-	}
-}
-
-func TestExecutionRecordsAreReturnedAsCopies(t *testing.T) {
-	storage := newTestStorage(t)
-	defer closeStorage(t, storage)
-	record := copyTestExecutionRecord()
-	addExecution(t, storage, record)
-	mutateExecutionRecord(record)
-	assertStoredExecutionCopy(t, storage)
-}
-
-func copyTestExecutionRecord() *core.ExecutionRecord {
-	return &core.ExecutionRecord{
-		ID:               "copy-test",
-		Tool:             "npm",
-		Command:          "npm install eslint",
-		Args:             []string{"install", "eslint"},
-		Timestamp:        time.Now(),
-		Environment:      map[string]string{"NODE_ENV": "test"},
-		PackagesAffected: []string{"eslint"},
-		Metadata:         map[string]interface{}{"action": "install"},
-	}
-}
-
-func mutateExecutionRecord(record *core.ExecutionRecord) {
-	record.Args[0] = "mutated"
-	record.Environment["NODE_ENV"] = "mutated"
-	record.PackagesAffected[0] = "mutated"
-	record.Metadata["action"] = "mutated"
-}
-
-func assertStoredExecutionCopy(t *testing.T, storage Storage) {
-	t.Helper()
-	executions, err := storage.GetExecutions(QueryOptions{})
-	if err != nil {
-		t.Fatalf("Failed to get executions: %v", err)
-	}
-	mutateReturnedExecution(executions[0])
-
-	reloaded, err := storage.GetExecutionByID("copy-test")
-	if err != nil {
-		t.Fatalf("Failed to get execution by ID: %v", err)
-	}
-	assertReloadedExecutionUnchanged(t, reloaded)
-}
-
-func mutateReturnedExecution(record *core.ExecutionRecord) {
-	record.Args[0] = "changed"
-	record.Environment["NODE_ENV"] = "changed"
-	record.PackagesAffected[0] = "changed"
-	record.Metadata["action"] = "changed"
-}
-
-func assertReloadedExecutionUnchanged(t *testing.T, record *core.ExecutionRecord) {
-	t.Helper()
-
-	if record.Args[0] != "install" {
-		t.Fatalf("stored execution was mutated through returned pointer")
-	}
-	if record.Environment["NODE_ENV"] != "test" {
-		t.Fatalf("stored execution was mutated through returned pointer")
-	}
-	if record.PackagesAffected[0] != "eslint" {
-		t.Fatalf("stored execution was mutated through returned pointer")
-	}
-	if record.Metadata["action"] != "install" {
-		t.Fatalf("stored execution was mutated through returned pointer")
-	}
-}
-
-func TestGetExecutions(t *testing.T) {
-	storage := newTestStorage(t)
-	defer closeStorage(t, storage)
-	addQueryTestExecutions(t, storage)
-	assertQueryExecutionCount(t, storage, QueryOptions{Tool: "brew"}, 1)
-	assertQueryExecutionCount(t, storage, QueryOptions{Limit: 2}, 2)
-}
-
-func addQueryTestExecutions(t *testing.T, storage Storage) {
-	t.Helper()
-
-	tools := []string{"brew", "npm", "go"}
-	for i, tool := range tools {
-		record := &core.ExecutionRecord{
-			Tool:      tool,
-			Command:   tool + " test",
-			Timestamp: time.Now().Add(time.Duration(-i) * time.Hour),
-			ExitCode:  0,
-		}
-		addExecution(t, storage, record)
-	}
-}
-
-func assertQueryExecutionCount(t *testing.T, storage Storage, opts QueryOptions, want int) {
-	t.Helper()
-
-	executions, err := storage.GetExecutions(opts)
-	if err != nil {
-		t.Fatalf("Failed to query executions: %v", err)
-	}
-	if len(executions) != want {
-		t.Errorf("Expected %d executions, got %d", want, len(executions))
-	}
-}
-
-func TestPackagesAndStatsAreReturnedAsCopies(t *testing.T) {
-	storage := newTestStorage(t)
-	defer closeStorage(t, storage)
-	seedPackageAndStatsCopyTest(t, storage)
-	mutatePackageCopy(t, storage)
-	mutateStatsCopy(t, storage)
-	assertStoredPackageAndStatsCopy(t, storage)
-}
-
-func seedPackageAndStatsCopyTest(t *testing.T, storage Storage) {
-	t.Helper()
-	updatePackage(t, storage, &core.PackageInfo{
-		Name:         "eslint",
-		Tool:         "npm",
-		Dependencies: []string{"chalk"},
-	})
-	addExecution(t, storage, &core.ExecutionRecord{Tool: "npm", Command: "npm --version", Timestamp: time.Now()})
-}
-
-func mutatePackageCopy(t *testing.T, storage Storage) {
-	t.Helper()
-	pkg, err := storage.GetPackage("npm", "eslint")
-	if err != nil {
-		t.Fatalf("Failed to get package: %v", err)
-	}
-	pkg.Dependencies[0] = "mutated"
-}
-
-func mutateStatsCopy(t *testing.T, storage Storage) {
-	t.Helper()
-	stats, err := storage.Statistics()
-	if err != nil {
-		t.Fatalf("Failed to get stats: %v", err)
-	}
-	stats.ToolsUsed[0] = "mutated"
-	stats.ExecutionFrequency["npm"] = 99
-}
-
-func assertStoredPackageAndStatsCopy(t *testing.T, storage Storage) {
-	t.Helper()
-	pkg, err := storage.GetPackage("npm", "eslint")
-	if err != nil {
-		t.Fatalf("Failed to reload package: %v", err)
-	}
-	stats, err := storage.Statistics()
-	if err != nil {
-		t.Fatalf("Failed to reload stats: %v", err)
-	}
-	if pkg.Dependencies[0] != "chalk" {
-		t.Fatalf("stored package or stats were mutated through returned pointer")
-	}
-	if stats.ToolsUsed[0] != "npm" {
-		t.Fatalf("stored package or stats were mutated through returned pointer")
-	}
-	if stats.ExecutionFrequency["npm"] != 1 {
-		t.Fatalf("stored package or stats were mutated through returned pointer")
 	}
 }
 
@@ -1808,127 +1653,18 @@ func assertSuffixedBackupPath(t *testing.T, firstPath, nextPath string) {
 	}
 }
 
-func TestGetExecutionByID(t *testing.T) {
+func TestCleanupUpdatesStatistics(t *testing.T) {
 	storage := newTestStorage(t)
 	defer closeStorage(t, storage)
-	addExecution(t, storage, idTestExecution())
-	assertExecutionByID(t, storage, "test-id-123", "test")
-	assertMissingExecutionByID(t, storage, "nonexistent")
-}
-
-func idTestExecution() *core.ExecutionRecord {
-	return &core.ExecutionRecord{
-		ID:        "test-id-123",
-		Tool:      "test",
-		Command:   "test command",
-		Timestamp: time.Now(),
+	today := addCleanupStatisticsExecutions(t, storage)
+	if err := storage.Cleanup(time.Time{}); err != nil {
+		t.Fatalf("Cleanup failed: %v", err)
 	}
-}
-
-func assertExecutionByID(t *testing.T, storage Storage, id, tool string) {
-	t.Helper()
-
-	retrieved, err := storage.GetExecutionByID(id)
-	if err != nil {
-		t.Fatalf("Failed to get execution by ID: %v", err)
-	}
-	if retrieved.Tool != tool {
-		t.Errorf("Expected tool %q, got %s", tool, retrieved.Tool)
-	}
-}
-
-func assertMissingExecutionByID(t *testing.T, storage Storage, id string) {
-	t.Helper()
-
-	if _, err := storage.GetExecutionByID(id); err == nil {
-		t.Error("Expected error for nonexistent ID")
-	}
-}
-
-func TestGetAllPackages(t *testing.T) {
-	storage := newTestStorage(t)
-	defer closeStorage(t, storage)
-	addAllPackageTestData(t, storage)
-	allPackages, err := storage.AllPackages()
-	if err != nil {
-		t.Fatalf("Failed to get all packages: %v", err)
-	}
-	assertAllPackageGroups(t, allPackages)
-}
-
-func addAllPackageTestData(t *testing.T, storage Storage) {
-	t.Helper()
-	pkg1 := &core.PackageInfo{
-		Name:        "package1",
-		Version:     "1.0.0",
-		Tool:        "npm",
-		InstallDate: time.Now(),
-	}
-	pkg2 := &core.PackageInfo{
-		Name:        "package2",
-		Version:     "2.0.0",
-		Tool:        "go",
-		InstallDate: time.Now(),
-	}
-
-	updatePackage(t, storage, pkg1)
-	updatePackage(t, storage, pkg2)
-}
-
-func assertAllPackageGroups(t *testing.T, allPackages map[string]map[string]*core.PackageInfo) {
-	t.Helper()
-	if len(allPackages) != 2 {
-		t.Errorf("Expected 2 tool groups, got %d", len(allPackages))
-	}
-	if allPackages["npm"]["package1"] == nil {
-		t.Error("Expected npm/package1 to exist")
-	}
-	if allPackages["go"]["package2"] == nil {
-		t.Error("Expected go/package2 to exist")
-	}
-}
-
-func TestGetStatistics(t *testing.T) {
-	storage := newTestStorage(t)
-	defer closeStorage(t, storage)
-	addStatisticsTestExecutions(t, storage)
-	stats, err := storage.Statistics()
-	if err != nil {
-		t.Fatalf("Failed to get statistics: %v", err)
-	}
-	assertStatisticsCounts(t, stats)
-}
-
-func addStatisticsTestExecutions(t *testing.T, storage Storage) {
-	t.Helper()
-	addExecution(t, storage, &core.ExecutionRecord{Tool: "npm", Timestamp: time.Now()})
-	addExecution(t, storage, &core.ExecutionRecord{Tool: "npm", Timestamp: time.Now()})
-	addExecution(t, storage, &core.ExecutionRecord{Tool: "go", Timestamp: time.Now()})
-}
-
-func assertStatisticsCounts(t *testing.T, stats *core.StorageStatistics) {
-	t.Helper()
-	if stats.TotalExecutions != 3 {
-		t.Errorf("Expected 3 total executions, got %d", stats.TotalExecutions)
-	}
-	if stats.ExecutionFrequency["npm"] != 2 {
-		t.Errorf("Expected npm frequency 2, got %d", stats.ExecutionFrequency["npm"])
-	}
-	if stats.ExecutionFrequency["go"] != 1 {
-		t.Errorf("Expected go frequency 1, got %d", stats.ExecutionFrequency["go"])
-	}
-}
-
-func TestUpdateStatistics(t *testing.T) {
-	storage := newTestStorage(t)
-	defer closeStorage(t, storage)
-	today := addUpdateStatisticsExecutions(t, storage)
-	updateStatisticsForTest(t, storage)
 	stats, _ := storage.Statistics()
 	assertMostActiveDay(t, stats, today)
 }
 
-func addUpdateStatisticsExecutions(t *testing.T, storage Storage) time.Time {
+func addCleanupStatisticsExecutions(t *testing.T, storage Storage) time.Time {
 	t.Helper()
 	today := time.Now()
 	yesterday := time.Now().Add(-24 * time.Hour)
@@ -1937,14 +1673,6 @@ func addUpdateStatisticsExecutions(t *testing.T, storage Storage) time.Time {
 	addExecution(t, storage, &core.ExecutionRecord{Tool: "npm", Timestamp: today})
 	addExecution(t, storage, &core.ExecutionRecord{Tool: "go", Timestamp: yesterday})
 	return today
-}
-
-func updateStatisticsForTest(t *testing.T, storage Storage) {
-	t.Helper()
-
-	if err := storage.UpdateStatistics(); err != nil {
-		t.Fatalf("Failed to update statistics: %v", err)
-	}
 }
 
 func assertMostActiveDay(t *testing.T, stats *core.StorageStatistics, today time.Time) {
@@ -2004,104 +1732,6 @@ func assertConcurrentResults(t *testing.T, errs <-chan error, workers int) {
 	}
 }
 
-func TestQueryOptionsTimeFiltering(t *testing.T) {
-	storage := newTestStorage(t)
-	defer closeStorage(t, storage)
-	now := addTimeFilterExecutions(t, storage)
-
-	since := now.Add(-30 * time.Hour)
-	until := now.Add(-12 * time.Hour)
-	assertQueryCount(t, storage, QueryOptions{Since: &since}, 2)
-	assertQueryCount(t, storage, QueryOptions{Until: &until}, 2)
-	assertQueryCount(t, storage, QueryOptions{Since: &since, Until: &until}, 1)
-}
-
-func addTimeFilterExecutions(t *testing.T, storage Storage) time.Time {
-	t.Helper()
-
-	now := time.Now()
-	addExecution(t, storage, &core.ExecutionRecord{Tool: "old", Timestamp: now.Add(-48 * time.Hour)})
-	addExecution(t, storage, &core.ExecutionRecord{Tool: "yesterday", Timestamp: now.Add(-24 * time.Hour)})
-	addExecution(t, storage, &core.ExecutionRecord{Tool: "today", Timestamp: now})
-	return now
-}
-
-func assertQueryCount(t *testing.T, storage Storage, opts QueryOptions, want int) {
-	t.Helper()
-
-	results, err := storage.GetExecutions(opts)
-	if err != nil {
-		t.Fatalf("Failed to get executions: %v", err)
-	}
-	if len(results) != want {
-		t.Errorf("Expected %d query results, got %d", want, len(results))
-	}
-}
-
-func TestQueryOptionsPackageFiltering(t *testing.T) {
-	storage := newTestStorage(t)
-	defer closeStorage(t, storage)
-	addPackageFilterExecutions(t, storage)
-	assertQueryCount(t, storage, QueryOptions{Package: "express"}, 1)
-	assertQueryCount(t, storage, QueryOptions{Package: "nonexistent"}, 0)
-}
-
-func addPackageFilterExecutions(t *testing.T, storage Storage) {
-	t.Helper()
-	addExecution(t, storage, &core.ExecutionRecord{
-		Tool:             "npm",
-		Timestamp:        time.Now(),
-		PackagesAffected: []string{"express", "lodash"},
-	})
-	addExecution(t, storage, &core.ExecutionRecord{
-		Tool:             "npm",
-		Timestamp:        time.Now(),
-		PackagesAffected: []string{"react"},
-	})
-}
-
-func TestGetPackagesAllTools(t *testing.T) {
-	storage := newTestStorage(t)
-	defer closeStorage(t, storage)
-	addAllToolsPackages(t, storage)
-	results := loadPackagesForTest(t, storage, "")
-	if len(results) != 3 {
-		t.Errorf("Expected 3 packages, got %d", len(results))
-	}
-}
-
-func addAllToolsPackages(t *testing.T, storage Storage) {
-	t.Helper()
-	updatePackage(t, storage, &core.PackageInfo{Name: "pkg1", Tool: "npm"})
-	updatePackage(t, storage, &core.PackageInfo{Name: "pkg2", Tool: "go"})
-	updatePackage(t, storage, &core.PackageInfo{Name: "pkg3", Tool: "npm"})
-}
-
-func loadPackagesForTest(t *testing.T, storage Storage, tool string) []*core.PackageInfo {
-	t.Helper()
-
-	results, err := storage.GetPackages(tool)
-	if err != nil {
-		t.Fatalf("Failed to get packages: %v", err)
-	}
-	return results
-}
-
-func TestPackageNotFound(t *testing.T) {
-	storage := newTestStorage(t)
-	defer closeStorage(t, storage)
-	assertPackageNotFound(t, storage, "npm", "nonexistent")
-	assertPackageNotFound(t, storage, "nonexistent-tool", "pkg")
-}
-
-func assertPackageNotFound(t *testing.T, storage Storage, tool, name string) {
-	t.Helper()
-
-	if _, err := storage.GetPackage(tool, name); err == nil {
-		t.Error("Expected error for nonexistent package")
-	}
-}
-
 func TestDeletePackage(t *testing.T) {
 	const (
 		packageName = "test-package"
@@ -2157,125 +1787,315 @@ func assertRestoreFails(t *testing.T, storage Storage, path string) {
 	}
 }
 
-func TestInspectJSONFileStreamsCountsAndLatestExecution(t *testing.T) {
-	store := newTestStorage(t)
+func TestStorageOpenProcess(t *testing.T) {
+	manifest := os.Getenv("DIU_TEST_STORAGE_PATH")
+	if manifest == "" {
+		return
+	}
+	fmt.Println("opening")
+	store := newStorageForManifest(t, manifest)
 	defer closeStorage(t, store)
-	older := time.Now().Add(-time.Hour)
-	latest := time.Now()
-	addExecution(t, store, &core.ExecutionRecord{ID: "older", Tool: core.ToolHomebrew, Timestamp: older})
-	addExecution(t, store, &core.ExecutionRecord{ID: "latest", Tool: core.ToolNPM, Timestamp: latest})
-	updatePackage(t, store, &core.PackageInfo{Name: "jq", Tool: core.ToolHomebrew})
-
-	inspection, err := InspectJSONFile(store.filepath)
-	if err != nil {
-		t.Fatalf("InspectJSONFile failed: %v", err)
-	}
-	assertInspectionFileState(t, inspection)
-	assertInspectionCounts(t, inspection)
-	assertInspectionLatest(t, inspection)
-	assertInspectionMetadata(t, inspection)
-}
-
-func assertInspectionFileState(t *testing.T, inspection JSONInspection) {
-	t.Helper()
-
-	if !inspection.HasFile {
-		t.Fatalf("inspection file state = %#v", inspection)
-	}
-	if inspection.SizeBytes == 0 {
-		t.Fatalf("inspection file state = %#v", inspection)
+	command := os.Getenv("DIU_TEST_STORAGE_COMMAND")
+	if command != "" {
+		record := &core.ExecutionRecord{Tool: core.ToolGo, Command: command, Timestamp: time.Now()}
+		addExecution(t, store, record)
 	}
 }
 
-func assertInspectionCounts(t *testing.T, inspection JSONInspection) {
-	t.Helper()
-
-	if inspection.ExecutionCount != 2 {
-		t.Fatalf("inspection counts = %#v", inspection)
-	}
-	if inspection.PackageCount != 1 {
-		t.Fatalf("inspection counts = %#v", inspection)
-	}
-}
-
-func assertInspectionLatest(t *testing.T, inspection JSONInspection) {
-	t.Helper()
-
-	if inspection.LatestExecution == nil {
-		t.Fatalf("latest execution = %#v", inspection.LatestExecution)
-	}
-	if inspection.LatestExecution.ID != "latest" {
-		t.Fatalf("latest execution = %#v", inspection.LatestExecution)
-	}
-}
-
-func assertInspectionMetadata(t *testing.T, inspection JSONInspection) {
-	t.Helper()
-
-	if inspection.Statistics.TotalExecutions != 2 {
-		t.Fatalf("inspection metadata = %#v", inspection)
-	}
-	if inspection.Metadata.LastUpdated.IsZero() {
-		t.Fatalf("inspection metadata = %#v", inspection)
-	}
-}
-
-func TestSummarizeExecutionsStreamsFilteredCounts(t *testing.T) {
-	store := newTestStorage(t)
+func TestInitializeWaitsForPendingCommitLock(t *testing.T) {
+	store, config := newNamedTestStorage(t, "test.json")
 	defer closeStorage(t, store)
-	addExecution(t, store, &core.ExecutionRecord{Tool: core.ToolHomebrew, Timestamp: time.Now()})
-	addExecution(t, store, &core.ExecutionRecord{Tool: core.ToolHomebrew, Timestamp: time.Now()})
-	addExecution(t, store, &core.ExecutionRecord{Tool: core.ToolNPM, Timestamp: time.Now()})
+	unlock := holdStorageLock(t, store.filepath)
+	record := core.ExecutionRecord{Tool: core.ToolGo, Command: "pending", Timestamp: time.Now()}
+	commit := preparePendingCommit(t, store, record)
+	paths := []string{commit.ManifestTemp, commit.ExecutionTemp, store.storageCommitJournalPath()}
+	contents := readCommitFiles(t, paths)
+	done := startStorageOpenProcess(t, store.filepath, "")
+	assertStorageOpenBlocked(t, done)
+	assertCommitFilesUnchanged(t, contents)
+	unlock()
+	waitForStorageProcess(t, done)
+	assertExecutionLogIncludesExecution(t, config, &record)
+	if _, err := os.Stat(store.storageCommitJournalPath()); !os.IsNotExist(err) {
+		t.Fatalf("recovered journal still exists: %v", err)
+	}
+}
 
-	summary, err := store.SummarizeExecutions(QueryOptions{Tool: core.ToolHomebrew})
+func preparePendingCommit(t *testing.T, store *JSONStorage, record core.ExecutionRecord) storageCommitJournal {
+	t.Helper()
+	records := []core.ExecutionRecord{record}
+	executionTemp, err := store.prepareAppendedExecutionLog(records)
 	if err != nil {
-		t.Fatalf("SummarizeExecutions failed: %v", err)
+		t.Fatal(err)
 	}
-	hasTotal := summary.Total == 2
-	hasHomebrewCount := summary.ToolCounts[core.ToolHomebrew] == 2
-	hasSummary := hasTotal && hasHomebrewCount
-	if !hasSummary {
-		t.Fatalf("summary = %#v", summary)
+	store.applyExecutions(records)
+	commit, err := store.prepareStorageCommit(executionTemp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.writeStorageCommitJournal(commit); err != nil {
+		t.Fatal(err)
+	}
+	return commit
+}
+
+func TestSimultaneousFirstInitialization(t *testing.T) {
+	manifest := filepath.Join(t.TempDir(), "new", "executions.json")
+	unlock := holdStorageLock(t, manifest)
+	processes := make([]<-chan error, 4)
+	for i := range processes {
+		processes[i] = startStorageOpenProcess(t, manifest, fmt.Sprintf("record-%d", i))
+	}
+	assertStorageOpenBlocked(t, processes[0])
+	assertStorageNotInitialized(t, manifest)
+	unlock()
+	for _, done := range processes {
+		waitForStorageProcess(t, done)
+	}
+	store := newStorageForManifest(t, manifest)
+	defer closeStorage(t, store)
+	assertStatisticsTotal(t, store, len(processes))
+}
+
+func assertStorageNotInitialized(t *testing.T, manifest string) {
+	t.Helper()
+	for _, path := range []string{manifest, ExecutionLogPath(manifest)} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Errorf("initialization changed %s while locked: %v", path, err)
+		}
 	}
 }
 
-func TestInspectJSONFileHandlesMissingAndUnknownFields(t *testing.T) {
-	missing := filepath.Join(t.TempDir(), "missing.json")
-	inspection, err := InspectJSONFile(missing)
-	missingOK := err == nil && !inspection.HasFile
-	if !missingOK {
-		t.Fatalf("missing inspection = %#v, %v", inspection, err)
-	}
-	path := filepath.Join(t.TempDir(), "storage.json")
-	data := []byte(`{"unknown":{"nested":[1,{"ok":true}]},"metadata":null,"executions":null,"packages":null,"statistics":null}`)
-	if err := os.WriteFile(path, data, core.PrivateFileMode); err != nil {
-		t.Fatalf("WriteFile failed: %v", err)
-	}
-	inspection, err = InspectJSONFile(path)
-	unknownFieldsOK := err == nil && inspection.HasFile && inspection.ExecutionCount == 0
-	if !unknownFieldsOK {
-		t.Fatalf("unknown-field inspection = %#v, %v", inspection, err)
-	}
+func TestStorageLockDeadlineDuringInitialization(t *testing.T) {
+	manifest := filepath.Join(t.TempDir(), "executions.json")
+	unlock := holdStorageLock(t, manifest)
+	config := &core.Config{Storage: core.StorageConfig{JSONFile: manifest}}
+	assertStorageDeadline(t, func() error {
+		_, err := NewJSONStorageWithLockWait(config, 50*time.Millisecond)
+		return err
+	})
+	assertStorageNotInitialized(t, manifest)
+	unlock()
+	store := newStorageForManifest(t, manifest)
+	closeStorage(t, store)
 }
 
-func TestInspectJSONFileRejectsInvalidStorage(t *testing.T) {
-	tests := map[string]string{
-		"wrong executions type": `{"executions":{}}`,
-		"trailing data":         `{} {}`,
-		"truncated object":      `{"executions":[`,
+func TestStorageLockDeadlineDuringWrite(t *testing.T) {
+	config := &core.Config{Storage: core.StorageConfig{JSONFile: filepath.Join(t.TempDir(), "executions.json")}}
+	store, err := NewJSONStorageWithLockWait(config, 50*time.Millisecond)
+	if err != nil {
+		t.Fatal(err)
 	}
-	for name, content := range tests {
-		t.Run(name, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "invalid.json")
-			if err := os.WriteFile(path, []byte(content), core.PrivateFileMode); err != nil {
-				t.Fatalf("WriteFile failed: %v", err)
-			}
-			if _, err := InspectJSONFile(path); err == nil {
-				t.Fatal("invalid storage was accepted")
-			}
+	defer closeStorage(t, store)
+	unlock := holdStorageLock(t, config.Storage.JSONFile)
+	assertStorageDeadline(t, func() error {
+		return store.AddExecution(&core.ExecutionRecord{Tool: core.ToolGo, Timestamp: time.Now()})
+	})
+	unlock()
+	reopened := newStorageForManifest(t, config.Storage.JSONFile)
+	defer closeStorage(t, reopened)
+	assertStatisticsTotal(t, reopened, 0)
+}
+
+func TestStorageLockBudgetExcludesCommitWork(t *testing.T) {
+	config := &core.Config{Storage: core.StorageConfig{JSONFile: filepath.Join(t.TempDir(), "executions.json")}}
+	store, err := NewJSONStorageWithLockWait(config, 50*time.Millisecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeStorage(t, store)
+	store.marshalStorage = func(data *core.StorageData) ([]byte, error) {
+		time.Sleep(120 * time.Millisecond)
+		return marshalStorageData(data)
+	}
+	record := &core.ExecutionRecord{Tool: core.ToolGo, Timestamp: time.Now()}
+	addExecution(t, store, record)
+	addExecution(t, store, record)
+	assertStatisticsTotal(t, store, 2)
+}
+
+func TestExhaustedStorageLockBudgetAllowsUncontendedWrites(t *testing.T) {
+	for _, wait := range []time.Duration{0, 50 * time.Millisecond} {
+		t.Run(wait.String(), func(t *testing.T) {
+			assertUncontendedWriteAfterBudgetExhaustion(t, wait)
 		})
 	}
-	if _, err := InspectJSONFile(t.TempDir()); err == nil {
-		t.Fatal("storage directory was accepted")
+}
+
+func assertUncontendedWriteAfterBudgetExhaustion(t *testing.T, wait time.Duration) {
+	t.Helper()
+	config := &core.Config{Storage: core.StorageConfig{JSONFile: filepath.Join(t.TempDir(), "executions.json")}}
+	store, err := NewJSONStorageWithLockWait(config, wait)
+	if err != nil {
+		t.Fatal(err)
 	}
+	defer closeStorage(t, store)
+	unlock := holdStorageLock(t, config.Storage.JSONFile)
+	record := &core.ExecutionRecord{Tool: core.ToolGo, Timestamp: time.Now()}
+	assertStorageDeadline(t, func() error { return store.AddExecution(record) })
+	unlock()
+	addExecution(t, store, record)
+	assertStatisticsTotal(t, store, 1)
+}
+
+func assertStorageDeadline(t *testing.T, operation func() error) {
+	t.Helper()
+	done := make(chan error, 1)
+	go func() { done <- operation() }()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("lock wait ignored deadline: %v", err)
+		}
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("lock wait exceeded deadline")
+	}
+}
+
+func holdStorageLock(t *testing.T, manifest string) func() {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(manifest), core.OwnerDirectoryMode); err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.OpenFile(manifest+".lock", os.O_CREATE|os.O_RDWR, core.PrivateFileMode)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unlock := sync.OnceFunc(func() {
+		if err := file.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	t.Cleanup(unlock)
+	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX); err != nil {
+		t.Fatal(err)
+	}
+	return unlock
+}
+
+func startStorageOpenProcess(t *testing.T, manifest, command string) <-chan error {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	t.Cleanup(cancel)
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestStorageOpenProcess$")
+	cmd.Env = append(os.Environ(), "DIU_TEST_STORAGE_PATH="+manifest, "DIU_TEST_STORAGE_COMMAND="+command)
+	cmd.Stderr = os.Stderr
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	waitForStorageProcessStart(t, stdout)
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	return done
+}
+
+func waitForStorageProcessStart(t *testing.T, stdout io.Reader) {
+	t.Helper()
+	line, err := bufio.NewReader(stdout).ReadString('\n')
+	hasStarted := err == nil && line == "opening\n"
+	if !hasStarted {
+		t.Fatalf("storage process did not start: %q, %v", line, err)
+	}
+}
+
+func assertStorageOpenBlocked(t *testing.T, done <-chan error) {
+	t.Helper()
+	select {
+	case err := <-done:
+		t.Fatalf("storage opened before the writer released its lock: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+func waitForStorageProcess(t *testing.T, done <-chan error) {
+	t.Helper()
+	if err := <-done; err != nil {
+		t.Fatalf("storage process failed: %v", err)
+	}
+}
+
+func readCommitFiles(t *testing.T, paths []string) map[string]string {
+	t.Helper()
+	contents := make(map[string]string)
+	for _, path := range paths {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		contents[path] = string(data)
+	}
+	return contents
+}
+
+func assertCommitFilesUnchanged(t *testing.T, contents map[string]string) {
+	t.Helper()
+	for path, want := range contents {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Errorf("pending commit changed while locked: %v", err)
+			continue
+		}
+		if string(data) != want {
+			t.Errorf("pending commit changed while locked: %s", path)
+		}
+	}
+}
+
+func BenchmarkRecordNearStorageLimit(b *testing.B) {
+	for _, count := range []int{0, 16063} {
+		b.Run(fmt.Sprint(count), func(b *testing.B) {
+			store := performanceStorage(b, count)
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				record := &core.ExecutionRecord{Tool: core.ToolGoBinary, Command: "tool", Timestamp: time.Now()}
+				if err := store.AddExecution(record); err != nil {
+					b.Fatal(err)
+				}
+			}
+			b.StopTimer()
+			info, err := os.Stat(store.executionPath)
+			if err != nil {
+				b.Fatal(err)
+			}
+			b.ReportMetric(float64(info.Size()), "history-bytes")
+		})
+	}
+}
+
+func TestRecordNearStorageLimitSerializesManifestOnce(t *testing.T) {
+	store := performanceStorage(t, 16063)
+	marshals := 0
+	store.marshalStorage = func(data *core.StorageData) ([]byte, error) {
+		marshals++
+		if len(data.Executions) != 0 {
+			t.Fatal("recording serialized the execution history")
+		}
+		return marshalStorageData(data)
+	}
+	addExecution(t, store, &core.ExecutionRecord{Tool: "tool", Timestamp: time.Now()})
+	if marshals != 1 {
+		t.Fatalf("recording serialized the manifest %d times, want 1", marshals)
+	}
+}
+
+func performanceStorage(b testing.TB, count int) *JSONStorage {
+	b.Helper()
+	config := core.DefaultConfig()
+	config.Storage.JSONFile = filepath.Join(b.TempDir(), "executions.json")
+	store, err := NewJSONStorage(config)
+	if err != nil {
+		b.Fatal(err)
+	}
+	records := make([]*core.ExecutionRecord, count)
+	for index := range records {
+		records[index] = &core.ExecutionRecord{ID: fmt.Sprintf("seed-%05d", index), Tool: "seed", Command: strings.Repeat("x", 480), Timestamp: time.Now()}
+	}
+	if err := store.AddExecutions(records); err != nil {
+		b.Fatal(err)
+	}
+	return store
 }

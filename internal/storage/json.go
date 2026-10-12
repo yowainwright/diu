@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -78,9 +79,9 @@ func (j *JSONStorage) ensureStorageDirectory() error {
 }
 
 func (j *JSONStorage) loadOrCreateStorage() error {
-	exists, err := storagePathExists(j.filepath)
+	exists, err := pathExists(j.filepath)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to stat storage file: %w", err)
 	}
 	if !exists {
 		return j.initializeEmptyStorage()
@@ -102,16 +103,6 @@ func (j *JSONStorage) loadCurrentStorage() error {
 	}
 	j.data = nil
 	return nil
-}
-
-func storagePathExists(path string) (bool, error) {
-	if _, err := os.Stat(path); err != nil {
-		if os.IsNotExist(err) {
-			return false, nil
-		}
-		return false, fmt.Errorf("failed to stat storage file: %w", err)
-	}
-	return true, nil
 }
 
 func ExecutionLogPath(manifestPath string) string {
@@ -292,9 +283,6 @@ func (j *JSONStorage) AddExecutions(records []*core.ExecutionRecord) error {
 }
 
 func validateExecutionRecords(records []*core.ExecutionRecord) error {
-	if len(records) == 0 {
-		return nil
-	}
 	for _, record := range records {
 		if record == nil {
 			return ErrNilExecutionRecord
@@ -571,22 +559,6 @@ func (j *JSONStorage) deleteInventoryPackage(tool, name string) {
 	}
 }
 
-func (j *JSONStorage) ReconcilePackages(scanned map[string]map[string]struct{}, startedAt time.Time) error {
-	j.mu.Lock()
-	defer j.mu.Unlock()
-
-	return j.withFileLock(func() error {
-		if err := j.reload(); err != nil {
-			return err
-		}
-		changed := j.removeMissingPackages(scanned, startedAt)
-		if !changed {
-			return nil
-		}
-		return j.save()
-	})
-}
-
 func (j *JSONStorage) ApplyPackageScan(
 	packages []*core.PackageInfo,
 	scanned map[string]map[string]struct{},
@@ -741,23 +713,6 @@ func packageUpdatedAfter(pkg core.PackageInfo, startedAt time.Time) bool {
 		return true
 	}
 	return pkg.InstallDate.After(startedAt) || pkg.LastUsed.After(startedAt)
-}
-
-func (j *JSONStorage) UpdateStatistics() error {
-	j.mu.Lock()
-	defer j.mu.Unlock()
-
-	return j.withFileLock(func() error {
-		if err := j.reload(); err != nil {
-			return err
-		}
-		statistics, err := j.calculateExecutionStatistics()
-		if err != nil {
-			return err
-		}
-		j.data.Statistics = statistics
-		return j.save()
-	})
 }
 
 func (j *JSONStorage) Backup() error {
@@ -1154,9 +1109,9 @@ func generateID() string {
 
 func copyExecutionValue(record core.ExecutionRecord) core.ExecutionRecord {
 	record.Args = copyStringSlice(record.Args)
-	record.Environment = copyStringMap(record.Environment)
+	record.Environment = maps.Clone(record.Environment)
 	record.PackagesAffected = copyStringSlice(record.PackagesAffected)
-	record.Metadata = copyMetadataMap(record.Metadata)
+	record.Metadata = maps.Clone(record.Metadata)
 	return record
 }
 
@@ -1167,7 +1122,7 @@ func copyPackageValue(pkg core.PackageInfo) core.PackageInfo {
 
 func copyStorageStatistics(stats core.StorageStatistics) core.StorageStatistics {
 	stats.ToolsUsed = copyStringSlice(stats.ToolsUsed)
-	stats.ExecutionFrequency = copyStringIntMap(stats.ExecutionFrequency)
+	stats.ExecutionFrequency = maps.Clone(stats.ExecutionFrequency)
 	return stats
 }
 
@@ -1176,37 +1131,4 @@ func copyStringSlice(values []string) []string {
 		return nil
 	}
 	return append([]string(nil), values...)
-}
-
-func copyStringMap(values map[string]string) map[string]string {
-	if values == nil {
-		return nil
-	}
-	copy := make(map[string]string, len(values))
-	for key, value := range values {
-		copy[key] = value
-	}
-	return copy
-}
-
-func copyStringIntMap(values map[string]int) map[string]int {
-	if values == nil {
-		return nil
-	}
-	copy := make(map[string]int, len(values))
-	for key, value := range values {
-		copy[key] = value
-	}
-	return copy
-}
-
-func copyMetadataMap(values map[string]interface{}) map[string]interface{} {
-	if values == nil {
-		return nil
-	}
-	copy := make(map[string]interface{}, len(values))
-	for key, value := range values {
-		copy[key] = value
-	}
-	return copy
 }

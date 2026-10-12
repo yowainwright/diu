@@ -1,9 +1,18 @@
 package storage
 
 import (
+	"errors"
 	"time"
 
 	"github.com/yowainwright/diu/internal/core"
+)
+
+var (
+	ErrExecutionLogNotFound          = errors.New("execution log not found")
+	ErrUnsupportedExecutionLogFormat = errors.New("unsupported execution log format")
+	ErrEmptyPath                     = errors.New("path cannot be empty")
+	ErrNilExecutionRecord            = errors.New("execution record cannot be nil")
+	ErrNilPackage                    = errors.New("package cannot be nil")
 )
 
 type Storage interface {
@@ -13,7 +22,6 @@ type Storage interface {
 	AddExecution(record *core.ExecutionRecord) error
 	AddExecutions(records []*core.ExecutionRecord) error
 	GetExecutions(opts QueryOptions) ([]*core.ExecutionRecord, error)
-	GetExecutionByID(id string) (*core.ExecutionRecord, error)
 
 	UpdatePackage(pkg *core.PackageInfo) error
 	GetPackage(tool, name string) (*core.PackageInfo, error)
@@ -22,7 +30,6 @@ type Storage interface {
 	DeletePackage(tool, name string) error
 
 	Statistics() (*core.StorageStatistics, error)
-	UpdateStatistics() error
 
 	Prepare() error
 	Backup() error

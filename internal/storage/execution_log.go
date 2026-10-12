@@ -4,38 +4,9 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
-	"os"
 
 	"github.com/yowainwright/diu/internal/core"
-	"github.com/yowainwright/diu/internal/safefs"
 )
-
-func appendExecutionRecords(path string, records []core.ExecutionRecord) (err error) {
-	data, err := encodeExecutionRecords(records)
-	if err != nil {
-		return err
-	}
-	file, err := safefs.OpenFile(path, os.O_APPEND|os.O_WRONLY, core.PrivateFileMode)
-	if err != nil {
-		return fmt.Errorf("failed to open execution log: %w", err)
-	}
-	defer func() {
-		closeErr := file.Close()
-		shouldReturnCloseErr := err == nil && closeErr != nil
-		if shouldReturnCloseErr {
-			err = fmt.Errorf("failed to close execution log: %w", closeErr)
-		}
-	}()
-	written, err := file.Write(data)
-	if err != nil {
-		return fmt.Errorf("failed to append executions: %w", err)
-	}
-	if written != len(data) {
-		return fmt.Errorf("failed to append executions: %w", io.ErrShortWrite)
-	}
-	return nil
-}
 
 func (j *JSONStorage) prepareAppendedExecutionLog(records []core.ExecutionRecord) (string, error) {
 	data, err := encodeExecutionRecords(records)
@@ -50,10 +21,6 @@ func (j *JSONStorage) prepareAppendedExecutionLog(records []core.ExecutionRecord
 		discardTempFile(file, tempPath)
 		return "", err
 	}
-	return prepareAppendedExecutionFile(file, tempPath, data)
-}
-
-func prepareAppendedExecutionFile(file *os.File, tempPath string, data []byte) (string, error) {
 	if err := writePreparedFile(file, tempPath, data); err != nil {
 		return "", err
 	}

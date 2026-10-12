@@ -86,8 +86,13 @@ func TestAddExecutionCompactsBeforeReload(t *testing.T) {
 	if err := store.AddExecution(record); err != nil {
 		t.Fatalf("AddExecution failed: %v", err)
 	}
-	if _, err := store.GetExecutionByID(record.ID); err != nil {
-		t.Fatalf("new execution was not retained: %v", err)
+	executions, err := store.GetExecutions(QueryOptions{Limit: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	retained := len(executions) == 1 && executions[0].ID == record.ID
+	if !retained {
+		t.Fatal("new execution was not retained")
 	}
 	assertStorageSize(t, ExecutionLogPath(config.Storage.JSONFile), config.Storage.MaxStorageBytes)
 }
@@ -136,29 +141,6 @@ func TestCompactionLimitsReserveHeadroom(t *testing.T) {
 	}
 	if got := compactedRecordLimit(10000); got != 9000 {
 		t.Fatalf("record limit with headroom = %d", got)
-	}
-}
-
-func TestWriteCompactedStorageCleansUpAfterRenameFailure(t *testing.T) {
-	targetDirectory := t.TempDir()
-	records := []compactExecution{{data: []byte(`{"id":"one"}`)}}
-	if err := writeCompactedStorage(targetDirectory, records); err == nil {
-		t.Fatal("writeCompactedStorage succeeded with a directory target")
-	}
-	pattern := "." + filepath.Base(targetDirectory) + ".compact-*"
-	temporaryPattern := filepath.Join(filepath.Dir(targetDirectory), pattern)
-	temporaryFiles, err := filepath.Glob(temporaryPattern)
-	assertNoTemporaryFiles(t, temporaryFiles, err)
-}
-
-func assertNoTemporaryFiles(t *testing.T, temporaryFiles []string, err error) {
-	t.Helper()
-
-	if err != nil {
-		t.Fatalf("temporary compaction files = %#v, %v", temporaryFiles, err)
-	}
-	if len(temporaryFiles) != 0 {
-		t.Fatalf("temporary compaction files = %#v, %v", temporaryFiles, err)
 	}
 }
 

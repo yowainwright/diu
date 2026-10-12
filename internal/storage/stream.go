@@ -695,24 +695,6 @@ func (j *JSONStorage) executionSeq() iter.Seq2[core.ExecutionRecord, error] {
 	}
 }
 
-func (j *JSONStorage) calculateExecutionStatistics() (core.StorageStatistics, error) {
-	statistics := core.StorageStatistics{
-		ToolsUsed:          []string{},
-		ExecutionFrequency: make(map[string]int),
-	}
-	dayCount := make(map[string]int)
-	for record, err := range j.executionSeq() {
-		if err != nil {
-			return statistics, err
-		}
-		statistics.TotalExecutions++
-		item := compactExecution{timestamp: record.Timestamp, tool: record.Tool}
-		updateCompactedStatistics(&statistics, dayCount, item)
-	}
-	statistics.MostActiveDay = mostActiveDay(dayCount)
-	return statistics, nil
-}
-
 func (j *JSONStorage) GetExecutions(opts QueryOptions) ([]*core.ExecutionRecord, error) {
 	collector := newExecutionCollector(opts)
 	err := j.withConsistentRead(func() error {
@@ -728,28 +710,6 @@ func (j *JSONStorage) GetExecutions(opts QueryOptions) ([]*core.ExecutionRecord,
 		return nil, err
 	}
 	return collector.results(), nil
-}
-
-func (j *JSONStorage) GetExecutionByID(id string) (*core.ExecutionRecord, error) {
-	var found *core.ExecutionRecord
-	err := j.withConsistentRead(func() error {
-		for record, err := range j.executionSeq() {
-			if err != nil {
-				return err
-			}
-			if record.ID != id {
-				continue
-			}
-			copy := copyExecutionValue(record)
-			found = &copy
-			return nil
-		}
-		return fmt.Errorf("execution not found: %s", id)
-	})
-	if err != nil {
-		return nil, err
-	}
-	return found, nil
 }
 
 func (j *JSONStorage) GetPackage(tool, name string) (*core.PackageInfo, error) {
