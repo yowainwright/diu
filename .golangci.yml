@@ -4,12 +4,6 @@ linters:
   default: standard
   enable:
     - legibility
-  exclusions:
-    rules:
-      - path: '^(cmd/diu|internal/core|internal/monitors)/'
-        linters:
-          - legibility
-        text: LEG025
   settings:
     custom:
       legibility:
@@ -19,6 +13,8 @@ linters:
         settings:
           enabled-rules:
             - all
+          disabled-rules:
+            - require-filename-matches-dirname
           comment-matchers:
             - '^// #nosec\b'
             - '^//nolint:'

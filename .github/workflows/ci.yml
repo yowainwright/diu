@@ -7,10 +7,10 @@ on:
     branches: [ main ]
 
 env:
-  GO_VERSION: '1.26.9'
+  GO_VERSION: '1.27.2'
   GOLANGCI_LINT_VERSION: 'v2.13.2'
   GORELEASER_VERSION: 'v2.12.0'
-  GOSEC_VERSION: 'v2.28.0'
+  GOSEC_VERSION: 'v2.29.1-0.20261009120814-7b1b5cebe007'
   GOVULNCHECK_VERSION: 'v1.6.0'
 
 jobs:
@@ -40,7 +40,7 @@ jobs:
         uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db # v3
         with:
           version: '2026.9.0'
-          install_args: shellcheck shfmt github:yowainwright/shellcheck_legibility
+          install_args: shellcheck shfmt github:yowainwright/shellcheck_legibility github:yowainwright/fs-lint
           env: false
           add_shims_to_path: false
 
@@ -49,6 +49,7 @@ jobs:
 
       - name: Run linters
         run: |
+          mise run lint-files
           go vet ./...
           LINT_PACKAGE="github.com/golangci/golangci-lint/v2/cmd/golangci-lint@${GOLANGCI_LINT_VERSION}"
           GOFLAGS="-mod=readonly -buildvcs=false" go run "$LINT_PACKAGE" custom
@@ -57,16 +58,13 @@ jobs:
   test:
     name: Test
     runs-on: macos-latest
-    strategy:
-      matrix:
-        go: ['1.25.12', '1.26.9']
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Set up Go
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          go-version: ${{ matrix.go }}
+          go-version: ${{ env.GO_VERSION }}
 
       - name: Cache Go modules
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
@@ -82,7 +80,6 @@ jobs:
           go tool cover -func=coverage.out
 
       - name: Upload coverage to Codecov
-        if: matrix.go == '1.26.9'
         uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v6
         with:
           files: ./coverage.out

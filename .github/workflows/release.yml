@@ -36,7 +36,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          go-version: '1.26.9'
+          go-version: '1.27.2'
 
       - name: Install GoReleaser
         run: |
@@ -51,7 +51,7 @@ jobs:
         uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db # v3
         with:
           version: '2026.9.0'
-          install_args: shellcheck shfmt github:yowainwright/shellcheck_legibility
+          install_args: shellcheck shfmt github:yowainwright/shellcheck_legibility github:yowainwright/fs-lint
           env: false
           add_shims_to_path: false
 
@@ -63,6 +63,7 @@ jobs:
 
       - name: Run linters
         run: |
+          mise run lint-files
           LINT_PACKAGE="github.com/golangci/golangci-lint/v2/cmd/golangci-lint@${GOLANGCI_LINT_VERSION}"
           GOFLAGS="-mod=readonly -buildvcs=false" go run "$LINT_PACKAGE" custom
           ./bin/legibility-golangci-lint run --max-issues-per-linter=0 --max-same-issues=0 ./...
