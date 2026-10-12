@@ -9,7 +9,59 @@ import (
 	"github.com/yowainwright/diu/internal/dx"
 )
 
-func TestOutSeparatesDataFromStatus(t *testing.T) {
+func TestNewOutRetainsConfiguredStreams(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	stdin := strings.NewReader("input")
+	out := dx.NewOut(&stdout, &stderr, stdin)
+
+	hasStdout := out.Stdout() == &stdout
+	hasStderr := out.Stderr() == &stderr
+	hasStdin := out.Stdin() == stdin
+	hasConfiguredStreams := hasStdout && hasStderr && hasStdin
+	if !hasConfiguredStreams {
+		t.Fatal("Out did not retain its configured streams")
+	}
+}
+
+func TestNewOutUsesSafeDefaultsForMissingStreams(t *testing.T) {
+	t.Setenv("CI", "1")
+	out := dx.NewOut(nil, nil, nil)
+
+	out.Printf("data")
+	out.UI("status")
+	hasStdout := out.Stdout() != nil
+	hasStderr := out.Stderr() != nil
+	hasStdin := out.Stdin() != nil
+	hasStreams := hasStdout && hasStderr && hasStdin
+	if !hasStreams {
+		t.Fatal("missing stream was left nil")
+	}
+	if out.CanPrompt() {
+		t.Fatal("prompting enabled without interactive streams")
+	}
+}
+
+func TestPrintfRoutesToConfiguredStreams(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	out := dx.NewOut(&stdout, &stderr, strings.NewReader(""))
+
+	out.Printf("result ")
+	out.Printf("%d", 2)
+	out.UI("loading ")
+	out.UIPrintf("%d", 3)
+	out.UILine(" done")
+
+	if stdout.String() != "result 2" {
+		t.Fatalf("stdout = %q", stdout.String())
+	}
+	if stderr.String() != "loading 3 done\n" {
+		t.Fatalf("stderr = %q", stderr.String())
+	}
+}
+
+func TestStatusKeepsDataOnStdout(t *testing.T) {
 	t.Setenv("DIU_COLOR", "never")
 	t.Setenv("DIU_ACTIVITY", "never")
 	var stdout bytes.Buffer
@@ -27,75 +79,7 @@ func TestOutSeparatesDataFromStatus(t *testing.T) {
 	}
 }
 
-func TestOutRoutesFormattedTextToConfiguredStreams(t *testing.T) {
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-	out := dx.NewOut(&stdout, &stderr, strings.NewReader(""))
-
-	out.Print("result ")
-	out.Printf("%d", 2)
-	out.UI("loading ")
-	out.UIPrintf("%d", 3)
-	out.UILine(" done")
-
-	if stdout.String() != "result 2" {
-		t.Fatalf("stdout = %q", stdout.String())
-	}
-	if stderr.String() != "loading 3 done\n" {
-		t.Fatalf("stderr = %q", stderr.String())
-	}
-}
-
-func TestOutExposesConfiguredStreams(t *testing.T) {
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-	stdin := strings.NewReader("input")
-	out := dx.NewOut(&stdout, &stderr, stdin)
-
-	hasStdout := out.Stdout() == &stdout
-	hasStderr := out.Stderr() == &stderr
-	hasStdin := out.Stdin() == stdin
-	hasConfiguredStreams := hasStdout && hasStderr && hasStdin
-	if !hasConfiguredStreams {
-		t.Fatal("Out did not retain its configured streams")
-	}
-}
-
-func TestOutUsesSafeDefaultsForMissingStreams(t *testing.T) {
-	t.Setenv("CI", "1")
-	out := dx.NewOut(nil, nil, nil)
-
-	out.Print("data")
-	out.UI("status")
-	hasStdout := out.Stdout() != nil
-	hasStderr := out.Stderr() != nil
-	hasStdin := out.Stdin() != nil
-	hasStreams := hasStdout && hasStderr && hasStdin
-	if !hasStreams {
-		t.Fatal("missing stream was left nil")
-	}
-	if out.CanPrompt() {
-		t.Fatal("prompting enabled without interactive streams")
-	}
-}
-
-func TestNullDeviceIsNotInteractive(t *testing.T) {
-	null, err := os.Open(os.DevNull)
-	if err != nil {
-		t.Fatalf("Open null device: %v", err)
-	}
-	defer func() {
-		if err := null.Close(); err != nil {
-			t.Fatalf("Close null device: %v", err)
-		}
-	}()
-
-	if dx.IsTerminal(null) {
-		t.Fatal("null device reported as an interactive terminal")
-	}
-}
-
-func TestTermDumbDisablesForcedColor(t *testing.T) {
+func TestStatusDisablesForcedColorOnDumbTerminal(t *testing.T) {
 	t.Setenv("DIU_COLOR", "always")
 	t.Setenv("TERM", "dumb")
 	var stderr bytes.Buffer
@@ -120,7 +104,7 @@ func TestStatusDoesNotClearWithoutActiveLoader(t *testing.T) {
 	}
 }
 
-func TestOutCanForceStandardAnsiColor(t *testing.T) {
+func TestStatusCanForceStandardANSIColor(t *testing.T) {
 	t.Setenv("DIU_COLOR", "always")
 	t.Setenv("NO_COLOR", "")
 	t.Setenv("TERM", "xterm-256color")
@@ -134,11 +118,40 @@ func TestOutCanForceStandardAnsiColor(t *testing.T) {
 	}
 }
 
-func TestOutUsesSemanticToneColors(t *testing.T) {
+func TestStatusHonorsNoColor(t *testing.T) {
+	t.Setenv("DIU_COLOR", "always")
+	t.Setenv("NO_COLOR", "1")
+	var stderr bytes.Buffer
+	out := dx.NewOut(&bytes.Buffer{}, &stderr, strings.NewReader(""))
+
+	out.Status(dx.Success, "complete")
+
+	if strings.Contains(stderr.String(), "\x1b[") {
+		t.Fatalf("status = %q, want no ANSI", stderr.String())
+	}
+}
+
+func TestStyleDataUsesSemanticToneColors(t *testing.T) {
 	out := newColorTestOut(t)
 	assertSemanticToneColors(t, out)
 	assertPlainTone(t, out)
 	assertUnknownTone(t, out)
+}
+
+func TestIsTerminalRejectsNullDevice(t *testing.T) {
+	null, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatalf("Open null device: %v", err)
+	}
+	defer func() {
+		if err := null.Close(); err != nil {
+			t.Fatalf("Close null device: %v", err)
+		}
+	}()
+
+	if dx.IsTerminal(null) {
+		t.Fatal("null device reported as an interactive terminal")
+	}
 }
 
 func newColorTestOut(t *testing.T) *dx.Out {
@@ -196,18 +209,5 @@ func assertUnknownTone(t *testing.T, out *dx.Out) {
 
 	if got := out.StyleData(dx.Tone(255), "text"); got != "text" {
 		t.Fatalf("unknown tone = %q", got)
-	}
-}
-
-func TestOutHonorsNoColor(t *testing.T) {
-	t.Setenv("DIU_COLOR", "always")
-	t.Setenv("NO_COLOR", "1")
-	var stderr bytes.Buffer
-	out := dx.NewOut(&bytes.Buffer{}, &stderr, strings.NewReader(""))
-
-	out.Status(dx.Success, "complete")
-
-	if strings.Contains(stderr.String(), "\x1b[") {
-		t.Fatalf("status = %q, want no ANSI", stderr.String())
 	}
 }

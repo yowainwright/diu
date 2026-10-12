@@ -39,12 +39,6 @@ func TerminalOut() *Out {
 	return NewOut(os.Stdout, os.Stderr, os.Stdin)
 }
 
-func (o *Out) Print(text string) {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	_, _ = fmt.Fprint(o.stdout, text)
-}
-
 func (o *Out) Printf(format string, args ...any) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
@@ -110,10 +104,6 @@ func (o *Out) CanPrompt() bool {
 		return false
 	}
 	return IsTerminal(o.stdin) && IsTerminal(o.stderr)
-}
-
-func (o *Out) CanAnimate() bool {
-	return animationEnabled(o.stderr)
 }
 
 func Paint(w io.Writer, tone Tone, text string) string {

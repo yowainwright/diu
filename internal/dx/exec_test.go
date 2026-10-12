@@ -13,7 +13,7 @@ import (
 	"github.com/yowainwright/diu/internal/dx"
 )
 
-func TestRunnerRequiresDeadline(t *testing.T) {
+func TestRunRequiresDeadline(t *testing.T) {
 	runner := dx.NewRunner(strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
 	err := runner.Run(context.Background(), "true")
 	if !errors.Is(err, dx.ErrDeadlineRequired) {
@@ -21,7 +21,7 @@ func TestRunnerRequiresDeadline(t *testing.T) {
 	}
 }
 
-func TestRunnerRejectsEmptyCommandName(t *testing.T) {
+func TestRunRejectsEmptyCommandName(t *testing.T) {
 	runner := dx.NewRunner(nil, nil, nil)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
@@ -33,7 +33,7 @@ func TestRunnerRejectsEmptyCommandName(t *testing.T) {
 	}
 }
 
-func TestRunnerReturnsPreexistingContextError(t *testing.T) {
+func TestRunReturnsPreexistingContextError(t *testing.T) {
 	runner := dx.NewRunner(nil, nil, nil)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	cancel()
@@ -44,7 +44,7 @@ func TestRunnerReturnsPreexistingContextError(t *testing.T) {
 	}
 }
 
-func TestRunnerStopsCommandAtDeadline(t *testing.T) {
+func TestRunStopsCommandAtDeadline(t *testing.T) {
 	runner := dx.NewRunner(nil, nil, nil)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
@@ -58,7 +58,7 @@ func TestRunnerStopsCommandAtDeadline(t *testing.T) {
 	}
 }
 
-func TestRunnerExecutesArgvWithoutShell(t *testing.T) {
+func TestRunExecutesArgvWithoutShell(t *testing.T) {
 	var stdout bytes.Buffer
 	runner := dx.NewRunner(strings.NewReader(""), &stdout, &bytes.Buffer{})
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
@@ -72,7 +72,7 @@ func TestRunnerExecutesArgvWithoutShell(t *testing.T) {
 	}
 }
 
-func TestRunnerPreservesExitCode(t *testing.T) {
+func TestRunPreservesExitCode(t *testing.T) {
 	runner := dx.NewRunner(strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
@@ -85,7 +85,7 @@ func TestRunnerPreservesExitCode(t *testing.T) {
 	}
 }
 
-func TestRunnerReportsCommandStartFailure(t *testing.T) {
+func TestRunReportsCommandStartFailure(t *testing.T) {
 	runner := dx.NewRunner(nil, nil, nil)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
