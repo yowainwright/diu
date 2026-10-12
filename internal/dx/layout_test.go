@@ -7,27 +7,6 @@ import (
 	"github.com/yowainwright/diu/internal/dx"
 )
 
-func TestRowTruncatesAndAlignsColumns(t *testing.T) {
-	row := dx.Row([]int{4, 3}, "abcdef", "go")
-	if row != "abc.  go " {
-		t.Fatalf("Row = %q, want aligned columns", row)
-	}
-}
-
-func TestTruncatePreservesAnsiAndVisibleWidth(t *testing.T) {
-	value := "\x1b[36mabcdef\x1b[0m"
-	truncated := dx.Truncate(value, 4)
-	if dx.VisibleWidth(truncated) != 4 {
-		t.Fatalf("visible width = %d, want 4", dx.VisibleWidth(truncated))
-	}
-	preservesColor := strings.Contains(truncated, "\x1b[36m")
-	hasReset := strings.HasSuffix(truncated, "\x1b[0m")
-	preservesANSI := preservesColor && hasReset
-	if !preservesANSI {
-		t.Fatalf("Truncate lost ANSI state: %q", truncated)
-	}
-}
-
 func TestVisibleWidthHandlesUnicodeTerminalWidth(t *testing.T) {
 	tests := []struct {
 		name string
@@ -46,6 +25,20 @@ func TestVisibleWidthHandlesUnicodeTerminalWidth(t *testing.T) {
 	}
 }
 
+func TestTruncatePreservesAnsiAndVisibleWidth(t *testing.T) {
+	value := "\x1b[36mabcdef\x1b[0m"
+	truncated := dx.Truncate(value, 4)
+	if dx.VisibleWidth(truncated) != 4 {
+		t.Fatalf("visible width = %d, want 4", dx.VisibleWidth(truncated))
+	}
+	preservesColor := strings.Contains(truncated, "\x1b[36m")
+	hasReset := strings.HasSuffix(truncated, "\x1b[0m")
+	preservesANSI := preservesColor && hasReset
+	if !preservesANSI {
+		t.Fatalf("Truncate lost ANSI state: %q", truncated)
+	}
+}
+
 func TestTruncateDoesNotSplitWideRunes(t *testing.T) {
 	truncated := dx.Truncate("漢字", 3)
 	if truncated != "漢." {
@@ -56,12 +49,10 @@ func TestTruncateDoesNotSplitWideRunes(t *testing.T) {
 	}
 }
 
-func TestProgressShowsZeroAndCompleteStates(t *testing.T) {
-	if got := dx.Progress(0, 10, 5); got != "[-----] 0%" {
-		t.Fatalf("zero progress = %q", got)
-	}
-	if got := dx.Progress(10, 10, 5); got != "[#####] 100%" {
-		t.Fatalf("complete progress = %q", got)
+func TestRowTruncatesAndAlignsColumns(t *testing.T) {
+	row := dx.Row([]int{4, 3}, "abcdef", "go")
+	if row != "abc.  go " {
+		t.Fatalf("Row = %q, want aligned columns", row)
 	}
 }
 
@@ -72,5 +63,14 @@ func TestTableUsesContentWidths(t *testing.T) {
 	want := "tool      uses\nnpm       12  \nhomebrew  2   "
 	if table != want {
 		t.Fatalf("Table = %q, want %q", table, want)
+	}
+}
+
+func TestProgressShowsZeroAndCompleteStates(t *testing.T) {
+	if got := dx.Progress(0, 10, 5); got != "[-----] 0%" {
+		t.Fatalf("zero progress = %q", got)
+	}
+	if got := dx.Progress(10, 10, 5); got != "[#####] 100%" {
+		t.Fatalf("complete progress = %q", got)
 	}
 }

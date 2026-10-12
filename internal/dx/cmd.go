@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -33,17 +34,13 @@ func (c *Command) AddCommand(commands ...*Command) {
 
 //nolint:legibility // Public command API mirrors Cobra's Execute method.
 func (c *Command) Execute(args []string) error {
-	return c.execute(args)
-}
-
-func (c *Command) execute(args []string) error {
 	handled, err := c.handleBuiltIn(args)
 	shouldReturn := handled || err != nil
 	if shouldReturn {
 		return err
 	}
 	if child := c.child(args); child != nil {
-		return child.execute(args[1:])
+		return child.Execute(args[1:])
 	}
 	return c.run(args)
 }
@@ -187,15 +184,16 @@ func (c *Command) printFlags(w io.Writer) {
 	}
 	_, _ = fmt.Fprintln(w, "\nFlags:")
 	for _, current := range c.flags.order {
-		_, _ = fmt.Fprintf(w, "  %s--%-16s %s\n", current.shortUsage(), current.name, current.usage)
+		_, _ = fmt.Fprintf(w, "  %s--%-16s %s\n", current.shortUsage(), current.Name, current.usage)
 	}
 }
 
 func (c *Command) usagePath() string {
 	var parts []string
 	for current := c; current != nil; current = current.parent {
-		parts = append([]string{current.Use}, parts...)
+		parts = append(parts, current.Use)
 	}
+	slices.Reverse(parts)
 	return strings.Join(parts, " ")
 }
 
@@ -244,7 +242,7 @@ func NewFlagSet() *FlagSet {
 
 func (s *FlagSet) StringVarP(target *string, name, shorthand, value, usage string) {
 	*target = value
-	s.add(&Flag{name: name, short: shorthand, usage: usage, kind: flagKindString, stringValue: target})
+	s.add(&Flag{Name: name, short: shorthand, usage: usage, kind: flagKindString, stringValue: target})
 }
 
 func (s *FlagSet) StringVar(target *string, name, value, usage string) {
@@ -253,7 +251,7 @@ func (s *FlagSet) StringVar(target *string, name, value, usage string) {
 
 func (s *FlagSet) IntVarP(target *int, name, shorthand string, value int, usage string) {
 	*target = value
-	s.add(&Flag{name: name, short: shorthand, usage: usage, kind: flagKindInt, intValue: target})
+	s.add(&Flag{Name: name, short: shorthand, usage: usage, kind: flagKindInt, intValue: target})
 }
 
 func (s *FlagSet) IntVar(target *int, name string, value int, usage string) {
@@ -262,7 +260,7 @@ func (s *FlagSet) IntVar(target *int, name string, value int, usage string) {
 
 func (s *FlagSet) BoolVarP(target *bool, name, shorthand string, enabled bool, usage string) {
 	*target = enabled
-	s.add(&Flag{name: name, short: shorthand, usage: usage, kind: flagKindBool, boolValue: target})
+	s.add(&Flag{Name: name, short: shorthand, usage: usage, kind: flagKindBool, boolValue: target})
 }
 
 func (s *FlagSet) BoolVar(target *bool, name string, enabled bool, usage string) {
@@ -338,49 +336,36 @@ func (s *FlagSet) parseArgument(args []string, index int) (int, bool, []string, 
 }
 
 func (s *FlagSet) parseFlagArgument(args []string, index int, arg string) (int, bool, []string, error) {
-	isLongFlag := strings.HasPrefix(arg, "--") && len(arg) > 2
-	if isLongFlag {
-		consumed, err := s.parseLong(args, index)
-		return consumed, true, nil, err
-	}
-	isShortFlag := strings.HasPrefix(arg, "-") && len(arg) > 1
-	if isShortFlag {
-		consumed, err := s.parseShort(args, index)
+	isFlag := strings.HasPrefix(arg, "-") && len(arg) > 1
+	if isFlag {
+		consumed, err := s.parseFlag(args, index)
 		return consumed, true, nil, err
 	}
 	return 0, false, nil, nil
 }
 
-func (s *FlagSet) parseLong(args []string, index int) (int, error) {
-	name, value, hasValue := strings.Cut(args[index][2:], "=")
-	current := s.lookupLong(name)
+func (s *FlagSet) parseFlag(args []string, index int) (int, error) {
+	current, name, value, hasValue := s.flagArgument(args[index])
 	if current == nil {
-		return 0, fmt.Errorf("unknown flag: --%s", name)
+		return 0, fmt.Errorf("unknown flag: %s", name)
 	}
 	value, hasValue, consumed, err := flagValueFromArgs(current, value, hasValue, args, index)
 	if err != nil {
-		return 0, fmt.Errorf("flag needs a value: --%s", name)
+		return 0, fmt.Errorf("flag needs a value: %s", name)
 	}
 	if err := current.set(value, hasValue); err != nil {
-		return 0, fmt.Errorf("invalid value for --%s: %w", name, err)
+		return 0, fmt.Errorf("invalid value for %s: %w", name, err)
 	}
 	return consumed, nil
 }
 
-func (s *FlagSet) parseShort(args []string, index int) (int, error) {
-	name := args[index][1:]
-	current, value, hasValue := s.shortFlag(name)
-	if current == nil {
-		return 0, fmt.Errorf("unknown flag: -%s", name)
+func (s *FlagSet) flagArgument(arg string) (*Flag, string, string, bool) {
+	if strings.HasPrefix(arg, "--") {
+		name, value, hasValue := strings.Cut(arg[2:], "=")
+		return s.lookupLong(name), "--" + name, value, hasValue
 	}
-	value, hasValue, consumed, err := flagValueFromArgs(current, value, hasValue, args, index)
-	if err != nil {
-		return 0, fmt.Errorf("flag needs a value: -%s", name)
-	}
-	if err := current.set(value, hasValue); err != nil {
-		return 0, fmt.Errorf("invalid value for -%s: %w", name, err)
-	}
-	return consumed, nil
+	current, value, hasValue := s.shortFlag(arg[1:])
+	return current, arg, value, hasValue
 }
 
 func (s *FlagSet) shortFlag(name string) (*Flag, string, bool) {
@@ -413,9 +398,8 @@ func flagValueFromArgs(current *Flag, value string, hasValue bool, args []string
 }
 
 func (s *FlagSet) add(current *Flag) {
-	current.Name = current.name
 	current.Value = flagValue{flag: current}
-	s.byName[current.name] = current
+	s.byName[current.Name] = current
 	if current.short != "" {
 		s.byShort[current.short] = current
 	}
@@ -448,7 +432,6 @@ type Flag struct {
 	Name  string
 	Value fmt.Stringer
 
-	name        string
 	short       string
 	usage       string
 	kind        flagKind

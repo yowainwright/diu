@@ -30,7 +30,7 @@ func (o *Out) StartActivity(message string) *Activity {
 	activity := &Activity{
 		out:     o,
 		message: message,
-		enabled: o.CanAnimate(),
+		enabled: animationEnabled(o.stderr),
 		stop:    make(chan struct{}),
 		done:    make(chan struct{}),
 	}
@@ -50,14 +50,6 @@ func (a *Activity) Stop() {
 
 func (a *Activity) Success(message string) {
 	a.finish(Success, message)
-}
-
-func (a *Activity) Warning(message string) {
-	a.finish(Warning, message)
-}
-
-func (a *Activity) Fail(message string) {
-	a.finish(Error, message)
 }
 
 func (a *Activity) Notice(tone Tone, message string) {
@@ -122,12 +114,4 @@ func (a *Activity) stopLoop() {
 	close(a.stop)
 	<-a.done
 	a.out.UI(clearLine + showCursor)
-}
-
-func (o *Out) Shine(text string) string {
-	return o.UIStyle(Accent, text)
-}
-
-func (o *Out) Glitter(message string) {
-	o.Status(Accent, message)
 }

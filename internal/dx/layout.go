@@ -161,20 +161,13 @@ func runeWidth(r rune) int {
 }
 
 func isZeroWidthRune(r rune) bool {
-	if isControlRune(r) {
+	if unicode.IsControl(r) {
 		return true
 	}
 	if isMarkRune(r) {
 		return true
 	}
 	return isJoinerOrVariationSelector(r)
-}
-
-func isControlRune(r rune) bool {
-	isC0Control := r < 0x20
-	isC1Control := r >= 0x7f && r < 0xa0
-	isControl := isC0Control || isC1Control
-	return isControl
 }
 
 func isMarkRune(r rune) bool {

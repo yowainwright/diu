@@ -9,7 +9,7 @@ import (
 	"github.com/yowainwright/diu/internal/dx"
 )
 
-func TestCommandDispatchesArguments(t *testing.T) {
+func TestExecuteDispatchesArguments(t *testing.T) {
 	var got []string
 	root := &dx.Command{Use: "diu"}
 	child := &dx.Command{
@@ -30,7 +30,7 @@ func TestCommandDispatchesArguments(t *testing.T) {
 	}
 }
 
-func TestCommandParsesSupportedFlagForms(t *testing.T) {
+func TestExecuteParsesSupportedFlagForms(t *testing.T) {
 	state := &supportedFlagState{}
 	command := supportedFlagCommand(state)
 	if err := command.Execute([]string{"-tnpm", "-n5", "--enabled=false"}); err != nil {
@@ -39,7 +39,7 @@ func TestCommandParsesSupportedFlagForms(t *testing.T) {
 	assertSupportedFlags(t, state)
 }
 
-func TestCommandPreservesLiteralHelpArguments(t *testing.T) {
+func TestExecutePreservesLiteralHelpArguments(t *testing.T) {
 	for _, help := range []string{"-h", "--help"} {
 		t.Run(help, func(t *testing.T) {
 			state := &supportedFlagState{}
@@ -59,7 +59,7 @@ func TestCommandPreservesLiteralHelpArguments(t *testing.T) {
 	}
 }
 
-func TestCommandDistinguishesHelpFromFlagValues(t *testing.T) {
+func TestExecuteDistinguishesHelpFromFlagValues(t *testing.T) {
 	state := &supportedFlagState{}
 	command := supportedFlagCommand(state)
 	if err := command.Execute([]string{"--tool", "--help", "value"}); err != nil {
@@ -73,7 +73,7 @@ func TestCommandDistinguishesHelpFromFlagValues(t *testing.T) {
 	}
 }
 
-func TestCommandRecognizesHelpAfterFlags(t *testing.T) {
+func TestExecuteRecognizesHelpAfterFlags(t *testing.T) {
 	state := &supportedFlagState{}
 	command := supportedFlagCommand(state)
 	var output bytes.Buffer
@@ -123,7 +123,7 @@ func assertSupportedFlags(t *testing.T, state *supportedFlagState) {
 	}
 }
 
-func TestCommandKeepsHelpAndErrorsOnSeparateStreams(t *testing.T) {
+func TestExecuteKeepsHelpAndErrorsOnSeparateStreams(t *testing.T) {
 	root, stdout, stderr := commandStreams()
 	assertCommandHelpStreams(t, root, stdout, stderr)
 	assertCommandErrorStreams(t, root, stdout, stderr)
@@ -164,7 +164,7 @@ func assertCommandErrorStreams(t *testing.T, root *dx.Command, stdout, stderr *b
 	}
 }
 
-func TestCommandPrintsProvidedVersion(t *testing.T) {
+func TestExecutePrintsProvidedVersion(t *testing.T) {
 	var stdout bytes.Buffer
 	root := &dx.Command{
 		Use:     "diu",
@@ -180,7 +180,7 @@ func TestCommandPrintsProvidedVersion(t *testing.T) {
 	}
 }
 
-func TestCommandHelpDescribesNestedCommand(t *testing.T) {
+func TestExecuteHelpDescribesNestedCommand(t *testing.T) {
 	root, stdout := nestedHelpCommand()
 	if err := root.Execute([]string{"help", "query"}); err != nil {
 		t.Fatalf("help failed: %v", err)
@@ -217,7 +217,7 @@ func assertNestedHelp(t *testing.T, output string) {
 	}
 }
 
-func TestFlagVisitReportsOnlyChangedValues(t *testing.T) {
+func TestVisitReportsOnlyChangedValues(t *testing.T) {
 	flags := dx.NewFlagSet()
 	var tool string
 	var limit int
@@ -235,7 +235,7 @@ func TestFlagVisitReportsOnlyChangedValues(t *testing.T) {
 	}
 }
 
-func TestFlagSetReturnsParsedValues(t *testing.T) {
+func TestParseReturnsValues(t *testing.T) {
 	command := parsedValuesCommand()
 	if _, err := command.Flags().Parse([]string{"--tool=go", "--limit=5", "--enabled"}); err != nil {
 		t.Fatalf("Parse failed: %v", err)
@@ -283,7 +283,7 @@ func assertLimitFlag(t *testing.T, command *dx.Command) {
 	}
 }
 
-func TestFlagSetRejectsMismatchedGetters(t *testing.T) {
+func TestGetRejectsMismatchedKinds(t *testing.T) {
 	flags := dx.NewFlagSet()
 	var tool string
 	flags.StringVar(&tool, "tool", "go", "tool")
@@ -299,7 +299,7 @@ func TestFlagSetRejectsMismatchedGetters(t *testing.T) {
 	}
 }
 
-func TestFlagSetParsesSeparatedValuesAndTerminator(t *testing.T) {
+func TestParseSeparatedValuesAndTerminator(t *testing.T) {
 	state := &separatedFlagState{}
 	flags := separatedValueFlags(state)
 	remaining, err := flags.Parse([]string{"--tool", "npm", "-n", "5", "-y", "package", "--", "--literal"})
@@ -339,7 +339,7 @@ func assertSeparatedFlags(t *testing.T, state *separatedFlagState, remaining []s
 	}
 }
 
-func TestFlagSetRejectsInvalidFlags(t *testing.T) {
+func TestParseRejectsInvalidFlags(t *testing.T) {
 	flags := dx.NewFlagSet()
 	var limit int
 	flags.IntVar(&limit, "limit", 20, "limit")

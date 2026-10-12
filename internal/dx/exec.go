@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"os/exec"
 	"strings"
 )
@@ -32,10 +31,6 @@ func NewRunner(stdin io.Reader, stdout, stderr io.Writer) *Runner {
 	}
 }
 
-func TerminalRunner() *Runner {
-	return NewRunner(os.Stdin, os.Stdout, os.Stderr)
-}
-
 func (r *Runner) Run(ctx context.Context, name string, args ...string) error {
 	if _, ok := ctx.Deadline(); !ok {
 		return ErrDeadlineRequired
@@ -58,10 +53,6 @@ func (r *Runner) run(ctx context.Context, name string, args []string) error {
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return fmt.Errorf("%s failed: %w", name, ctxErr)
 	}
-	return commandResult(name, err)
-}
-
-func commandResult(name string, err error) error {
 	if err == nil {
 		return nil
 	}

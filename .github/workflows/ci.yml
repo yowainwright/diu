@@ -221,7 +221,7 @@ jobs:
         run: |
           GOSEC_PACKAGE="github.com/securego/gosec/v2/cmd/gosec@${GOSEC_VERSION}"
           go run "$GOSEC_PACKAGE" \
-            -exclude-rules="cmd/diu/daemon.go:G204;internal/dx/dx_exec.go:G204;internal/monitors/process.go:G204;internal/storage/storage_json.go:G304" \
+            -exclude-rules="cmd/diu/daemon.go:G204;internal/dx/exec.go:G204;internal/monitors/process.go:G204;internal/storage/storage_json.go:G304" \
             -fmt sarif \
             -out gosec-results.sarif \
             ./...
