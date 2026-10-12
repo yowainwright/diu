@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -39,6 +38,510 @@ type mockStorage struct {
 	prepareCalls int
 	cleanupErr   error
 	lastQuery    storage.QueryOptions
+}
+
+const (
+	enrichRawToolName           = "brew"
+	enrichCommandName           = "brew install wget"
+	enrichInstallSubcommand     = "install"
+	enrichPackageName           = "wget"
+	enrichSubcommandMetadataKey = "subcommand"
+	enrichExpectedPackageCount  = 1
+)
+
+func TestNewDaemon(t *testing.T) {
+	cfg := testConfig(t)
+	d, err := NewDaemon(cfg)
+	if err != nil {
+		t.Fatalf("NewDaemon failed: %v", err)
+	}
+	assertNewDaemon(t, d, cfg)
+}
+
+func TestNewDaemonRejectsInvalidStoragePath(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Storage.JSONFile = ""
+
+	d, err := NewDaemon(cfg)
+	invalidResult := d != nil || err == nil
+	if invalidResult {
+		t.Fatalf("NewDaemon = %#v, %v", d, err)
+	}
+	if !strings.Contains(err.Error(), "failed to initialize storage") {
+		t.Fatalf("NewDaemon error = %v", err)
+	}
+}
+
+func TestNewDaemonWithMonitors(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Monitoring.EnabledTools = []string{"homebrew", "npm", "go"}
+
+	d, err := NewDaemon(cfg)
+	if err != nil {
+		t.Fatalf("NewDaemon failed: %v", err)
+	}
+
+	monitors := d.registry.All()
+	if len(monitors) != 3 {
+		t.Errorf("Expected 3 monitors, got %d", len(monitors))
+	}
+}
+
+func TestNewDaemonRegistersEverySupportedMonitor(t *testing.T) {
+	setFakeCommandsInPath(t, "brew", "npm", "pnpm", "bun", "go", "pip3", "uv", "poetry")
+	cfg := testConfig(t)
+	cfg.Monitoring.EnabledTools = allSupportedMonitorTools()
+	d := newDaemonForTest(t, cfg)
+	defer closeStorageForTest(t, d.storage)
+	assertRegisteredMonitorCount(t, d, len(cfg.Monitoring.EnabledTools))
+}
+
+func TestNewDaemonIgnoresUnknownMonitor(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Monitoring.EnabledTools = []string{"unknown_tool"}
+
+	d, err := NewDaemon(cfg)
+	if err != nil {
+		t.Fatalf("NewDaemon should not fail for unknown tools: %v", err)
+	}
+
+	monitors := d.registry.All()
+	if len(monitors) != 0 {
+		t.Errorf("Expected 0 monitors for unknown tool, got %d", len(monitors))
+	}
+}
+
+func TestStartCompactsStorageBeforeReady(t *testing.T) {
+	config := testConfig(t)
+	config.Storage.MaxExecutions = 5
+	config.Storage.MaxStorageBytes = 4096
+	writeOversizedDaemonStorage(t, config.Storage.JSONFile)
+	d := startDaemonForCompactionTest(t, config)
+	defer stopDaemonForTest(t, d)
+	assertDaemonCompactedStorage(t, config)
+	if !IsRunning(config) {
+		t.Fatal("daemon was not ready after storage compaction")
+	}
+}
+
+func TestStartAndStop(t *testing.T) {
+	cfg := testConfig(t)
+	d, err := NewDaemon(cfg)
+	if err != nil {
+		t.Fatalf("NewDaemon failed: %v", err)
+	}
+	if err := d.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	assertDaemonStarted(t, d, cfg)
+	stopDaemonForTest(t, d)
+	assertDaemonStopped(t, d, cfg)
+	assertDaemonLifecycleLogged(t, cfg)
+}
+
+func TestStartReportsPIDFileFailure(t *testing.T) {
+	cfg := testConfig(t)
+	blocked := filepath.Join(t.TempDir(), "blocked")
+	if err := os.WriteFile(blocked, []byte("file"), core.PrivateFileMode); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+	cfg.Daemon.PIDFile = filepath.Join(blocked, "diu.pid")
+
+	d, err := NewDaemon(cfg)
+	if err != nil {
+		t.Fatalf("NewDaemon failed: %v", err)
+	}
+	defer closeStorageForTest(t, d.storage)
+
+	err = d.Start()
+	assertPIDFileStartError(t, err)
+	assertStartupFailureLogged(t, cfg, err)
+}
+
+func TestStartPreservesRunningDaemonPID(t *testing.T) {
+	cfg := testConfig(t)
+	first := startDaemonForTestConfig(t, cfg)
+	defer stopDaemonForTest(t, first)
+	wantPID := readPIDFileForTest(t, cfg)
+
+	second := newDaemonForTest(t, cfg)
+	if err := second.Start(); err == nil {
+		t.Fatal("second daemon start succeeded")
+	}
+	gotPID := readPIDFileForTest(t, cfg)
+	assertPIDFileUnchanged(t, wantPID, gotPID)
+}
+
+func TestStartReclaimsUnlockedPIDForLiveUnrelatedProcess(t *testing.T) {
+	cfg := testConfig(t)
+	pid := strconv.Itoa(os.Getpid())
+	if err := os.WriteFile(cfg.Daemon.PIDFile, []byte(pid), core.PrivateFileMode); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+	d, err := NewDaemon(cfg)
+	if err != nil {
+		t.Fatalf("NewDaemon failed: %v", err)
+	}
+	if err := d.Start(); err != nil {
+		t.Fatalf("Start failed with stale reused PID: %v", err)
+	}
+	stopDaemonForTest(t, d)
+}
+
+func TestStartSupportsContextCancellation(t *testing.T) {
+	cfg := testConfig(t)
+	d := newDaemonForTest(t, cfg)
+	startDaemonForCancellation(t, d)
+
+	d.cancel()
+	time.Sleep(100 * time.Millisecond)
+	assertDaemonContextCanceled(t, d)
+	stopDaemonForTest(t, d)
+}
+
+func TestPrepareStorage(t *testing.T) {
+	store := newMockStorage()
+	d := &Daemon{storage: store}
+	if err := d.prepareStorage(); err != nil {
+		t.Fatalf("prepareStorage failed: %v", err)
+	}
+	if store.prepareCalls != 1 {
+		t.Fatalf("prepare calls = %d", store.prepareCalls)
+	}
+	if store.cleanupCalls != 0 {
+		t.Fatalf("cleanup calls = %d", store.cleanupCalls)
+	}
+}
+
+func TestPrepareStorageFailure(t *testing.T) {
+	store := newMockStorage()
+	store.cleanupErr = errors.New("cleanup failed")
+	d := &Daemon{storage: store}
+	err := d.prepareStorage()
+	hasPrepareError := err != nil && strings.Contains(err.Error(), "failed to prepare storage")
+	if !hasPrepareError {
+		t.Fatalf("prepareStorage error = %v", err)
+	}
+}
+
+func TestStartInventoryRefreshCanBeDisabled(t *testing.T) {
+	cfg := testConfig(t)
+	d, _ := newEventDaemon(t, cfg, 0)
+	defer d.cancel()
+	calls := make(chan context.Context, 1)
+	d.SetInventoryRefresh(func(ctx context.Context) error {
+		calls <- ctx
+		return nil
+	})
+	d.startInventoryRefresh()
+	assertNoRefreshCall(t, calls)
+}
+
+func TestRunInventoryRefreshRetriesAndStops(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Monitoring.Filesystem.ScanInterval = time.Millisecond
+	d, _ := newEventDaemon(t, cfg, 0)
+	calls := make(chan context.Context, 1)
+	d.SetInventoryRefresh(func(ctx context.Context) error {
+		select {
+		case calls <- ctx:
+		case <-ctx.Done():
+		}
+		return errors.New("temporary failure")
+	})
+	d.startInventoryRefresh()
+	defer d.cancel()
+	awaitRefreshCall(t, calls)
+	ctx := awaitRefreshCall(t, calls)
+	d.cancel()
+	assertRefreshStopped(t, d)
+	if ctx.Err() == nil {
+		t.Fatal("refresh context was not canceled")
+	}
+}
+
+func TestRunInventoryRefreshDoesNotOverlap(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Monitoring.Filesystem.ScanInterval = time.Millisecond
+	d, _ := newEventDaemon(t, cfg, 0)
+	calls := make(chan context.Context, 2)
+	d.SetInventoryRefresh(func(ctx context.Context) error {
+		calls <- ctx
+		<-ctx.Done()
+		return ctx.Err()
+	})
+	d.startInventoryRefresh()
+	defer d.cancel()
+	awaitRefreshCall(t, calls)
+	assertNoRefreshCall(t, calls)
+	d.cancel()
+	assertRefreshStopped(t, d)
+}
+
+func TestStopIsIdempotent(t *testing.T) {
+	cfg := testConfig(t)
+
+	d, err := NewDaemon(cfg)
+	if err != nil {
+		t.Fatalf("NewDaemon failed: %v", err)
+	}
+
+	if err := d.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+
+	if err := d.Stop(); err != nil {
+		t.Fatalf("First Stop failed: %v", err)
+	}
+
+	if err := d.Stop(); err != nil {
+		t.Fatalf("Second Stop should not fail: %v", err)
+	}
+}
+
+func TestWaitUnblocksAfterStop(t *testing.T) {
+	cfg := testConfig(t)
+	d := startDaemonForWaitTest(t, cfg)
+	done := waitForDaemonInBackground(d)
+
+	stopDaemonForWaitTest(t, d)
+	assertDaemonWaitDone(t, done)
+}
+
+func TestProcessEvents(t *testing.T) {
+	cfg := testConfig(t)
+	d := newDaemonForTest(t, cfg)
+	mockStore := newMockStorage()
+	d.storage = mockStore
+	if err := d.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	defer stopDaemonForTest(t, d)
+
+	sendDaemonEvent(t, d, eventProcessingRecord())
+	time.Sleep(100 * time.Millisecond)
+	if mockStore.executionCount() != 1 {
+		t.Errorf("Expected 1 execution, got %d", mockStore.executionCount())
+	}
+}
+
+func TestProcessEventsConcurrently(t *testing.T) {
+	cfg := testConfig(t)
+	d := startDaemonWithMockStorage(t, cfg)
+	defer stopDaemonForTest(t, d)
+	mockStore := d.storage.(*mockStorage)
+	eventCount := 50
+
+	sendConcurrentDaemonEvents(d, eventCount)
+	assertMockExecutionCount(t, mockStore, eventCount)
+}
+
+func TestProcessEventsChannelClose(t *testing.T) {
+	cfg := testConfig(t)
+	d, mockStore := newEventDaemon(t, cfg, 0)
+	done := startProcessEvents(d)
+
+	queueDaemonEvent(d, "test", "homebrew")
+	time.Sleep(50 * time.Millisecond)
+	close(d.eventChan)
+	assertProcessEventsDone(t, done, "processEvents did not exit after channel close")
+	assertMockExecutionCount(t, mockStore, 1)
+	assertBatchCalls(t, mockStore, 1)
+}
+
+func TestProcessEventsDrainsQueuedEventsOnCancel(t *testing.T) {
+	cfg := testConfig(t)
+	d, mockStore := newEventDaemon(t, cfg, 2)
+
+	queueDaemonEvent(d, "one", "homebrew")
+	queueDaemonEvent(d, "two", "npm")
+	d.cancel()
+	done := startProcessEvents(d)
+	assertProcessEventsDone(t, done, "processEvents did not exit after cancellation")
+	assertMockExecutionCount(t, mockStore, 2)
+}
+
+func TestProcessEventsRejectsEventsAfterFinalDrain(t *testing.T) {
+	d, mock := newEventDaemon(t, testConfig(t), 64)
+	done := startProcessEvents(d)
+	d.cancel()
+	assertProcessEventsDone(t, done, "event consumer did not stop")
+	body := `{"tool":"npm","command":"install"}`
+	for range 32 {
+		assertStoppedDaemonRejectsExecution(t, d, body)
+		d.admitSocketExecution(&core.ExecutionRecord{Tool: core.ToolNPM, Command: "install"})
+	}
+	if len(d.eventChan) != 0 {
+		t.Fatalf("%d socket events were admitted after the final drain", len(d.eventChan))
+	}
+	assertMockExecutionCount(t, mock, 0)
+}
+
+func TestProcessEventsPersistsAcceptedHTTPEvents(t *testing.T) {
+	d, mock := newEventDaemon(t, testConfig(t), 1)
+	body := `{"tool":"npm","command":"install"}`
+	first := handleExecutionAPIRequest(d, http.MethodPost, "/api/v1/executions", body)
+	assertResponseStatus(t, first, http.StatusAccepted)
+	responses := concurrentExecutionRequests(d, body, 32)
+	d.cancel()
+	done := startProcessEvents(d)
+	accepted := 1 + countAcceptedExecutionResponses(t, responses, 32)
+	assertProcessEventsDone(t, done, "event consumer did not stop")
+	assertMockExecutionCount(t, mock, accepted)
+	if len(d.eventChan) != 0 {
+		t.Fatal("shutdown stranded admitted events")
+	}
+}
+
+func TestEnrichExecution(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Monitoring.EnabledTools = []string{core.ToolHomebrew}
+	d := newDaemonForTest(t, cfg)
+	defer closeStorageForTest(t, d.storage)
+
+	record := &core.ExecutionRecord{
+		Tool:    enrichRawToolName,
+		Command: enrichCommandName,
+		Args:    []string{enrichInstallSubcommand, enrichPackageName},
+	}
+
+	d.enrichExecution(record)
+	assertEnrichedHomebrewExecution(t, record)
+}
+
+func TestEnrichExecutionPreservesLaunchAttemptIdentity(t *testing.T) {
+	d := newDaemonForTest(t, testConfig(t))
+	defer closeStorageForTest(t, d.storage)
+	usedAt := time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC)
+	record := daemonLaunchAttemptRecord(usedAt)
+	d.enrichExecution(record)
+	assertDaemonLaunchAttemptIdentity(t, record, usedAt)
+}
+
+func TestRunPeriodicCleanupRunsConfiguredBackups(t *testing.T) {
+	d, mock := startBackupCleanupDaemon(t)
+	waitForBackupCall(t, mock)
+	d.cancel()
+	d.wg.Wait()
+	if backupCallCount(mock) == 0 {
+		t.Fatal("configured storage backup did not run")
+	}
+}
+
+func TestPruneOldRecordsHandlesCleanupError(t *testing.T) {
+	cfg := testConfig(t)
+	d, err := NewDaemon(cfg)
+	if err != nil {
+		t.Fatalf("NewDaemon failed: %v", err)
+	}
+
+	mock := newMockStorage()
+	d.storage = mock
+
+	d.pruneOldRecords()
+}
+
+func TestIsRunning(t *testing.T) {
+	cfg := testConfig(t)
+
+	assertDaemonIsNotRunning(t, cfg, "missing PID file")
+	writePIDFileForTest(t, cfg, "invalid")
+	assertDaemonIsNotRunning(t, cfg, "invalid PID")
+	writePIDFileForTest(t, cfg, strconv.Itoa(os.Getpid())+"\n")
+	assertDaemonIsNotRunning(t, cfg, "current process without socket")
+	writePIDFileForTest(t, cfg, "999999999")
+	assertDaemonIsNotRunning(t, cfg, "non-existent process")
+	removeFileForTest(t, cfg.Daemon.PIDFile)
+}
+
+func TestIsRunningRejectsDirectoryAsPIDFile(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Daemon.PIDFile = t.TempDir()
+	if IsRunning(cfg) {
+		t.Fatal("directory reported as a running daemon PID file")
+	}
+}
+
+func TestRequestStopSignalsProcessWhenSocketIsUnavailable(t *testing.T) {
+	cfg := testConfig(t)
+	pid := 4242
+	lockTestPIDFile(t, cfg.Daemon.PIDFile, pid)
+	originalSignaler := daemonProcessSignaler
+	t.Cleanup(func() {
+		daemonProcessSignaler = originalSignaler
+	})
+	signaledPID := 0
+	daemonProcessSignaler = func(gotPID int, signal os.Signal) error {
+		signaledPID = gotPID
+		if signal != syscall.SIGTERM {
+			t.Fatalf("signal = %v, want SIGTERM", signal)
+		}
+		return nil
+	}
+
+	if err := RequestStop(cfg); err != nil {
+		t.Fatalf("RequestStop failed: %v", err)
+	}
+	if signaledPID != pid {
+		t.Fatalf("signaled PID = %d, want %d", signaledPID, pid)
+	}
+}
+
+func TestRequestStopRemovesUnlockedPIDFile(t *testing.T) {
+	cfg := testConfig(t)
+	pid := 4242
+	if err := os.WriteFile(cfg.Daemon.PIDFile, []byte(strconv.Itoa(pid)), core.PrivateFileMode); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+	restoreDaemonControlHooks(t)
+	signaled := false
+	daemonProcessSignaler = func(int, os.Signal) error {
+		signaled = true
+		return nil
+	}
+
+	err := RequestStop(cfg)
+	if !errors.Is(err, ErrNotRunning) {
+		t.Fatalf("RequestStop error = %v", err)
+	}
+	if signaled {
+		t.Fatal("unverified PID was signaled")
+	}
+	if _, err := os.Stat(cfg.Daemon.PIDFile); !os.IsNotExist(err) {
+		t.Fatalf("stale PID file still exists: %v", err)
+	}
+}
+
+func TestRequestStopSignalsProcessWhenStopRequestFails(t *testing.T) {
+	cfg := testConfig(t)
+	pid := 4242
+	lockTestPIDFile(t, cfg.Daemon.PIDFile, pid)
+	restoreDaemonControlHooks(t)
+	daemonSocketControlSender = failingStopControlSender(pid)
+	signaledPID := 0
+	daemonProcessSignaler = func(gotPID int, signal os.Signal) error {
+		signaledPID = gotPID
+		return nil
+	}
+
+	if err := RequestStop(cfg); err != nil {
+		t.Fatalf("RequestStop failed: %v", err)
+	}
+	if signaledPID != pid {
+		t.Fatalf("signaled PID = %d, want %d", signaledPID, pid)
+	}
+}
+
+func TestReadPID(t *testing.T) {
+	cfg := testConfig(t)
+	if err := os.WriteFile(cfg.Daemon.PIDFile, []byte("4242"), core.PrivateFileMode); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+	pid, err := ReadPID(cfg)
+	readExpectedPID := err == nil && pid == 4242
+	if !readExpectedPID {
+		t.Fatalf("ReadPID = %d, %v", pid, err)
+	}
 }
 
 func newMockStorage() *mockStorage {
@@ -178,45 +681,6 @@ func (m *mockStorage) Prepare() error {
 	return m.cleanupErr
 }
 
-func TestPrepareStorage(t *testing.T) {
-	store := newMockStorage()
-	d := &Daemon{storage: store}
-	if err := d.prepareStorage(); err != nil {
-		t.Fatalf("prepareStorage failed: %v", err)
-	}
-	if store.prepareCalls != 1 {
-		t.Fatalf("prepare calls = %d", store.prepareCalls)
-	}
-	if store.cleanupCalls != 0 {
-		t.Fatalf("cleanup calls = %d", store.cleanupCalls)
-	}
-}
-
-func TestPrepareStorageFailure(t *testing.T) {
-	store := newMockStorage()
-	store.cleanupErr = errors.New("cleanup failed")
-	d := &Daemon{storage: store}
-	err := d.prepareStorage()
-	hasPrepareError := err != nil && strings.Contains(err.Error(), "failed to prepare storage")
-	if !hasPrepareError {
-		t.Fatalf("prepareStorage error = %v", err)
-	}
-}
-
-func TestDaemonStartCompactsStorageBeforeReady(t *testing.T) {
-	config := testConfig(t)
-	config.Daemon.SocketPath = shortSocketPath(t)
-	config.Storage.MaxExecutions = 5
-	config.Storage.MaxStorageBytes = 4096
-	writeOversizedDaemonStorage(t, config.Storage.JSONFile)
-	d := startDaemonForCompactionTest(t, config)
-	defer stopDaemonForTest(t, d)
-	assertDaemonCompactedStorage(t, config)
-	if !IsRunning(config) {
-		t.Fatal("daemon was not ready after storage compaction")
-	}
-}
-
 func startDaemonForCompactionTest(t *testing.T, config *core.Config) *Daemon {
 	t.Helper()
 
@@ -277,22 +741,23 @@ func (m *mockStorage) executionCount() int {
 func testConfig(t *testing.T) *core.Config {
 	t.Helper()
 	tmpDir := t.TempDir()
+	socketPath := shortSocketPath(t)
 	return &core.Config{
 		Version:    "1.0",
-		Daemon:     testDaemonConfig(tmpDir),
+		Daemon:     testDaemonConfig(tmpDir, socketPath),
 		Storage:    testStorageConfig(tmpDir),
 		Monitoring: core.MonitoringConfig{EnabledTools: []string{}},
 		API:        testAPIConfig(),
 	}
 }
 
-func testDaemonConfig(tmpDir string) core.DaemonConfig {
+func testDaemonConfig(tmpDir, socketPath string) core.DaemonConfig {
 	return core.DaemonConfig{
 		Port:       0,
 		LogLevel:   "info",
 		DataDir:    tmpDir,
 		PIDFile:    filepath.Join(tmpDir, "diu.pid"),
-		SocketPath: filepath.Join(tmpDir, "diu.sock"),
+		SocketPath: socketPath,
 	}
 }
 
@@ -394,15 +859,6 @@ func decodeRecorderJSON(t *testing.T, recorder *httptest.ResponseRecorder, targe
 	}
 }
 
-func TestNewDaemon(t *testing.T) {
-	cfg := testConfig(t)
-	d, err := NewDaemon(cfg)
-	if err != nil {
-		t.Fatalf("NewDaemon failed: %v", err)
-	}
-	assertNewDaemon(t, d, cfg)
-}
-
 func assertNewDaemon(t *testing.T, d *Daemon, cfg *core.Config) {
 	t.Helper()
 	assertDaemonInstance(t, d)
@@ -443,35 +899,6 @@ func assertDaemonEventBuffer(t *testing.T, d *Daemon) {
 	if cap(d.eventChan) != core.DefaultEventBuffer {
 		t.Errorf("Event channel capacity: got %d, want %d", cap(d.eventChan), core.DefaultEventBuffer)
 	}
-}
-
-func TestNewDaemonRejectsInvalidStoragePath(t *testing.T) {
-	cfg := testConfig(t)
-	cfg.Storage.JSONFile = ""
-
-	d, err := NewDaemon(cfg)
-	invalidResult := d != nil || err == nil
-	if invalidResult {
-		t.Fatalf("NewDaemon = %#v, %v", d, err)
-	}
-	if !strings.Contains(err.Error(), "failed to initialize storage") {
-		t.Fatalf("NewDaemon error = %v", err)
-	}
-}
-
-func TestDaemonStartStop(t *testing.T) {
-	cfg := testConfig(t)
-	d, err := NewDaemon(cfg)
-	if err != nil {
-		t.Fatalf("NewDaemon failed: %v", err)
-	}
-	if err := d.Start(); err != nil {
-		t.Fatalf("Start failed: %v", err)
-	}
-	assertDaemonStarted(t, d, cfg)
-	stopDaemonForTest(t, d)
-	assertDaemonStopped(t, d, cfg)
-	assertDaemonLifecycleLogged(t, cfg)
 }
 
 func assertDaemonStarted(t *testing.T, d *Daemon, cfg *core.Config) {
@@ -544,26 +971,6 @@ func assertDaemonLifecycleLogged(t *testing.T, cfg *core.Config) {
 	}
 }
 
-func TestDaemonStartReportsPIDFileFailure(t *testing.T) {
-	cfg := testConfig(t)
-	cfg.Daemon.SocketPath = shortSocketPath(t)
-	blocked := filepath.Join(t.TempDir(), "blocked")
-	if err := os.WriteFile(blocked, []byte("file"), core.PrivateFileMode); err != nil {
-		t.Fatalf("WriteFile failed: %v", err)
-	}
-	cfg.Daemon.PIDFile = filepath.Join(blocked, "diu.pid")
-
-	d, err := NewDaemon(cfg)
-	if err != nil {
-		t.Fatalf("NewDaemon failed: %v", err)
-	}
-	defer closeStorageForTest(t, d.storage)
-
-	err = d.Start()
-	assertPIDFileStartError(t, err)
-	assertStartupFailureLogged(t, cfg, err)
-}
-
 func assertPIDFileStartError(t *testing.T, err error) {
 	t.Helper()
 	hasPIDFileError := err != nil && strings.Contains(err.Error(), "PID file")
@@ -581,21 +988,6 @@ func assertStartupFailureLogged(t *testing.T, cfg *core.Config, err error) {
 	if !strings.Contains(strings.Join(lines, "\n"), err.Error()) {
 		t.Fatalf("startup failure missing from logs: %#v", lines)
 	}
-}
-
-func TestFailedSecondStartPreservesRunningDaemonPID(t *testing.T) {
-	cfg := testConfig(t)
-	cfg.Daemon.SocketPath = shortSocketPath(t)
-	first := startDaemonForTestConfig(t, cfg)
-	defer stopDaemonForTest(t, first)
-	wantPID := readPIDFileForTest(t, cfg)
-
-	second := newDaemonForTest(t, cfg)
-	if err := second.Start(); err == nil {
-		t.Fatal("second daemon start succeeded")
-	}
-	gotPID := readPIDFileForTest(t, cfg)
-	assertPIDFileUnchanged(t, wantPID, gotPID)
 }
 
 func startDaemonForTestConfig(t *testing.T, cfg *core.Config) *Daemon {
@@ -636,61 +1028,6 @@ func assertPIDFileUnchanged(t *testing.T, wantPID, gotPID []byte) {
 	}
 }
 
-func TestDaemonStartReclaimsUnlockedPIDForLiveUnrelatedProcess(t *testing.T) {
-	cfg := testConfig(t)
-	cfg.Daemon.SocketPath = shortSocketPath(t)
-	pid := strconv.Itoa(os.Getpid())
-	if err := os.WriteFile(cfg.Daemon.PIDFile, []byte(pid), core.PrivateFileMode); err != nil {
-		t.Fatalf("WriteFile failed: %v", err)
-	}
-	d, err := NewDaemon(cfg)
-	if err != nil {
-		t.Fatalf("NewDaemon failed: %v", err)
-	}
-	if err := d.Start(); err != nil {
-		t.Fatalf("Start failed with stale reused PID: %v", err)
-	}
-	stopDaemonForTest(t, d)
-}
-
-func TestDaemonDoubleStop(t *testing.T) {
-	cfg := testConfig(t)
-
-	d, err := NewDaemon(cfg)
-	if err != nil {
-		t.Fatalf("NewDaemon failed: %v", err)
-	}
-
-	if err := d.Start(); err != nil {
-		t.Fatalf("Start failed: %v", err)
-	}
-
-	if err := d.Stop(); err != nil {
-		t.Fatalf("First Stop failed: %v", err)
-	}
-
-	if err := d.Stop(); err != nil {
-		t.Fatalf("Second Stop should not fail: %v", err)
-	}
-}
-
-func TestDaemonEventProcessing(t *testing.T) {
-	cfg := testConfig(t)
-	d := newDaemonForTest(t, cfg)
-	mockStore := newMockStorage()
-	d.storage = mockStore
-	if err := d.Start(); err != nil {
-		t.Fatalf("Start failed: %v", err)
-	}
-	defer stopDaemonForTest(t, d)
-
-	sendDaemonEvent(t, d, eventProcessingRecord())
-	time.Sleep(100 * time.Millisecond)
-	if mockStore.executionCount() != 1 {
-		t.Errorf("Expected 1 execution, got %d", mockStore.executionCount())
-	}
-}
-
 func eventProcessingRecord() *core.ExecutionRecord {
 	return &core.ExecutionRecord{
 		ID:        "test-1",
@@ -708,40 +1045,6 @@ func sendDaemonEvent(t *testing.T, d *Daemon, record *core.ExecutionRecord) {
 	case <-time.After(time.Second):
 		t.Fatal("Failed to send event to channel")
 	}
-}
-
-const (
-	enrichRawToolName           = "brew"
-	enrichCommandName           = "brew install wget"
-	enrichInstallSubcommand     = "install"
-	enrichPackageName           = "wget"
-	enrichSubcommandMetadataKey = "subcommand"
-	enrichExpectedPackageCount  = 1
-)
-
-func TestDaemonEnrichExecution(t *testing.T) {
-	cfg := testConfig(t)
-	cfg.Monitoring.EnabledTools = []string{core.ToolHomebrew}
-	d := newDaemonForTest(t, cfg)
-	defer closeStorageForTest(t, d.storage)
-
-	record := &core.ExecutionRecord{
-		Tool:    enrichRawToolName,
-		Command: enrichCommandName,
-		Args:    []string{enrichInstallSubcommand, enrichPackageName},
-	}
-
-	d.enrichExecution(record)
-	assertEnrichedHomebrewExecution(t, record)
-}
-
-func TestDaemonEnrichLaunchAttemptPreservesResolvedIdentity(t *testing.T) {
-	d := newDaemonForTest(t, testConfig(t))
-	defer closeStorageForTest(t, d.storage)
-	usedAt := time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC)
-	record := daemonLaunchAttemptRecord(usedAt)
-	d.enrichExecution(record)
-	assertDaemonLaunchAttemptIdentity(t, record, usedAt)
 }
 
 func daemonLaunchAttemptRecord(usedAt time.Time) *core.ExecutionRecord {
@@ -787,640 +1090,6 @@ func assertEnrichedHomebrewExecution(t *testing.T, record *core.ExecutionRecord)
 	}
 }
 
-func TestDaemonHTTPAPI(t *testing.T) {
-	d := newHTTPAPIDaemon(t)
-	seedHTTPAPIExecutions(t, d.storage.(*mockStorage))
-	runExecutionAPIReadTests(t, d)
-	runExecutionAPIWriteTests(t, d)
-}
-
-func newHTTPAPIDaemon(t *testing.T) *Daemon {
-	t.Helper()
-
-	cfg := testConfig(t)
-	cfg.API.IsEnabled = true
-	cfg.API.Port = 0
-	d := newDaemonForTest(t, cfg)
-	d.storage = newMockStorage()
-	return d
-}
-
-func seedHTTPAPIExecutions(t *testing.T, mockStore *mockStorage) {
-	t.Helper()
-	addMockExecution(t, mockStore, &core.ExecutionRecord{
-		ID:        "test-1",
-		Tool:      "homebrew",
-		Command:   "install",
-		Timestamp: time.Now(),
-	})
-}
-
-func runExecutionAPIReadTests(t *testing.T, d *Daemon) {
-	t.Helper()
-	t.Run("GET /api/v1/executions", func(t *testing.T) { assertGetExecutionsAPI(t, d) })
-	t.Run("GET /api/v1/executions with tool filter", func(t *testing.T) { assertFilteredExecutionsAPI(t, d) })
-	t.Run("GET /api/v1/executions with invalid limit", func(t *testing.T) {
-		request := executionAPIRequest{method: http.MethodGet, path: "/api/v1/executions?limit=-1", want: http.StatusBadRequest}
-		assertExecutionAPIStatus(t, d, request)
-	})
-}
-
-func runExecutionAPIWriteTests(t *testing.T, d *Daemon) {
-	t.Helper()
-	t.Run("POST /api/v1/executions", func(t *testing.T) { assertPostExecutionsAPI(t, d) })
-	t.Run("POST /api/v1/executions missing command", func(t *testing.T) {
-		request := executionAPIRequest{method: http.MethodPost, path: "/api/v1/executions", body: `{"tool":"npm"}`, want: http.StatusBadRequest}
-		assertExecutionAPIStatus(t, d, request)
-	})
-	t.Run("POST /api/v1/executions too large", func(t *testing.T) { assertLargeExecutionAPI(t, d) })
-	t.Run("POST /api/v1/executions invalid JSON", func(t *testing.T) {
-		request := executionAPIRequest{method: http.MethodPost, path: "/api/v1/executions", body: "invalid json", want: http.StatusBadRequest}
-		assertExecutionAPIStatus(t, d, request)
-	})
-	t.Run("DELETE /api/v1/executions not allowed", func(t *testing.T) {
-		request := executionAPIRequest{method: http.MethodDelete, path: "/api/v1/executions", want: http.StatusMethodNotAllowed}
-		assertExecutionAPIStatus(t, d, request)
-	})
-}
-
-type executionAPIRequest struct {
-	method string
-	path   string
-	body   string
-	want   int
-}
-
-func assertGetExecutionsAPI(t *testing.T, d *Daemon) {
-	t.Helper()
-	w := handleExecutionAPIRequest(d, http.MethodGet, "/api/v1/executions", "")
-	assertResponseStatus(t, w, http.StatusOK)
-	var executions []*core.ExecutionRecord
-	decodeRecorderJSON(t, w, &executions)
-	if len(executions) != 1 {
-		t.Errorf("Expected 1 execution, got %d", len(executions))
-	}
-}
-
-func assertFilteredExecutionsAPI(t *testing.T, d *Daemon) {
-	t.Helper()
-	w := handleExecutionAPIRequest(d, http.MethodGet, "/api/v1/executions?tool=npm", "")
-	var executions []*core.ExecutionRecord
-	decodeRecorderJSON(t, w, &executions)
-	if len(executions) != 0 {
-		t.Errorf("Expected 0 executions for npm, got %d", len(executions))
-	}
-}
-
-func assertPostExecutionsAPI(t *testing.T, d *Daemon) {
-	t.Helper()
-	record := core.ExecutionRecord{ID: "test-2", Tool: "npm", Command: "install", Timestamp: time.Now()}
-	body, _ := json.Marshal(record)
-	w := handleExecutionAPIRequest(d, http.MethodPost, "/api/v1/executions", string(body))
-	assertResponseStatus(t, w, http.StatusAccepted)
-}
-
-func assertLargeExecutionAPI(t *testing.T, d *Daemon) {
-	t.Helper()
-	body := `{"tool":"npm","command":"` + strings.Repeat("x", maxExecutionRecordBodyBytes) + `"}`
-	request := executionAPIRequest{method: http.MethodPost, path: "/api/v1/executions", body: body, want: http.StatusBadRequest}
-	assertExecutionAPIStatus(t, d, request)
-}
-
-func assertExecutionAPIStatus(t *testing.T, d *Daemon, request executionAPIRequest) {
-	t.Helper()
-	w := handleExecutionAPIRequest(d, request.method, request.path, request.body)
-	assertResponseStatus(t, w, request.want)
-}
-
-func handleExecutionAPIRequest(d *Daemon, method, path, body string) *httptest.ResponseRecorder {
-	req := httptest.NewRequest(method, path, strings.NewReader(body))
-	w := httptest.NewRecorder()
-	d.handleExecutions(w, req)
-	return w
-}
-
-func assertResponseStatus(t *testing.T, recorder *httptest.ResponseRecorder, want int) {
-	t.Helper()
-	resp := recorder.Result()
-	if resp.StatusCode != want {
-		t.Errorf("Expected status %d, got %d", want, resp.StatusCode)
-	}
-}
-
-func TestDaemonRejectsInvalidExecutionRecords(t *testing.T) {
-	cfg := testConfig(t)
-	d := newDaemonForTest(t, cfg)
-	defer closeStorageForTest(t, d.storage)
-
-	for _, test := range invalidExecutionCases() {
-		t.Run(test.name, func(t *testing.T) {
-			assertInvalidExecutionRequest(t, d, test)
-		})
-	}
-}
-
-type invalidExecutionCase struct {
-	name string
-	body string
-	want string
-}
-
-func invalidExecutionCases() []invalidExecutionCase {
-	longCommandBody := `{"tool":"npm","command":"` + strings.Repeat("x", maxRecordedCommandLength+1) + `"}`
-	return []invalidExecutionCase{
-		{name: "missing tool", body: `{"command":"install"}`, want: "tool is required"},
-		{name: "long command", body: longCommandBody, want: "command exceeds"},
-		{name: "negative duration", body: `{"tool":"npm","command":"install","duration_ms":-1}`, want: "duration_ms must be non-negative"},
-		{name: "empty package", body: `{"tool":"npm","command":"install","packages_affected":[""]}`, want: "packages_affected cannot contain empty values"},
-		{name: "multiple objects", body: `{"tool":"npm","command":"install"} {}`, want: "single JSON object"},
-	}
-}
-
-func assertInvalidExecutionRequest(t *testing.T, d *Daemon, test invalidExecutionCase) {
-	t.Helper()
-	recorder := handleExecutionAPIRequest(d, http.MethodPost, "/api/v1/executions", test.body)
-	assertResponseStatus(t, recorder, http.StatusBadRequest)
-	if !strings.Contains(recorder.Body.String(), test.want) {
-		t.Fatalf("body = %q, want %q", recorder.Body.String(), test.want)
-	}
-}
-
-func TestDaemonRejectsExecutionWhenQueueIsUnavailable(t *testing.T) {
-	cfg := testConfig(t)
-	d := newDaemonForTest(t, cfg)
-	defer closeStorageForTest(t, d.storage)
-	d.eventChan = make(chan *core.ExecutionRecord, 1)
-	d.eventChan <- &core.ExecutionRecord{Tool: core.ToolNPM, Command: "install"}
-	body := `{"tool":"npm","command":"install"}`
-
-	recorder, done := handleExecutionAPIRequestAsync(d, body)
-	assertExecutionQueueBlocks(t, done)
-	<-d.eventChan
-	assertExecutionQueueResumes(t, done)
-	assertResponseStatus(t, recorder, http.StatusAccepted)
-
-	d.cancel()
-	assertStoppedDaemonRejectsExecution(t, d, body)
-}
-
-func TestDaemonRejectsEventsAfterFinalDrain(t *testing.T) {
-	d, mock := newEventDaemon(t, testConfig(t), 64)
-	done := startProcessEvents(d)
-	d.cancel()
-	assertProcessEventsDone(t, done, "event consumer did not stop")
-	body := `{"tool":"npm","command":"install"}`
-	for range 32 {
-		assertStoppedDaemonRejectsExecution(t, d, body)
-		d.admitSocketExecution(&core.ExecutionRecord{Tool: core.ToolNPM, Command: "install"})
-	}
-	if len(d.eventChan) != 0 {
-		t.Fatalf("%d socket events were admitted after the final drain", len(d.eventChan))
-	}
-	assertMockExecutionCount(t, mock, 0)
-}
-
-func TestDaemonRejectsCanceledHTTPRequestWithAvailableCapacity(t *testing.T) {
-	d, _ := newEventDaemon(t, testConfig(t), 64)
-	defer d.cancel()
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	for range 32 {
-		request := httptest.NewRequest(http.MethodPost, "/api/v1/executions", strings.NewReader(`{"tool":"npm","command":"install"}`))
-		response := httptest.NewRecorder()
-		d.handleExecutions(response, request.WithContext(ctx))
-		assertResponseStatus(t, response, http.StatusRequestTimeout)
-	}
-	if len(d.eventChan) != 0 {
-		t.Fatal("canceled requests were admitted")
-	}
-}
-
-func TestDaemonCancellationPersistsAcceptedHTTPEvents(t *testing.T) {
-	d, mock := newEventDaemon(t, testConfig(t), 1)
-	body := `{"tool":"npm","command":"install"}`
-	first := handleExecutionAPIRequest(d, http.MethodPost, "/api/v1/executions", body)
-	assertResponseStatus(t, first, http.StatusAccepted)
-	responses := concurrentExecutionRequests(d, body, 32)
-	d.cancel()
-	done := startProcessEvents(d)
-	accepted := 1 + countAcceptedExecutionResponses(t, responses, 32)
-	assertProcessEventsDone(t, done, "event consumer did not stop")
-	assertMockExecutionCount(t, mock, accepted)
-	if len(d.eventChan) != 0 {
-		t.Fatal("shutdown stranded admitted events")
-	}
-}
-
-func countAcceptedExecutionResponses(t *testing.T, responses <-chan int, count int) int {
-	t.Helper()
-	accepted := 0
-	timeout := time.After(time.Second)
-	for range count {
-		select {
-		case status := <-responses:
-			if status == http.StatusAccepted {
-				accepted++
-			} else if status != http.StatusServiceUnavailable {
-				t.Fatalf("unexpected admission status: %d", status)
-			}
-		case <-timeout:
-			t.Fatal("admissions did not finish after cancellation")
-		}
-	}
-	return accepted
-}
-
-func concurrentExecutionRequests(d *Daemon, body string, count int) <-chan int {
-	responses := make(chan int, count)
-	for range count {
-		go func() {
-			response := handleExecutionAPIRequest(d, http.MethodPost, "/api/v1/executions", body)
-			responses <- response.Code
-		}()
-	}
-	return responses
-}
-
-func handleExecutionAPIRequestAsync(d *Daemon, body string) (*httptest.ResponseRecorder, chan struct{}) {
-	recorder := httptest.NewRecorder()
-	done := make(chan struct{})
-	request := httptest.NewRequest(http.MethodPost, "/api/v1/executions", strings.NewReader(body))
-	go func() {
-		d.handleExecutions(recorder, request)
-		close(done)
-	}()
-	return recorder, done
-}
-
-func assertExecutionQueueBlocks(t *testing.T, done <-chan struct{}) {
-	t.Helper()
-	select {
-	case <-done:
-		t.Fatal("handler should apply backpressure while the event queue is full")
-	case <-time.After(20 * time.Millisecond):
-	}
-}
-
-func assertExecutionQueueResumes(t *testing.T, done <-chan struct{}) {
-	t.Helper()
-	select {
-	case <-done:
-	case <-time.After(time.Second):
-		t.Fatal("handler did not resume after event queue capacity became available")
-	}
-}
-
-func assertStoppedDaemonRejectsExecution(t *testing.T, d *Daemon, body string) {
-	t.Helper()
-	recorder := handleExecutionAPIRequest(d, http.MethodPost, "/api/v1/executions", body)
-	hasStatus := recorder.Code == http.StatusServiceUnavailable
-	hasMessage := strings.Contains(recorder.Body.String(), "stopping")
-	hasStoppedResponse := hasStatus && hasMessage
-	if !hasStoppedResponse {
-		t.Fatalf("stopped daemon response = %d, %q", recorder.Code, recorder.Body.String())
-	}
-}
-
-func TestDaemonPackagesAPI(t *testing.T) {
-	cfg := testConfig(t)
-
-	d, err := NewDaemon(cfg)
-	if err != nil {
-		t.Fatalf("NewDaemon failed: %v", err)
-	}
-
-	mockStore := newMockStorage()
-	d.storage = mockStore
-
-	updateMockPackage(t, mockStore, &core.PackageInfo{
-		Name: "wget",
-		Tool: "homebrew",
-	})
-
-	t.Run("GET /api/v1/packages", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "/api/v1/packages", nil)
-		w := httptest.NewRecorder()
-
-		d.handlePackages(w, req)
-
-		resp := w.Result()
-		if resp.StatusCode != http.StatusOK {
-			t.Errorf("Expected status 200, got %d", resp.StatusCode)
-		}
-	})
-
-	t.Run("POST /api/v1/packages not allowed", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodPost, "/api/v1/packages", nil)
-		w := httptest.NewRecorder()
-
-		d.handlePackages(w, req)
-
-		resp := w.Result()
-		if resp.StatusCode != http.StatusMethodNotAllowed {
-			t.Errorf("Expected status 405, got %d", resp.StatusCode)
-		}
-	})
-}
-
-func TestDaemonStatsAPI(t *testing.T) {
-	cfg := testConfig(t)
-
-	d, err := NewDaemon(cfg)
-	if err != nil {
-		t.Fatalf("NewDaemon failed: %v", err)
-	}
-
-	mockStore := newMockStorage()
-	d.storage = mockStore
-
-	t.Run("GET /api/v1/stats", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "/api/v1/stats", nil)
-		w := httptest.NewRecorder()
-
-		d.handleStats(w, req)
-
-		resp := w.Result()
-		if resp.StatusCode != http.StatusOK {
-			t.Errorf("Expected status 200, got %d", resp.StatusCode)
-		}
-
-		var stats core.StorageStatistics
-		if err := json.NewDecoder(resp.Body).Decode(&stats); err != nil {
-			t.Fatalf("Failed to decode response: %v", err)
-		}
-	})
-}
-
-func TestDaemonHealthAPI(t *testing.T) {
-	cfg := testConfig(t)
-
-	d, err := NewDaemon(cfg)
-	if err != nil {
-		t.Fatalf("NewDaemon failed: %v", err)
-	}
-
-	t.Run("GET /api/v1/health", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "/api/v1/health", nil)
-		w := httptest.NewRecorder()
-
-		d.handleHealth(w, req)
-
-		resp := w.Result()
-		if resp.StatusCode != http.StatusOK {
-			t.Errorf("Expected status 200, got %d", resp.StatusCode)
-		}
-
-		body, _ := io.ReadAll(resp.Body)
-		if !strings.Contains(string(body), "healthy") {
-			t.Error("Health response should contain 'healthy'")
-		}
-	})
-}
-
-func TestDaemonReadOnlyAPIsRejectWrites(t *testing.T) {
-	cfg := testConfig(t)
-	d := newDaemonForTest(t, cfg)
-	defer closeStorageForTest(t, d.storage)
-
-	for _, test := range readOnlyAPICases(d) {
-		assertReadOnlyAPIRejectsWrite(t, test)
-	}
-}
-
-type readOnlyAPICase struct {
-	path    string
-	handler http.HandlerFunc
-}
-
-func readOnlyAPICases(d *Daemon) []readOnlyAPICase {
-	return []readOnlyAPICase{
-		{path: "/api/v1/stats", handler: d.handleStats},
-		{path: "/api/v1/health", handler: d.handleHealth},
-	}
-}
-
-func assertReadOnlyAPIRejectsWrite(t *testing.T, test readOnlyAPICase) {
-	t.Helper()
-	recorder := httptest.NewRecorder()
-	test.handler(recorder, httptest.NewRequest(http.MethodPost, test.path, nil))
-	if recorder.Code != http.StatusMethodNotAllowed {
-		t.Fatalf("%s status = %d, want 405", test.path, recorder.Code)
-	}
-}
-
-func TestDaemonSocketListener(t *testing.T) {
-	cfg := testConfig(t)
-	d := startDaemonWithMockStorage(t, cfg)
-	defer stopDaemonForTest(t, d)
-
-	sendSocketExecution(t, cfg.Daemon.SocketPath)
-	assertMockExecutionCount(t, d.storage.(*mockStorage), 1)
-}
-
-func startDaemonWithMockStorage(t *testing.T, cfg *core.Config) *Daemon {
-	t.Helper()
-	d, _ := daemonWithMockStorage(t, cfg)
-
-	if err := d.Start(); err != nil {
-		t.Fatalf("Start failed: %v", err)
-	}
-	time.Sleep(100 * time.Millisecond)
-	return d
-}
-
-func daemonWithMockStorage(t *testing.T, cfg *core.Config) (*Daemon, *mockStorage) {
-	t.Helper()
-
-	d := newDaemonForTest(t, cfg)
-	mockStore := newMockStorage()
-	d.storage = mockStore
-	return d, mockStore
-}
-
-func sendSocketExecution(t *testing.T, socketPath string) {
-	t.Helper()
-
-	conn, err := net.Dial("unix", socketPath)
-	if err != nil {
-		t.Fatalf("Failed to connect to socket: %v", err)
-	}
-	defer closeForTest(t, conn)
-
-	record := socketExecutionRecord()
-	if err := json.NewEncoder(conn).Encode(record); err != nil {
-		t.Fatalf("Failed to send record: %v", err)
-	}
-	time.Sleep(200 * time.Millisecond)
-}
-
-func socketExecutionRecord() core.ExecutionRecord {
-	return core.ExecutionRecord{
-		ID:        "socket-test-1",
-		Tool:      "go",
-		Command:   "install",
-		Timestamp: time.Now(),
-	}
-}
-
-func assertMockExecutionCount(t *testing.T, mockStore *mockStorage, want int) {
-	t.Helper()
-
-	if mockStore.executionCount() != want {
-		t.Errorf("Expected %d execution from socket, got %d", want, mockStore.executionCount())
-	}
-}
-
-func TestDaemonSocketListenerReportsInvalidPaths(t *testing.T) {
-	t.Run("active socket is preserved", func(t *testing.T) {
-		assertActiveSocketIsPreserved(t)
-	})
-
-	t.Run("stale socket cannot be removed", func(t *testing.T) {
-		assertStaleSocketRemoveFailure(t)
-	})
-
-	t.Run("socket directory cannot be created", func(t *testing.T) {
-		assertSocketDirectoryCreateFailure(t)
-	})
-}
-
-func assertActiveSocketIsPreserved(t *testing.T) {
-	t.Helper()
-
-	cfg := testConfig(t)
-	socketDir := activeSocketDir(t)
-	cfg.Daemon.SocketPath = filepath.Join(socketDir, "diu.sock")
-	listener := listenOnSocket(t, cfg.Daemon.SocketPath)
-	defer closeForTest(t, listener)
-
-	d, err := NewDaemon(cfg)
-	if err != nil {
-		t.Fatalf("NewDaemon failed: %v", err)
-	}
-	err = d.Start()
-	assertActiveSocketStartError(t, err)
-	assertSocketPathExists(t, cfg.Daemon.SocketPath)
-}
-
-func assertActiveSocketStartError(t *testing.T, err error) {
-	t.Helper()
-
-	hasActiveSocketError := err != nil && strings.Contains(err.Error(), "socket is active")
-	if !hasActiveSocketError {
-		t.Fatalf("Start error = %v", err)
-	}
-}
-
-func assertSocketPathExists(t *testing.T, socketPath string) {
-	t.Helper()
-
-	if _, err := os.Stat(socketPath); err != nil {
-		t.Fatalf("active socket was removed: %v", err)
-	}
-}
-
-func activeSocketDir(t *testing.T) string {
-	t.Helper()
-
-	socketDir, err := os.MkdirTemp("/tmp", "diu-socket-test-")
-	if err != nil {
-		t.Fatalf("MkdirTemp failed: %v", err)
-	}
-	t.Cleanup(func() {
-		if err := os.RemoveAll(socketDir); err != nil {
-			t.Errorf("RemoveAll failed: %v", err)
-		}
-	})
-	return socketDir
-}
-
-func listenOnSocket(t *testing.T, socketPath string) net.Listener {
-	t.Helper()
-
-	listener, err := net.Listen("unix", socketPath)
-	if err != nil {
-		t.Fatalf("Listen failed: %v", err)
-	}
-	return listener
-}
-
-func assertStaleSocketRemoveFailure(t *testing.T) {
-	t.Helper()
-
-	cfg := testConfig(t)
-	socketDir := blockedSocketPath(t)
-	cfg.Daemon.SocketPath = socketDir
-	d, err := NewDaemon(cfg)
-	if err != nil {
-		t.Fatalf("NewDaemon failed: %v", err)
-	}
-	defer closeStorageForTest(t, d.storage)
-	err = d.startSocketListener()
-	hasRemoveError := err != nil && strings.Contains(err.Error(), "remove stale socket")
-	if !hasRemoveError {
-		t.Fatalf("startSocketListener error = %v", err)
-	}
-}
-
-func blockedSocketPath(t *testing.T) string {
-	t.Helper()
-
-	socketDir := filepath.Join(t.TempDir(), "socket")
-	if err := os.Mkdir(socketDir, core.OwnerDirectoryMode); err != nil {
-		t.Fatalf("Mkdir failed: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(socketDir, "child"), nil, core.PrivateFileMode); err != nil {
-		t.Fatalf("WriteFile failed: %v", err)
-	}
-	return socketDir
-}
-
-func assertSocketDirectoryCreateFailure(t *testing.T) {
-	t.Helper()
-
-	cfg := testConfig(t)
-	blocked := socketParentWithoutWritePermission(t)
-	cfg.Daemon.SocketPath = filepath.Join(blocked, "nested", "diu.sock")
-	d, err := NewDaemon(cfg)
-	if err != nil {
-		t.Fatalf("NewDaemon failed: %v", err)
-	}
-	defer closeStorageForTest(t, d.storage)
-	err = d.startSocketListener()
-	hasDirectoryError := err != nil && strings.Contains(err.Error(), "create socket directory")
-	if !hasDirectoryError {
-		t.Fatalf("startSocketListener error = %v", err)
-	}
-}
-
-func socketParentWithoutWritePermission(t *testing.T) string {
-	t.Helper()
-
-	blocked := filepath.Join(t.TempDir(), "blocked")
-	if err := os.Mkdir(blocked, 0o500); err != nil {
-		t.Fatalf("Mkdir failed: %v", err)
-	}
-	t.Cleanup(func() {
-		if err := os.Chmod(blocked, core.OwnerDirectoryMode); err != nil {
-			t.Fatalf("Chmod failed: %v", err)
-		}
-	})
-	return blocked
-}
-
-func TestIsRunning(t *testing.T) {
-	cfg := testConfig(t)
-
-	assertDaemonIsNotRunning(t, cfg, "missing PID file")
-	writePIDFileForTest(t, cfg, "invalid")
-	assertDaemonIsNotRunning(t, cfg, "invalid PID")
-	writePIDFileForTest(t, cfg, strconv.Itoa(os.Getpid())+"\n")
-	assertDaemonIsNotRunning(t, cfg, "current process without socket")
-	writePIDFileForTest(t, cfg, "999999999")
-	assertDaemonIsNotRunning(t, cfg, "non-existent process")
-	removeFileForTest(t, cfg.Daemon.PIDFile)
-}
-
 func writePIDFileForTest(t *testing.T, cfg *core.Config, pid string) {
 	t.Helper()
 
@@ -1434,131 +1103,6 @@ func assertDaemonIsNotRunning(t *testing.T, cfg *core.Config, context string) {
 
 	if IsRunning(cfg) {
 		t.Errorf("IsRunning true for %s", context)
-	}
-}
-
-func TestIsRunningRejectsDirectoryAsPIDFile(t *testing.T) {
-	cfg := testConfig(t)
-	cfg.Daemon.PIDFile = t.TempDir()
-	if IsRunning(cfg) {
-		t.Fatal("directory reported as a running daemon PID file")
-	}
-}
-
-func TestRequestStopSignalsProcessWhenSocketIsUnavailable(t *testing.T) {
-	cfg := testConfig(t)
-	pid := 4242
-	lockTestPIDFile(t, cfg.Daemon.PIDFile, pid)
-	originalSignaler := daemonProcessSignaler
-	t.Cleanup(func() {
-		daemonProcessSignaler = originalSignaler
-	})
-	signaledPID := 0
-	daemonProcessSignaler = func(gotPID int, signal os.Signal) error {
-		signaledPID = gotPID
-		if signal != syscall.SIGTERM {
-			t.Fatalf("signal = %v, want SIGTERM", signal)
-		}
-		return nil
-	}
-
-	if err := RequestStop(cfg); err != nil {
-		t.Fatalf("RequestStop failed: %v", err)
-	}
-	if signaledPID != pid {
-		t.Fatalf("signaled PID = %d, want %d", signaledPID, pid)
-	}
-}
-
-func TestDaemonIdentityError(t *testing.T) {
-	err := daemonIdentityError(41, 42)
-	want := "PID file has 41, socket reports 42"
-	if !strings.Contains(err.Error(), want) {
-		t.Fatalf("daemonIdentityError = %v", err)
-	}
-}
-
-func TestReadPID(t *testing.T) {
-	cfg := testConfig(t)
-	if err := os.WriteFile(cfg.Daemon.PIDFile, []byte("4242"), core.PrivateFileMode); err != nil {
-		t.Fatalf("WriteFile failed: %v", err)
-	}
-	pid, err := ReadPID(cfg)
-	readExpectedPID := err == nil && pid == 4242
-	if !readExpectedPID {
-		t.Fatalf("ReadPID = %d, %v", pid, err)
-	}
-}
-
-func TestRequestStopRemovesUnlockedPIDFile(t *testing.T) {
-	cfg := testConfig(t)
-	pid := 4242
-	if err := os.WriteFile(cfg.Daemon.PIDFile, []byte(strconv.Itoa(pid)), core.PrivateFileMode); err != nil {
-		t.Fatalf("WriteFile failed: %v", err)
-	}
-	restoreDaemonControlHooks(t)
-	signaled := false
-	daemonProcessSignaler = func(int, os.Signal) error {
-		signaled = true
-		return nil
-	}
-
-	err := RequestStop(cfg)
-	if !errors.Is(err, ErrNotRunning) {
-		t.Fatalf("RequestStop error = %v", err)
-	}
-	if signaled {
-		t.Fatal("unverified PID was signaled")
-	}
-	if _, err := os.Stat(cfg.Daemon.PIDFile); !os.IsNotExist(err) {
-		t.Fatalf("stale PID file still exists: %v", err)
-	}
-}
-
-func TestRemovePIDFileIgnoresMissingFile(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "missing.pid")
-	if err := removePIDFile(path); err != nil {
-		t.Fatalf("removePIDFile failed: %v", err)
-	}
-}
-
-func TestPIDFileLockAllowsSharedProbe(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "diu.pid")
-	openSharedLockedPIDFile(t, path, 4242)
-	locked, err := pidFileLocked(path, 4242)
-	probeSucceeded := err == nil && !locked
-	if !probeSucceeded {
-		t.Fatalf("shared PID lock = %v, %v", locked, err)
-	}
-}
-
-func TestPIDFileLockRejectsMismatchedPID(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "diu.pid")
-	lockTestPIDFile(t, path, 4242)
-	locked, err := pidFileLocked(path, 5252)
-	probeSucceeded := err == nil && !locked
-	if !probeSucceeded {
-		t.Fatalf("mismatched PID lock = %v, %v", locked, err)
-	}
-}
-
-func TestRequestStopSignalsProcessWhenStopRequestFails(t *testing.T) {
-	cfg := testConfig(t)
-	pid := 4242
-	lockTestPIDFile(t, cfg.Daemon.PIDFile, pid)
-	restoreDaemonControlHooks(t)
-	daemonSocketControlSender = failingStopControlSender(pid)
-	signaledPID := 0
-	daemonProcessSignaler = func(gotPID int, signal os.Signal) error {
-		signaledPID = gotPID
-		return nil
-	}
-
-	if err := RequestStop(cfg); err != nil {
-		t.Fatalf("RequestStop failed: %v", err)
-	}
-	if signaledPID != pid {
-		t.Fatalf("signaled PID = %d, want %d", signaledPID, pid)
 	}
 }
 
@@ -1621,30 +1165,6 @@ func failingStopControlSender(pid int) func(string, string) (socketControlRespon
 	}
 }
 
-func TestDaemonWithMonitors(t *testing.T) {
-	cfg := testConfig(t)
-	cfg.Monitoring.EnabledTools = []string{"homebrew", "npm", "go"}
-
-	d, err := NewDaemon(cfg)
-	if err != nil {
-		t.Fatalf("NewDaemon failed: %v", err)
-	}
-
-	monitors := d.registry.All()
-	if len(monitors) != 3 {
-		t.Errorf("Expected 3 monitors, got %d", len(monitors))
-	}
-}
-
-func TestDaemonRegistersEverySupportedMonitor(t *testing.T) {
-	setFakeCommandsInPath(t, "brew", "npm", "pnpm", "bun", "go", "pip3", "uv", "poetry")
-	cfg := testConfig(t)
-	cfg.Monitoring.EnabledTools = allSupportedMonitorTools()
-	d := newDaemonForTest(t, cfg)
-	defer closeStorageForTest(t, d.storage)
-	assertRegisteredMonitorCount(t, d, len(cfg.Monitoring.EnabledTools))
-}
-
 func allSupportedMonitorTools() []string {
 	return []string{
 		core.ToolHomebrew,
@@ -1666,32 +1186,6 @@ func assertRegisteredMonitorCount(t *testing.T, d *Daemon, want int) {
 	}
 }
 
-func TestDaemonUnknownMonitor(t *testing.T) {
-	cfg := testConfig(t)
-	cfg.Monitoring.EnabledTools = []string{"unknown_tool"}
-
-	d, err := NewDaemon(cfg)
-	if err != nil {
-		t.Fatalf("NewDaemon should not fail for unknown tools: %v", err)
-	}
-
-	monitors := d.registry.All()
-	if len(monitors) != 0 {
-		t.Errorf("Expected 0 monitors for unknown tool, got %d", len(monitors))
-	}
-}
-
-func TestDaemonContextCancellation(t *testing.T) {
-	cfg := testConfig(t)
-	d := newDaemonForTest(t, cfg)
-	startDaemonForCancellation(t, d)
-
-	d.cancel()
-	time.Sleep(100 * time.Millisecond)
-	assertDaemonContextCanceled(t, d)
-	stopDaemonForTest(t, d)
-}
-
 func startDaemonForCancellation(t *testing.T, d *Daemon) {
 	t.Helper()
 
@@ -1708,17 +1202,6 @@ func assertDaemonContextCanceled(t *testing.T, d *Daemon) {
 	default:
 		t.Error("Context should be cancelled")
 	}
-}
-
-func TestDaemonConcurrentEvents(t *testing.T) {
-	cfg := testConfig(t)
-	d := startDaemonWithMockStorage(t, cfg)
-	defer stopDaemonForTest(t, d)
-	mockStore := d.storage.(*mockStorage)
-	eventCount := 50
-
-	sendConcurrentDaemonEvents(d, eventCount)
-	assertMockExecutionCount(t, mockStore, eventCount)
 }
 
 func sendConcurrentDaemonEvents(d *Daemon, eventCount int) {
@@ -1742,176 +1225,6 @@ func sendConcurrentDaemonEvents(d *Daemon, eventCount int) {
 
 	wg.Wait()
 	time.Sleep(200 * time.Millisecond)
-}
-
-func TestDaemonHTTPServerWithAPI(t *testing.T) {
-	d := startHTTPAPIDaemon(t)
-	defer stopDaemonForTest(t, d)
-	assertHTTPHealthOK(t, d)
-}
-
-func startHTTPAPIDaemon(t *testing.T) *Daemon {
-	t.Helper()
-
-	cfg := testConfig(t)
-	cfg.API.IsEnabled = true
-	cfg.API.Host = "127.0.0.1"
-	cfg.API.Port = 0
-	d, _ := daemonWithMockStorage(t, cfg)
-	if err := d.Start(); err != nil {
-		t.Fatalf("Start failed: %v", err)
-	}
-	time.Sleep(100 * time.Millisecond)
-	return d
-}
-
-func assertHTTPHealthOK(t *testing.T, d *Daemon) {
-	t.Helper()
-
-	resp, err := http.Get("http://" + d.httpServer.Addr + "/api/v1/health")
-	if err != nil {
-		t.Fatalf("Failed to make HTTP request: %v", err)
-	}
-	defer closeForTest(t, resp.Body)
-
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("Expected status 200, got %d", resp.StatusCode)
-	}
-}
-
-func TestDaemonHTTPServerRejectsInvalidAddress(t *testing.T) {
-	cfg := testConfig(t)
-	cfg.API.Host = "invalid host"
-	d, err := NewDaemon(cfg)
-	if err != nil {
-		t.Fatalf("NewDaemon failed: %v", err)
-	}
-	defer closeStorageForTest(t, d.storage)
-
-	err = d.startHTTPServer()
-	hasListenError := err != nil && strings.Contains(err.Error(), "failed to listen")
-	if !hasListenError {
-		t.Fatalf("startHTTPServer error = %v", err)
-	}
-}
-
-func TestHandleExecutionsWithLimit(t *testing.T) {
-	cfg := testConfig(t)
-	d, mockStore := daemonWithMockStorage(t, cfg)
-	addMockExecutions(t, mockStore, 10)
-
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/executions?limit=5", nil)
-	w := httptest.NewRecorder()
-	d.handleExecutions(w, req)
-	assertExecutionResponseCount(t, w, 5)
-}
-
-func addMockExecutions(t *testing.T, mockStore *mockStorage, count int) {
-	t.Helper()
-
-	for i := 0; i < count; i++ {
-		addMockExecution(t, mockStore, &core.ExecutionRecord{
-			ID:        string(rune(i)),
-			Tool:      "homebrew",
-			Timestamp: time.Now(),
-		})
-	}
-}
-
-func assertExecutionResponseCount(t *testing.T, w *httptest.ResponseRecorder, want int) {
-	t.Helper()
-
-	var executions []*core.ExecutionRecord
-	decodeRecorderJSON(t, w, &executions)
-	if len(executions) != want {
-		t.Errorf("Expected %d executions with limit, got %d", want, len(executions))
-	}
-}
-
-func TestHandleExecutionsUsesBoundedDefaultLimit(t *testing.T) {
-	cfg := testConfig(t)
-	d, err := NewDaemon(cfg)
-	if err != nil {
-		t.Fatalf("NewDaemon failed: %v", err)
-	}
-	defer closeStorageForTest(t, d.storage)
-	mockStore := newMockStorage()
-	d.storage = mockStore
-
-	recorder := httptest.NewRecorder()
-	d.handleExecutions(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/executions", nil))
-	if mockStore.lastQuery.Limit != defaultExecutionQueryLimit {
-		t.Fatalf("default limit = %d, want %d", mockStore.lastQuery.Limit, defaultExecutionQueryLimit)
-	}
-}
-
-func TestDaemonExecutionsAPIReportsStorageFailure(t *testing.T) {
-	cfg := testConfig(t)
-	d, mockStore := daemonWithMockStorage(t, cfg)
-	defer closeStorageForTest(t, d.storage)
-	mockStore.getErr = errors.New("storage unavailable")
-
-	recorder := httptest.NewRecorder()
-	d.handleExecutions(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/executions", nil))
-	assertStorageFailureResponse(t, recorder, "storage unavailable")
-}
-
-func assertStorageFailureResponse(t *testing.T, recorder *httptest.ResponseRecorder, message string) {
-	t.Helper()
-
-	if recorder.Code != http.StatusInternalServerError {
-		t.Fatalf("status = %d, want 500", recorder.Code)
-	}
-	if !strings.Contains(recorder.Body.String(), message) {
-		t.Fatalf("body = %q", recorder.Body.String())
-	}
-}
-
-func TestDaemonPackageAndStatsAPIsReportStorageFailures(t *testing.T) {
-	cfg := testConfig(t)
-	d, mockStore := daemonWithMockStorage(t, cfg)
-	defer closeStorageForTest(t, d.storage)
-	mockStore.packagesErr = errors.New("packages unavailable")
-	mockStore.statsErr = errors.New("stats unavailable")
-
-	for _, test := range storageFailureAPICases(d) {
-		assertStorageFailureAPI(t, test)
-	}
-}
-
-type storageFailureAPICase struct {
-	path    string
-	handler http.HandlerFunc
-	want    string
-}
-
-func storageFailureAPICases(d *Daemon) []storageFailureAPICase {
-	return []storageFailureAPICase{
-		{path: "/api/v1/packages", handler: d.handlePackages, want: "packages unavailable"},
-		{path: "/api/v1/stats", handler: d.handleStats, want: "stats unavailable"},
-	}
-}
-
-func assertStorageFailureAPI(t *testing.T, test storageFailureAPICase) {
-	t.Helper()
-
-	recorder := httptest.NewRecorder()
-	test.handler(recorder, httptest.NewRequest(http.MethodGet, test.path, nil))
-	hasStatus := recorder.Code == http.StatusInternalServerError
-	hasBody := strings.Contains(recorder.Body.String(), test.want)
-	hasResponse := hasStatus && hasBody
-	if !hasResponse {
-		t.Fatalf("%s response = %d, %q", test.path, recorder.Code, recorder.Body.String())
-	}
-}
-
-func TestDaemonWaitUnblocksAfterStop(t *testing.T) {
-	cfg := testConfig(t)
-	d := startDaemonForWaitTest(t, cfg)
-	done := waitForDaemonInBackground(d)
-
-	stopDaemonForWaitTest(t, d)
-	assertDaemonWaitDone(t, done)
 }
 
 func startDaemonForWaitTest(t *testing.T, cfg *core.Config) *Daemon {
@@ -1951,29 +1264,6 @@ func assertDaemonWaitDone(t *testing.T, done chan struct{}) {
 	}
 }
 
-func TestDaemonPruneOldRecordsHandlesCleanupError(t *testing.T) {
-	cfg := testConfig(t)
-	d, err := NewDaemon(cfg)
-	if err != nil {
-		t.Fatalf("NewDaemon failed: %v", err)
-	}
-
-	mock := newMockStorage()
-	d.storage = mock
-
-	d.pruneOldRecords()
-}
-
-func TestDaemonRunsConfiguredBackups(t *testing.T) {
-	d, mock := startBackupCleanupDaemon(t)
-	waitForBackupCall(t, mock)
-	d.cancel()
-	d.wg.Wait()
-	if backupCallCount(mock) == 0 {
-		t.Fatal("configured storage backup did not run")
-	}
-}
-
 func startBackupCleanupDaemon(t *testing.T) (*Daemon, *mockStorage) {
 	t.Helper()
 
@@ -2003,19 +1293,6 @@ func backupCallCount(mock *mockStorage) int {
 	mock.mu.RLock()
 	defer mock.mu.RUnlock()
 	return mock.backupCalls
-}
-
-func TestProcessEventsChannelClose(t *testing.T) {
-	cfg := testConfig(t)
-	d, mockStore := newEventDaemon(t, cfg, 0)
-	done := startProcessEvents(d)
-
-	queueDaemonEvent(d, "test", "homebrew")
-	time.Sleep(50 * time.Millisecond)
-	close(d.eventChan)
-	assertProcessEventsDone(t, done, "processEvents did not exit after channel close")
-	assertMockExecutionCount(t, mockStore, 1)
-	assertBatchCalls(t, mockStore, 1)
 }
 
 func newEventDaemon(t *testing.T, cfg *core.Config, buffer int) (*Daemon, *mockStorage) {
@@ -2064,59 +1341,6 @@ func assertBatchCalls(t *testing.T, mockStore *mockStorage, want int) {
 	}
 }
 
-func TestProcessEventsDrainsQueuedEventsOnCancel(t *testing.T) {
-	cfg := testConfig(t)
-	d, mockStore := newEventDaemon(t, cfg, 2)
-
-	queueDaemonEvent(d, "one", "homebrew")
-	queueDaemonEvent(d, "two", "npm")
-	d.cancel()
-	done := startProcessEvents(d)
-	assertProcessEventsDone(t, done, "processEvents did not exit after cancellation")
-	assertMockExecutionCount(t, mockStore, 2)
-}
-
-func TestInventoryRefreshRetriesAndStops(t *testing.T) {
-	cfg := testConfig(t)
-	cfg.Monitoring.Filesystem.ScanInterval = time.Millisecond
-	d, _ := newEventDaemon(t, cfg, 0)
-	calls := make(chan context.Context, 1)
-	d.SetInventoryRefresh(func(ctx context.Context) error {
-		select {
-		case calls <- ctx:
-		case <-ctx.Done():
-		}
-		return errors.New("temporary failure")
-	})
-	d.startInventoryRefresh()
-	defer d.cancel()
-	awaitRefreshCall(t, calls)
-	ctx := awaitRefreshCall(t, calls)
-	d.cancel()
-	assertRefreshStopped(t, d)
-	if ctx.Err() == nil {
-		t.Fatal("refresh context was not canceled")
-	}
-}
-
-func TestInventoryRefreshDoesNotOverlap(t *testing.T) {
-	cfg := testConfig(t)
-	cfg.Monitoring.Filesystem.ScanInterval = time.Millisecond
-	d, _ := newEventDaemon(t, cfg, 0)
-	calls := make(chan context.Context, 2)
-	d.SetInventoryRefresh(func(ctx context.Context) error {
-		calls <- ctx
-		<-ctx.Done()
-		return ctx.Err()
-	})
-	d.startInventoryRefresh()
-	defer d.cancel()
-	awaitRefreshCall(t, calls)
-	assertNoRefreshCall(t, calls)
-	d.cancel()
-	assertRefreshStopped(t, d)
-}
-
 func awaitRefreshCall(t *testing.T, calls <-chan context.Context) context.Context {
 	t.Helper()
 	select {
@@ -2149,17 +1373,4 @@ func assertRefreshStopped(t *testing.T, d *Daemon) {
 	case <-time.After(time.Second):
 		t.Fatal("inventory refresh did not stop")
 	}
-}
-
-func TestInventoryRefreshCanBeDisabled(t *testing.T) {
-	cfg := testConfig(t)
-	d, _ := newEventDaemon(t, cfg, 0)
-	defer d.cancel()
-	calls := make(chan context.Context, 1)
-	d.SetInventoryRefresh(func(ctx context.Context) error {
-		calls <- ctx
-		return nil
-	})
-	d.startInventoryRefresh()
-	assertNoRefreshCall(t, calls)
 }

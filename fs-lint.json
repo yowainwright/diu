@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "newFiles": {
+    "default": "allow",
+    "allow": [
+      "!internal/daemon/**",
+      "internal/daemon/{daemon,types,constants,helpers}.go",
+      "internal/daemon/{daemon,types,constants,helpers}_test.go"
+    ]
+  }
+}
