@@ -24,21 +24,21 @@ import (
 )
 
 type mockStorage struct {
-	mu            sync.RWMutex
-	executions    []*core.ExecutionRecord
-	packages      map[string][]*core.PackageInfo
-	isClosed      bool
-	addErr        error
-	getErr        error
-	packagesErr   error
-	statsErr      error
-	isInitialized bool
-	batchCalls    int
-	backupCalls   int
-	cleanupCalls  int
-	prepareCalls  int
-	cleanupErr    error
-	lastQuery     storage.QueryOptions
+	storage.Storage
+	mu           sync.RWMutex
+	executions   []*core.ExecutionRecord
+	packages     map[string][]*core.PackageInfo
+	isClosed     bool
+	addErr       error
+	getErr       error
+	packagesErr  error
+	statsErr     error
+	batchCalls   int
+	backupCalls  int
+	cleanupCalls int
+	prepareCalls int
+	cleanupErr   error
+	lastQuery    storage.QueryOptions
 }
 
 func newMockStorage() *mockStorage {
@@ -46,11 +46,6 @@ func newMockStorage() *mockStorage {
 		executions: make([]*core.ExecutionRecord, 0),
 		packages:   make(map[string][]*core.PackageInfo),
 	}
-}
-
-func (m *mockStorage) Initialize(config *core.Config) error {
-	m.isInitialized = true
-	return nil
 }
 
 func (m *mockStorage) Close() error {
@@ -96,10 +91,9 @@ func (m *mockStorage) GetExecutions(opts storage.QueryOptions) ([]*core.Executio
 func filterMockExecutions(executions []*core.ExecutionRecord, tool string) []*core.ExecutionRecord {
 	result := make([]*core.ExecutionRecord, 0)
 	for _, execution := range executions {
-		if tool != "" {
-			if execution.Tool != tool {
-				continue
-			}
+		shouldSkip := tool != "" && execution.Tool != tool
+		if shouldSkip {
+			continue
 		}
 		result = append(result, execution)
 	}
@@ -107,47 +101,18 @@ func filterMockExecutions(executions []*core.ExecutionRecord, tool string) []*co
 }
 
 func limitMockExecutions(executions []*core.ExecutionRecord, limit int) []*core.ExecutionRecord {
-	if limit <= 0 {
-		return executions
-	}
-	if len(executions) <= limit {
+	shouldReturnAll := limit <= 0 || len(executions) <= limit
+	if shouldReturnAll {
 		return executions
 	}
 	return executions[:limit]
 }
 
-func (m *mockStorage) GetExecutionByID(id string) (*core.ExecutionRecord, error) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	for _, e := range m.executions {
-		if e.ID == id {
-			return e, nil
-		}
-	}
-	return nil, nil
-}
-
 func (m *mockStorage) UpdatePackage(pkg *core.PackageInfo) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if _, ok := m.packages[pkg.Tool]; !ok {
-		m.packages[pkg.Tool] = make([]*core.PackageInfo, 0)
-	}
 	m.packages[pkg.Tool] = append(m.packages[pkg.Tool], pkg)
 	return nil
-}
-
-func (m *mockStorage) GetPackage(tool, name string) (*core.PackageInfo, error) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	if pkgs, ok := m.packages[tool]; ok {
-		for _, p := range pkgs {
-			if p.Name == name {
-				return p, nil
-			}
-		}
-	}
-	return nil, nil
 }
 
 func (m *mockStorage) GetPackages(tool string) ([]*core.PackageInfo, error) {
@@ -167,38 +132,6 @@ func (m *mockStorage) GetPackages(tool string) ([]*core.PackageInfo, error) {
 }
 
 //nolint:legibility // storage.Storage requires this method name.
-func (m *mockStorage) AllPackages() (map[string]map[string]*core.PackageInfo, error) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	result := make(map[string]map[string]*core.PackageInfo)
-	for tool, pkgs := range m.packages {
-		result[tool] = packagesByName(pkgs)
-	}
-	return result, nil
-}
-
-func packagesByName(packages []*core.PackageInfo) map[string]*core.PackageInfo {
-	byName := make(map[string]*core.PackageInfo)
-	for _, pkg := range packages {
-		byName[pkg.Name] = pkg
-	}
-	return byName
-}
-
-func (m *mockStorage) DeletePackage(tool, name string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	pkgs := m.packages[tool]
-	for i, pkg := range pkgs {
-		if pkg.Name == name {
-			m.packages[tool] = append(pkgs[:i], pkgs[i+1:]...)
-			break
-		}
-	}
-	return nil
-}
-
-//nolint:legibility // storage.Storage requires this method name.
 func (m *mockStorage) Statistics() (*core.StorageStatistics, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -214,18 +147,10 @@ func (m *mockStorage) Statistics() (*core.StorageStatistics, error) {
 	}, nil
 }
 
-func (m *mockStorage) UpdateStatistics() error {
-	return nil
-}
-
 func (m *mockStorage) Backup() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.backupCalls++
-	return nil
-}
-
-func (m *mockStorage) Restore(path string) error {
 	return nil
 }
 

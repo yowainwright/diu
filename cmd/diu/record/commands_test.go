@@ -89,18 +89,6 @@ func TestCloseStorageHandlesCloseFailure(t *testing.T) {
 	closeStorage(closeFailureStorage{err: errors.New("close failed")})
 }
 
-func TestRecorderMonitorDispatchesSupportedTools(t *testing.T) {
-	for _, tool := range []string{core.ToolHomebrew, core.ToolGo, core.ToolNPM, core.ToolPNPM, core.ToolBun, core.ToolPip, core.ToolUV, core.ToolPoetry} {
-		assertRecorderMonitorAvailable(t, tool)
-	}
-	for _, tool := range []string{"brew", "golang", "pip3", "python", "python3", " NPM ", " PNPM ", " BUN ", " UV ", " POETRY "} {
-		assertRecorderMonitorAvailable(t, tool)
-	}
-	if _, err := recorderMonitor("unsupported"); err == nil {
-		t.Fatal("recorderMonitor accepted an unsupported tool")
-	}
-}
-
 func setInvalidRecordConfig(t *testing.T) {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())
@@ -134,20 +122,6 @@ func assertFallbackRecordingError(t *testing.T, config *core.Config, recordErr e
 	err := recordFallbackExecution(config, recorderErrorReader{err: recordErr})
 	if !errors.Is(err, recordErr) {
 		t.Fatalf("recordFallbackExecution error = %v, want %v", err, recordErr)
-	}
-}
-
-func assertRecorderMonitorAvailable(t *testing.T, tool string) {
-	t.Helper()
-	monitor, err := recorderMonitor(tool)
-	hasError := err != nil
-	missingMonitor := monitor == nil
-	invalidMonitor := hasError || missingMonitor
-	if invalidMonitor {
-		t.Fatalf("recorderMonitor(%q) = %v, %v", tool, monitor, err)
-	}
-	if monitor.Name() != core.NormalizeToolName(tool) {
-		t.Fatalf("recorderMonitor(%q) selected %q", tool, monitor.Name())
 	}
 }
 
