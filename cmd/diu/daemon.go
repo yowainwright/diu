@@ -18,6 +18,7 @@ import (
 	"github.com/yowainwright/diu/internal/core"
 	"github.com/yowainwright/diu/internal/daemon"
 	"github.com/yowainwright/diu/internal/dx"
+	"github.com/yowainwright/diu/internal/helpers"
 	"github.com/yowainwright/diu/internal/safefs"
 )
 
@@ -224,12 +225,11 @@ func waitForDaemonStarted(config *core.Config, timeout time.Duration) error {
 }
 
 func waitForDaemonStartedWithPollInterval(config *core.Config, timeout, pollInterval time.Duration) error {
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		if defaultDaemonChecker(config) {
-			return nil
-		}
-		sleepUntilNextPoll(deadline, pollInterval)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	ready := func() bool { return defaultDaemonChecker(config) }
+	if err := helpers.WaitUntil(ctx, pollInterval, ready); err == nil {
+		return nil
 	}
 	return fmt.Errorf("timed out after %s waiting for daemon to start", timeout)
 }
@@ -243,12 +243,11 @@ func waitForDaemonStoppedWithPollInterval(config *core.Config, timeout, pollInte
 	if err == nil {
 		return waitForDaemonProcessStoppedWithPollInterval(pid, timeout, pollInterval)
 	}
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		if !defaultDaemonChecker(config) {
-			return nil
-		}
-		sleepUntilNextPoll(deadline, pollInterval)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	ready := func() bool { return !defaultDaemonChecker(config) }
+	if err := helpers.WaitUntil(ctx, pollInterval, ready); err == nil {
+		return nil
 	}
 	return fmt.Errorf("timed out after %s waiting for daemon to stop", timeout)
 }
@@ -258,24 +257,13 @@ func waitForDaemonProcessStopped(pid int, timeout time.Duration) error {
 }
 
 func waitForDaemonProcessStoppedWithPollInterval(pid int, timeout, pollInterval time.Duration) error {
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		if !daemon.ProcessRunning(pid) {
-			return nil
-		}
-		sleepUntilNextPoll(deadline, pollInterval)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	ready := func() bool { return !daemon.ProcessRunning(pid) }
+	if err := helpers.WaitUntil(ctx, pollInterval, ready); err == nil {
+		return nil
 	}
 	return fmt.Errorf("timed out after %s waiting for daemon process %d to stop", timeout, pid)
-}
-
-func sleepUntilNextPoll(deadline time.Time, interval time.Duration) {
-	wait := time.Until(deadline)
-	if interval < wait {
-		wait = interval
-	}
-	if wait > 0 {
-		time.Sleep(wait)
-	}
 }
 
 func restartDaemon(cmd *command, args []string) error {

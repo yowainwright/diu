@@ -16,6 +16,7 @@ import (
 
 	"github.com/yowainwright/diu/internal/core"
 	"github.com/yowainwright/diu/internal/dx"
+	"github.com/yowainwright/diu/internal/helpers"
 	"github.com/yowainwright/diu/internal/safefs"
 	"github.com/yowainwright/diu/internal/storage"
 )
@@ -294,16 +295,12 @@ func filterPackages(packages []*core.PackageInfo, opts packageListOptions) ([]*c
 		return nil, err
 	}
 	search := strings.ToLower(strings.TrimSpace(opts.Search))
-	var filtered []*core.PackageInfo
-	for _, pkg := range packages {
+	filtered := helpers.Filter(packages, func(pkg *core.PackageInfo) bool {
 		if packageExcludedBySearch(pkg, search) {
-			continue
+			return false
 		}
-		if packageUsedAfterCutoff(pkg, cutoff) {
-			continue
-		}
-		filtered = append(filtered, pkg)
-	}
+		return !packageUsedAfterCutoff(pkg, cutoff)
+	})
 	return filtered, nil
 }
 

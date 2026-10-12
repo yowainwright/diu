@@ -1,7 +1,6 @@
 package monitors
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
 	"os/exec"
@@ -9,6 +8,7 @@ import (
 	"time"
 
 	"github.com/yowainwright/diu/internal/core"
+	"github.com/yowainwright/diu/internal/helpers"
 )
 
 const (
@@ -460,31 +460,26 @@ func parsePythonPackageJSON(tool string, output []byte) ([]*core.PackageInfo, er
 	if err := json.Unmarshal(output, &raw); err != nil {
 		return nil, err
 	}
-	packages := make([]*core.PackageInfo, 0, len(raw))
-	for _, item := range raw {
+	packages := helpers.FilterMap(raw, func(item pythonPackageJSON) (*core.PackageInfo, bool) {
 		if item.Name == "" {
-			continue
+			return nil, false
 		}
-		packages = append(packages, &core.PackageInfo{
+		pkg := &core.PackageInfo{
 			Name:        item.Name,
 			Version:     item.Version,
 			Tool:        tool,
 			InstallDate: time.Now(),
-		})
-	}
+		}
+		return pkg, true
+	})
 	return packages, nil
 }
 
 func parsePythonPackageLines(tool, output string) []*core.PackageInfo {
-	var packages []*core.PackageInfo
-	scanner := bufio.NewScanner(strings.NewReader(output))
-	for scanner.Scan() {
-		pkg := pythonPackageFromLine(tool, scanner.Text())
-		if pkg == nil {
-			continue
-		}
-		packages = append(packages, pkg)
-	}
+	packages, _ := helpers.ScanLines(strings.NewReader(output), func(line string) (*core.PackageInfo, bool) {
+		pkg := pythonPackageFromLine(tool, line)
+		return pkg, pkg != nil
+	})
 	return packages
 }
 
@@ -516,15 +511,10 @@ func skipPythonPackageLine(line string) bool {
 }
 
 func parseUVToolList(output string) []*core.PackageInfo {
-	var packages []*core.PackageInfo
-	scanner := bufio.NewScanner(strings.NewReader(output))
-	for scanner.Scan() {
-		pkg := parseUVToolPackage(scanner.Text())
-		if pkg == nil {
-			continue
-		}
-		packages = append(packages, pkg)
-	}
+	packages, _ := helpers.ScanLines(strings.NewReader(output), func(line string) (*core.PackageInfo, bool) {
+		pkg := parseUVToolPackage(line)
+		return pkg, pkg != nil
+	})
 	return packages
 }
 

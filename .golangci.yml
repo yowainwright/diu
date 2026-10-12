@@ -4,6 +4,11 @@ linters:
   default: standard
   enable:
     - legibility
+  exclusions:
+    rules:
+      - path: '^internal/helpers/helpers\.go$'
+        linters: [legibility]
+        text: 'LEG046 no-generic-package-names'
   settings:
     custom:
       legibility:

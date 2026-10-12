@@ -1,7 +1,7 @@
 package monitors
 
 import (
-	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"maps"
@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/yowainwright/diu/internal/core"
+	"github.com/yowainwright/diu/internal/helpers"
 )
 
 type NPMMonitor struct {
@@ -299,19 +300,17 @@ func parseNPMGlobalList(output []byte) (map[string]npmGlobalDependency, error) {
 
 func npmPackagesFromGlobalList(dependencies map[string]npmGlobalDependency) []*core.PackageInfo {
 	names := slices.Sorted(maps.Keys(dependencies))
-	packages := make([]*core.PackageInfo, len(names))
-	for index, name := range names {
+	return helpers.Map(names, func(name string) *core.PackageInfo {
 		info := dependencies[name]
 		dependencyNames := slices.Sorted(maps.Keys(info.Dependencies))
-		packages[index] = &core.PackageInfo{
+		return &core.PackageInfo{
 			Name:         name,
 			Version:      info.Version,
 			Tool:         core.ToolNPM,
 			InstallDate:  time.Now(),
 			Dependencies: dependencyNames,
 		}
-	}
-	return packages
+	})
 }
 
 func (m *NPMMonitor) globalPackagesSimple() ([]*core.PackageInfo, error) {
@@ -330,14 +329,10 @@ func npmGlobalSimpleOutput() ([]byte, error) {
 }
 
 func parseNPMGlobalSimpleOutput(output []byte) []*core.PackageInfo {
-	var packages []*core.PackageInfo
-	scanner := bufio.NewScanner(strings.NewReader(string(output)))
-	for scanner.Scan() {
-		pkg := npmPackageFromTreeLine(scanner.Text())
-		if pkg != nil {
-			packages = append(packages, pkg)
-		}
-	}
+	packages, _ := helpers.ScanLines(bytes.NewReader(output), func(line string) (*core.PackageInfo, bool) {
+		pkg := npmPackageFromTreeLine(line)
+		return pkg, pkg != nil
+	})
 	return packages
 }
 
