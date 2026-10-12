@@ -5,48 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
-	"sync"
-	"time"
 
 	"github.com/yowainwright/diu/internal/core"
 	"github.com/yowainwright/diu/internal/safefs"
 )
-
-const (
-	LogFileName          = "diu.log"
-	previousLogFileName  = "diu.log.previous"
-	fallbackMarkerName   = "fallback-contention"
-	maxLocalLogBytes     = 4 << 20
-	maxDiagnosticLogSize = 128 << 10
-)
-
-func LogPath(dataDir string) string {
-	return filepath.Join(dataDir, LogFileName)
-}
-
-func FallbackContentionPath(dataDir string) string {
-	return filepath.Join(dataDir, fallbackMarkerName)
-}
-
-func MarkFallbackContention(dataDir string) error {
-	if err := os.MkdirAll(dataDir, core.OwnerDirectoryMode); err != nil {
-		return fmt.Errorf("failed to create observability directory: %w", err)
-	}
-	path := FallbackContentionPath(dataDir)
-	if err := ensurePrivateMarker(path); err != nil {
-		return err
-	}
-	now := time.Now()
-	if err := os.Chtimes(path, now, now); err != nil {
-		return fmt.Errorf("failed to update fallback contention marker: %w", err)
-	}
-	return nil
-}
 
 func ensurePrivateMarker(path string) error {
 	if err := validatePrivateMarker(path); err != nil {
@@ -79,45 +45,6 @@ func validateMarkerFileMode(path string, info os.FileInfo) error {
 	return nil
 }
 
-func ReadFallbackContention(dataDir string) (time.Time, bool, error) {
-	path := FallbackContentionPath(dataDir)
-	info, err := safefs.Lstat(path)
-	if os.IsNotExist(err) {
-		return time.Time{}, false, nil
-	}
-	if err != nil {
-		return time.Time{}, false, fmt.Errorf("failed to inspect fallback contention marker: %w", err)
-	}
-	if !info.Mode().IsRegular() {
-		return time.Time{}, false, fmt.Errorf("fallback contention marker is not a regular file: %s", path)
-	}
-	return info.ModTime().UTC(), true, nil
-}
-
-func NewLocalLogger(dataDir string) (*log.Logger, io.Closer, error) {
-	if err := os.MkdirAll(dataDir, core.OwnerDirectoryMode); err != nil {
-		return nil, nil, fmt.Errorf("failed to create log directory: %w", err)
-	}
-	path := LogPath(dataDir)
-	if err := rotateLog(path); err != nil {
-		return nil, nil, err
-	}
-	writer, err := newRotatingLogWriter(path)
-	if err != nil {
-		return nil, nil, err
-	}
-	output := io.MultiWriter(writer, os.Stderr)
-	logger := log.New(output, "", log.LstdFlags|log.LUTC)
-	return logger, writer, nil
-}
-
-type rotatingLogWriter struct {
-	mu   sync.Mutex
-	path string
-	file *os.File
-	size int64
-}
-
 func newRotatingLogWriter(path string) (*rotatingLogWriter, error) {
 	file, size, err := openLog(path)
 	if err != nil {
@@ -148,7 +75,7 @@ func (w *rotatingLogWriter) Write(data []byte) (int, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	originalSize := len(data)
-	boundedData := boundedLogWrite(data)
+	boundedData := data[:min(len(data), maxLocalLogBytes)]
 	if w.size+int64(len(boundedData)) > maxLocalLogBytes {
 		if err := w.rotate(); err != nil {
 			return 0, err
@@ -160,13 +87,6 @@ func (w *rotatingLogWriter) Write(data []byte) (int, error) {
 		return written, err
 	}
 	return originalSize, nil
-}
-
-func boundedLogWrite(data []byte) []byte {
-	if len(data) <= maxLocalLogBytes {
-		return data
-	}
-	return data[:maxLocalLogBytes]
 }
 
 func (w *rotatingLogWriter) rotate() error {
@@ -224,21 +144,6 @@ func rotateCurrentLog(path string) error {
 	return nil
 }
 
-func ReadRecentLogs(dataDir string) ([]string, error) {
-	current, err := readLogTailPath(LogPath(dataDir), maxDiagnosticLogSize)
-	if err != nil {
-		return nil, err
-	}
-	remaining := maxDiagnosticLogSize - int64(len(current))
-	previousPath := filepath.Join(dataDir, previousLogFileName)
-	previous, err := readLogTailPath(previousPath, remaining)
-	if err != nil {
-		return nil, err
-	}
-	data := joinLogTails(previous, current)
-	return splitLogLines(data), nil
-}
-
 func readLogTailPath(path string, limit int64) ([]byte, error) {
 	if limit <= 0 {
 		return nil, nil
@@ -286,14 +191,11 @@ func joinLogTails(previous, current []byte) []byte {
 	if len(previous) == 0 {
 		return current
 	}
-	currentEmpty := len(current) == 0
-	previousComplete := previous[len(previous)-1] == '\n'
-	canAppend := currentEmpty || previousComplete
-	if canAppend {
-		return append(previous, current...)
+	needsNewline := len(current) > 0 && previous[len(previous)-1] != '\n'
+	if needsNewline {
+		previous = append(previous, '\n')
 	}
-	withNewline := append(previous, '\n')
-	return append(withNewline, current...)
+	return append(previous, current...)
 }
 
 func splitLogLines(data []byte) []string {
@@ -310,19 +212,6 @@ func trimPartialLine(data []byte) []byte {
 		return nil
 	}
 	return data[lineEnd+1:]
-}
-
-func RedactLines(lines []string, replacements map[string]string) []string {
-	keys := replacementKeys(replacements)
-	redacted := make([]string, len(lines))
-	for index, line := range lines {
-		redacted[index] = redact(line, keys, replacements)
-	}
-	return redacted
-}
-
-func RedactText(value string, replacements map[string]string) string {
-	return redact(value, replacementKeys(replacements), replacements)
 }
 
 func replacementKeys(replacements map[string]string) []string {
