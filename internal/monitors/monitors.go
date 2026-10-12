@@ -70,6 +70,11 @@ func (m *BaseMonitor) Initialize(config *core.Config) error {
 	return nil
 }
 
+func (m *BaseMonitor) Start(ctx context.Context, eventChan chan<- *core.ExecutionRecord) error {
+	m.ctx, m.cancel = context.WithCancel(ctx)
+	return nil
+}
+
 func (m *BaseMonitor) Stop() error {
 	if m.cancel != nil {
 		m.cancel()
@@ -102,15 +107,6 @@ func (r *MonitorRegistry) All() []Monitor {
 		monitors = append(monitors, m)
 	}
 	return monitors
-}
-
-func (r *MonitorRegistry) InitializeAll(config *core.Config) error {
-	for _, monitor := range r.monitors {
-		if err := monitor.Initialize(config); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 func (r *MonitorRegistry) StartAll(ctx context.Context, eventChan chan<- *core.ExecutionRecord) error {
@@ -161,5 +157,14 @@ func enrichMetadata(record, parsed *core.ExecutionRecord) {
 		if _, exists := record.Metadata[key]; !exists {
 			record.Metadata[key] = value
 		}
+	}
+}
+
+func newExecutionRecord(tool, cmd string, args []string) *core.ExecutionRecord {
+	return &core.ExecutionRecord{
+		Tool:     tool,
+		Command:  cmd,
+		Args:     args,
+		Metadata: make(map[string]interface{}),
 	}
 }

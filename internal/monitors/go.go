@@ -1,30 +1,30 @@
 package monitors
 
 import (
-	"context"
 	"debug/buildinfo"
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/yowainwright/diu/internal/core"
 )
 
 type GoMonitor struct {
-	*ProcessMonitor
+	*BaseMonitor
 	goPath string
 	goBin  string
 }
 
 func NewGoMonitor() Monitor {
 	return &GoMonitor{
-		ProcessMonitor: NewProcessMonitor(core.ToolGo, "go"),
+		BaseMonitor: NewBaseMonitor(core.ToolGo),
 	}
 }
 
 func (m *GoMonitor) Initialize(config *core.Config) error {
-	if err := m.ProcessMonitor.Initialize(config); err != nil {
+	if err := m.BaseMonitor.Initialize(config); err != nil {
 		return err
 	}
 	m.goPath = goPath(config)
@@ -56,7 +56,7 @@ func goBin(config *core.Config, path string) string {
 }
 
 func (m *GoMonitor) ParseCommand(cmd string, args []string) (*core.ExecutionRecord, error) {
-	record := newGoExecutionRecord(cmd, args)
+	record := newExecutionRecord(core.ToolGo, cmd, args)
 	if len(args) == 0 {
 		return record, nil
 	}
@@ -64,15 +64,6 @@ func (m *GoMonitor) ParseCommand(cmd string, args []string) (*core.ExecutionReco
 	record.Metadata["subcommand"] = subcommand
 	m.applyGoSubcommand(record, subcommand, args)
 	return record, nil
-}
-
-func newGoExecutionRecord(cmd string, args []string) *core.ExecutionRecord {
-	return &core.ExecutionRecord{
-		Tool:     core.ToolGo,
-		Command:  cmd,
-		Args:     args,
-		Metadata: make(map[string]interface{}),
-	}
 }
 
 func (m *GoMonitor) applyGoSubcommand(record *core.ExecutionRecord, subcommand string, args []string) {
@@ -114,7 +105,7 @@ func applyGoSimpleAction(record *core.ExecutionRecord, action string) {
 func (m *GoMonitor) applyGoGet(record *core.ExecutionRecord, args []string) {
 	record.PackagesAffected = m.extractGoPackages(args[1:])
 	record.Metadata["action"] = "get"
-	if contains(args, "-u") {
+	if slices.Contains(args, "-u") {
 		record.Metadata["update"] = true
 	}
 }
@@ -150,14 +141,14 @@ func (m *GoMonitor) applyGoTest(record *core.ExecutionRecord, args []string) {
 
 func applyGoList(record *core.ExecutionRecord, args []string) {
 	record.Metadata["action"] = "list"
-	if contains(args, "-m") {
+	if slices.Contains(args, "-m") {
 		record.Metadata["modules"] = true
 	}
 }
 
 func applyGoClean(record *core.ExecutionRecord, args []string) {
 	record.Metadata["action"] = "clean"
-	if contains(args, "-modcache") {
+	if slices.Contains(args, "-modcache") {
 		record.Metadata["modcache"] = true
 	}
 }
@@ -301,9 +292,4 @@ func (m *GoMonitor) binaryVersion(binaryPath string) (string, error) {
 		return "", fmt.Errorf("version not found")
 	}
 	return version, nil
-}
-
-func (m *GoMonitor) Start(ctx context.Context, eventChan chan<- *core.ExecutionRecord) error {
-	err := m.ProcessMonitor.Start(ctx, eventChan)
-	return err
 }

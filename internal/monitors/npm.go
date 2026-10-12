@@ -2,12 +2,10 @@ package monitors
 
 import (
 	"bufio"
-	"context"
 	"encoding/json"
 	"fmt"
-	"os"
+	"maps"
 	"os/exec"
-	"path/filepath"
 	"slices"
 	"strings"
 	"time"
@@ -16,15 +14,11 @@ import (
 )
 
 type NPMMonitor struct {
-	*ProcessMonitor
-	globalPath string
+	*BaseMonitor
 }
 
 const (
 	npmCommandName       = "npm"
-	npmConfigCommand     = "config"
-	npmGetCommand        = "get"
-	npmPrefixConfigName  = "prefix"
 	npmListCommand       = "list"
 	npmGlobalFlag        = "-g"
 	npmDepthZeroFlag     = "--depth=0"
@@ -34,12 +28,12 @@ const (
 
 func NewNPMMonitor() Monitor {
 	return &NPMMonitor{
-		ProcessMonitor: NewProcessMonitor(core.ToolNPM, "npm"),
+		BaseMonitor: NewBaseMonitor(core.ToolNPM),
 	}
 }
 
 func (m *NPMMonitor) Initialize(config *core.Config) error {
-	if err := m.ProcessMonitor.Initialize(config); err != nil {
+	if err := m.BaseMonitor.Initialize(config); err != nil {
 		return err
 	}
 
@@ -47,30 +41,11 @@ func (m *NPMMonitor) Initialize(config *core.Config) error {
 		return fmt.Errorf("npm not found: %w", err)
 	}
 
-	m.globalPath = m.globalPathValue()
-
 	return nil
 }
 
-func (m *NPMMonitor) globalPathValue() string {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, npmCommandName, npmConfigCommand, npmGetCommand, npmPrefixConfigName)
-	output, err := cmd.Output()
-	if err != nil {
-		homeDir := os.Getenv("HOME")
-		if dir, userErr := os.UserHomeDir(); userErr == nil {
-			homeDir = dir
-		}
-		return filepath.Join(homeDir, ".npm")
-	}
-
-	prefix := strings.TrimSpace(string(output))
-	return filepath.Join(prefix, "lib", "node_modules")
-}
-
 func (m *NPMMonitor) ParseCommand(cmd string, args []string) (*core.ExecutionRecord, error) {
-	record := newNPMExecutionRecord(cmd, args)
+	record := newExecutionRecord(core.ToolNPM, cmd, args)
 	if len(args) == 0 {
 		return record, nil
 	}
@@ -81,20 +56,11 @@ func (m *NPMMonitor) ParseCommand(cmd string, args []string) (*core.ExecutionRec
 	return record, nil
 }
 
-func newNPMExecutionRecord(cmd string, args []string) *core.ExecutionRecord {
-	return &core.ExecutionRecord{
-		Tool:     core.ToolNPM,
-		Command:  cmd,
-		Args:     args,
-		Metadata: make(map[string]interface{}),
-	}
-}
-
 func hasNPMGlobalFlag(args []string) bool {
-	if contains(args, "-g") {
+	if slices.Contains(args, "-g") {
 		return true
 	}
-	return contains(args, "--global")
+	return slices.Contains(args, "--global")
 }
 
 func (m *NPMMonitor) applyNPMSubcommand(record *core.ExecutionRecord, subcommand string, args []string) {
@@ -145,7 +111,7 @@ func setNPMPackageAction(record *core.ExecutionRecord, action string, args []str
 
 func setNPMAuditAction(record *core.ExecutionRecord, args []string) {
 	record.Metadata["action"] = "audit"
-	if contains(args, "--fix") {
+	if slices.Contains(args, "--fix") {
 		record.Metadata["fix"] = true
 	}
 }
@@ -196,17 +162,17 @@ func setNPMScript(record *core.ExecutionRecord, args []string) {
 }
 
 func hasNPMDevDependencyFlag(args []string) bool {
-	if contains(args, "--save-dev") {
+	if slices.Contains(args, "--save-dev") {
 		return true
 	}
-	return contains(args, "-D")
+	return slices.Contains(args, "-D")
 }
 
 func hasNPMOptionalDependencyFlag(args []string) bool {
-	if contains(args, "--save-optional") {
+	if slices.Contains(args, "--save-optional") {
 		return true
 	}
-	return contains(args, "-O")
+	return slices.Contains(args, "-O")
 }
 
 func setNPMArgumentPackage(record *core.ExecutionRecord, args []string) {
@@ -292,10 +258,7 @@ func (m *NPMMonitor) extractDepth(args []string) int {
 
 //nolint:legibility // Monitor interface requires this method name.
 func (m *NPMMonitor) GetInstalledPackages() ([]*core.PackageInfo, error) {
-	if m.config.Tools.NPM.ShouldTrackGlobalOnly {
-		return m.globalPackages()
-	}
-	return m.allPackages()
+	return m.globalPackages()
 }
 
 func (m *NPMMonitor) globalPackages() ([]*core.PackageInfo, error) {
@@ -335,37 +298,20 @@ func parseNPMGlobalList(output []byte) (map[string]npmGlobalDependency, error) {
 }
 
 func npmPackagesFromGlobalList(dependencies map[string]npmGlobalDependency) []*core.PackageInfo {
-	names := sortedNPMDependencyNames(dependencies)
+	names := slices.Sorted(maps.Keys(dependencies))
 	packages := make([]*core.PackageInfo, len(names))
 	for index, name := range names {
 		info := dependencies[name]
+		dependencyNames := slices.Sorted(maps.Keys(info.Dependencies))
 		packages[index] = &core.PackageInfo{
 			Name:         name,
 			Version:      info.Version,
 			Tool:         core.ToolNPM,
 			InstallDate:  time.Now(),
-			Dependencies: sortedNPMDependencyKeys(info.Dependencies),
+			Dependencies: dependencyNames,
 		}
 	}
 	return packages
-}
-
-func sortedNPMDependencyNames(dependencies map[string]npmGlobalDependency) []string {
-	names := make([]string, 0, len(dependencies))
-	for name := range dependencies {
-		names = append(names, name)
-	}
-	slices.Sort(names)
-	return names
-}
-
-func sortedNPMDependencyKeys(dependencies map[string]interface{}) []string {
-	names := make([]string, 0, len(dependencies))
-	for name := range dependencies {
-		names = append(names, name)
-	}
-	slices.Sort(names)
-	return names
 }
 
 func (m *NPMMonitor) globalPackagesSimple() ([]*core.PackageInfo, error) {
@@ -433,13 +379,4 @@ func splitNPMNameVersion(line string) (string, string) {
 		return line, ""
 	}
 	return parts[0], parts[len(parts)-1]
-}
-
-func (m *NPMMonitor) allPackages() ([]*core.PackageInfo, error) {
-	globalPkgs, err := m.globalPackages()
-	if err != nil {
-		return nil, err
-	}
-
-	return globalPkgs, nil
 }

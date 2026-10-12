@@ -2,24 +2,19 @@ package monitors
 
 import (
 	"bufio"
-	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"os/exec"
-	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/yowainwright/diu/internal/core"
-	"github.com/yowainwright/diu/internal/safefs"
 )
 
 const (
 	homebrewCommandName = "brew"
 
-	homebrewCellarFlag = "--cellar"
-	homebrewPrefixFlag = "--prefix"
 	homebrewInfoCmd    = "info"
 	homebrewInstalled  = "--installed"
 	homebrewJSONV2Arg  = "--json=v2"
@@ -32,125 +27,17 @@ const (
 )
 
 type HomebrewMonitor struct {
-	*ProcessMonitor
-	cellarPaths []string
-	caskroom    string
+	*BaseMonitor
 }
 
 func NewHomebrewMonitor() Monitor {
 	return &HomebrewMonitor{
-		ProcessMonitor: NewProcessMonitor(core.ToolHomebrew, "brew"),
+		BaseMonitor: NewBaseMonitor(core.ToolHomebrew),
 	}
-}
-
-func (m *HomebrewMonitor) Initialize(config *core.Config) error {
-	if err := m.ProcessMonitor.Initialize(config); err != nil {
-		return err
-	}
-
-	m.cellarPaths = config.Tools.Homebrew.CellarPaths
-	if len(m.cellarPaths) == 0 {
-		m.cellarPaths = m.detectCellarPaths()
-	}
-
-	m.caskroom = m.detectCaskroom()
-	return nil
-}
-
-func (m *HomebrewMonitor) detectCellarPaths() []string {
-	paths := existingDirectories(defaultCellarPaths())
-	return appendUniquePath(paths, homebrewCellarPath())
-}
-
-func defaultCellarPaths() []string {
-	homeDir, _ := os.UserHomeDir()
-	return []string{
-		"/opt/homebrew/Cellar",
-		"/usr/local/Cellar",
-		filepath.Join(homeDir, "homebrew/Cellar"),
-	}
-}
-
-func existingDirectories(paths []string) []string {
-	var existing []string
-	for _, path := range paths {
-		if directoryExists(path) {
-			existing = append(existing, path)
-		}
-	}
-	return existing
-}
-
-func homebrewCellarPath() string {
-	if _, err := exec.LookPath(homebrewCommandName); err == nil {
-		if output, err := exec.Command(homebrewCommandName, homebrewCellarFlag).Output(); err == nil {
-			return strings.TrimSpace(string(output))
-		}
-	}
-	return ""
-}
-
-func (m *HomebrewMonitor) detectCaskroom() string {
-	if path := firstExistingDirectory(defaultCaskroomPaths()); path != "" {
-		return path
-	}
-	return homebrewCaskroomPath()
-}
-
-func defaultCaskroomPaths() []string {
-	homeDir, _ := os.UserHomeDir()
-	return []string{
-		"/opt/homebrew/Caskroom",
-		"/usr/local/Caskroom",
-		filepath.Join(homeDir, "homebrew/Caskroom"),
-	}
-}
-
-func firstExistingDirectory(paths []string) string {
-	for _, path := range paths {
-		if path == "" {
-			continue
-		}
-		if directoryExists(path) {
-			return path
-		}
-	}
-	return ""
-}
-
-func homebrewCaskroomPath() string {
-	if _, err := exec.LookPath(homebrewCommandName); err == nil {
-		if output, err := exec.Command(homebrewCommandName, homebrewPrefixFlag).Output(); err == nil {
-			prefix := strings.TrimSpace(string(output))
-			caskroom := filepath.Join(prefix, "Caskroom")
-			if directoryExists(caskroom) {
-				return caskroom
-			}
-		}
-	}
-	return ""
-}
-
-func directoryExists(path string) bool {
-	info, err := safefs.Stat(path)
-	if err != nil {
-		return false
-	}
-	return info.IsDir()
-}
-
-func appendUniquePath(paths []string, path string) []string {
-	if path == "" {
-		return paths
-	}
-	if contains(paths, path) {
-		return paths
-	}
-	return append(paths, path)
 }
 
 func (m *HomebrewMonitor) ParseCommand(cmd string, args []string) (*core.ExecutionRecord, error) {
-	record := newHomebrewExecutionRecord(cmd, args)
+	record := newExecutionRecord(core.ToolHomebrew, cmd, args)
 	if len(args) == 0 {
 		return record, nil
 	}
@@ -158,15 +45,6 @@ func (m *HomebrewMonitor) ParseCommand(cmd string, args []string) (*core.Executi
 	record.Metadata["subcommand"] = subcommand
 	m.applyHomebrewSubcommand(record, subcommand, args)
 	return record, nil
-}
-
-func newHomebrewExecutionRecord(cmd string, args []string) *core.ExecutionRecord {
-	return &core.ExecutionRecord{
-		Tool:     core.ToolHomebrew,
-		Command:  cmd,
-		Args:     args,
-		Metadata: make(map[string]interface{}),
-	}
 }
 
 func (m *HomebrewMonitor) applyHomebrewSubcommand(record *core.ExecutionRecord, subcommand string, args []string) {
@@ -209,8 +87,8 @@ func applyHomebrewMetadataSubcommand(record *core.ExecutionRecord, subcommand st
 }
 
 func (m *HomebrewMonitor) applyHomebrewInstall(record *core.ExecutionRecord, args []string) {
-	record.PackagesAffected = m.extractPackagesFromArgs(args[1:], []string{"--cask", "--formula"})
-	if contains(args, "--cask") {
+	record.PackagesAffected = m.extractPackagesFromArgs(args[1:])
+	if slices.Contains(args, "--cask") {
 		record.Metadata["type"] = "cask"
 		return
 	}
@@ -218,8 +96,7 @@ func (m *HomebrewMonitor) applyHomebrewInstall(record *core.ExecutionRecord, arg
 }
 
 func (m *HomebrewMonitor) applyHomebrewUninstall(record *core.ExecutionRecord, args []string) {
-	skipFlags := []string{"--cask", "--formula", "--force", "--ignore-dependencies"}
-	record.PackagesAffected = m.extractPackagesFromArgs(args[1:], skipFlags)
+	record.PackagesAffected = m.extractPackagesFromArgs(args[1:])
 	record.Metadata["action"] = "uninstall"
 	setHomebrewPackageType(record, args)
 }
@@ -230,11 +107,11 @@ func (m *HomebrewMonitor) applyHomebrewUpgrade(record *core.ExecutionRecord, arg
 		record.Metadata["upgrade_all"] = true
 		return
 	}
-	record.PackagesAffected = m.extractPackagesFromArgs(args[1:], []string{"--cask", "--formula"})
+	record.PackagesAffected = m.extractPackagesFromArgs(args[1:])
 }
 
 func (m *HomebrewMonitor) applyHomebrewReinstall(record *core.ExecutionRecord, args []string) {
-	record.PackagesAffected = m.extractPackagesFromArgs(args[1:], []string{"--cask", "--formula"})
+	record.PackagesAffected = m.extractPackagesFromArgs(args[1:])
 	record.Metadata["action"] = "reinstall"
 	setHomebrewPackageType(record, args)
 }
@@ -278,24 +155,22 @@ func homebrewUpgradesAll(args []string) bool {
 }
 
 func setHomebrewPackageType(record *core.ExecutionRecord, args []string) {
-	if contains(args, "--cask") {
+	if slices.Contains(args, "--cask") {
 		record.Metadata["type"] = "cask"
 		return
 	}
-	if contains(args, "--formula") {
+	if slices.Contains(args, "--formula") {
 		record.Metadata["type"] = "formula"
 	}
 }
 
-func (m *HomebrewMonitor) extractPackagesFromArgs(args []string, flags []string) []string {
+func (m *HomebrewMonitor) extractPackagesFromArgs(args []string) []string {
 	var packages []string
 	for _, arg := range args {
 		if strings.HasPrefix(arg, "-") {
 			continue
 		}
-		if !contains(flags, arg) {
-			packages = append(packages, arg)
-		}
+		packages = append(packages, arg)
 	}
 	return packages
 }
@@ -459,18 +334,4 @@ func (i *homebrewInstalledInfo) caskPackages() []*core.PackageInfo {
 		})
 	}
 	return packages
-}
-
-func (m *HomebrewMonitor) Start(ctx context.Context, eventChan chan<- *core.ExecutionRecord) error {
-	err := m.ProcessMonitor.Start(ctx, eventChan)
-	return err
-}
-
-func contains(slice []string, item string) bool {
-	for _, s := range slice {
-		if s == item {
-			return true
-		}
-	}
-	return false
 }
