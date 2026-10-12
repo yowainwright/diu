@@ -3,10 +3,17 @@ package monitors
 import (
 	"context"
 	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/yowainwright/diu/internal/core"
 )
+
+func TestMain(m *testing.M) {
+	os.Exit(runWithIsolatedHome(m))
+}
 
 func TestNewMonitorSupportsConfiguredTools(t *testing.T) {
 	config := core.DefaultConfig()
@@ -88,6 +95,17 @@ func TestBaseMonitorInitialize(t *testing.T) {
 	if monitor.config != config {
 		t.Error("Config not set after Initialize")
 	}
+}
+
+func TestStartCancelsContextOnStop(t *testing.T) {
+	monitor := NewBaseMonitor("test")
+	if err := monitor.Start(context.Background(), nil); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	if err := monitor.Stop(); err != nil {
+		t.Fatalf("Stop failed: %v", err)
+	}
+	assertContextCanceled(t, monitor.ctx)
 }
 
 func TestBaseMonitorStop(t *testing.T) {
@@ -202,28 +220,6 @@ func assertMonitorNames(t *testing.T, monitors []Monitor, want []string) {
 	for _, name := range want {
 		if !seen[name] {
 			t.Errorf("Monitor %s not found in GetAll", name)
-		}
-	}
-}
-
-func TestMonitorRegistryInitializeAll(t *testing.T) {
-	registry := NewMonitorRegistry()
-	config := core.DefaultConfig()
-	monitors := registerMockMonitors(registry, "monitor1", "monitor2")
-
-	err := registry.InitializeAll(config)
-	if err != nil {
-		t.Fatalf("InitializeAll failed: %v", err)
-	}
-	assertMonitorsInitialized(t, monitors, config)
-}
-
-func assertMonitorsInitialized(t *testing.T, monitors []*mockMonitor, config *core.Config) {
-	t.Helper()
-
-	for _, monitor := range monitors {
-		if monitor.config != config {
-			t.Errorf("%s not initialized", monitor.Name())
 		}
 	}
 }
@@ -425,32 +421,47 @@ func TestEnrichExecutionRecordEmptyMetadataSkipsAlloc(t *testing.T) {
 	}
 }
 
-func TestContainsHelper(t *testing.T) {
-	for _, test := range containsHelperCases {
-		assertContainsResult(t, test)
+func runWithIsolatedHome(m *testing.M) int {
+	home, err := os.MkdirTemp("", "diu-monitors-home-")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
 	}
+	defer func() { _ = os.RemoveAll(home) }()
+	if err := os.Setenv("HOME", home); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	return m.Run()
 }
 
-type containsHelperCase struct {
-	slice         []string
-	item          string
-	shouldContain bool
-}
-
-var containsHelperCases = []containsHelperCase{
-	{[]string{"a", "b", "c"}, "b", true},
-	{[]string{"a", "b", "c"}, "d", false},
-	{[]string{}, "a", false},
-	{[]string{"test"}, "test", true},
-	{[]string{"Test"}, "test", false},
-}
-
-func assertContainsResult(t *testing.T, test containsHelperCase) {
+func prependFakeCommand(t *testing.T, name, script string) string {
 	t.Helper()
 
-	result := contains(test.slice, test.item)
-	if result != test.shouldContain {
-		t.Errorf("contains(%v, %s) = %v, shouldContain %v",
-			test.slice, test.item, result, test.shouldContain)
+	binDir := t.TempDir()
+	path := writeFakeCommand(t, binDir, name, script)
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return path
+}
+
+func setOnlyFakeCommand(t *testing.T, name, script string) string {
+	t.Helper()
+
+	binDir := t.TempDir()
+	path := writeFakeCommand(t, binDir, name, script)
+	t.Setenv("PATH", binDir)
+	return path
+}
+
+func writeFakeCommand(t *testing.T, binDir, name, script string) string {
+	t.Helper()
+
+	path := filepath.Join(binDir, name)
+	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+		t.Fatalf("Failed to write fake %s command: %v", name, err)
 	}
+	if err := os.Chmod(path, 0o700); err != nil {
+		t.Fatalf("Failed to chmod fake %s command: %v", name, err)
+	}
+	return path
 }

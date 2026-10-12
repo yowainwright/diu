@@ -2,7 +2,6 @@ package monitors
 
 import (
 	"context"
-	"path/filepath"
 	"testing"
 
 	"github.com/yowainwright/diu/internal/core"
@@ -392,19 +391,12 @@ var npmDepthCases = []npmDepthCase{
 
 func TestNPMInitializeAndGetGlobalPackagesWithFakeNPM(t *testing.T) {
 	prependFakeCommand(t, npmCommandName, fakeNPMGlobalPackagesScript)
-	prefix := t.TempDir()
-	t.Setenv("FAKE_NPM_PREFIX", prefix)
 	monitor := initializedNPMMonitor(t)
-	assertNPMGlobalPath(t, monitor, prefix)
 	packages := npmGlobalPackages(t, monitor)
 	assertNPMGlobalPackages(t, packages)
 }
 
 const fakeNPMGlobalPackagesScript = `#!/bin/sh
-if [ "$1" = "config" ] && [ "$2" = "get" ] && [ "$3" = "prefix" ]; then
-  printf '%s\n' "$FAKE_NPM_PREFIX"
-  exit 0
-fi
 if [ "$1" = "list" ] && [ "$2" = "-g" ] && [ "$3" = "--depth=0" ] && [ "$4" = "--json" ]; then
   printf '%s\n' '{"dependencies":{"eslint":{"version":"9.0.0","dependencies":{"@eslint/js":{}}},"typescript":{"version":"5.5.0"}}}'
   exit 0
@@ -421,14 +413,6 @@ func initializedNPMMonitor(t *testing.T) *NPMMonitor {
 		t.Fatalf("Initialize failed: %v", err)
 	}
 	return monitor
-}
-
-func assertNPMGlobalPath(t *testing.T, monitor *NPMMonitor, prefix string) {
-	t.Helper()
-
-	if monitor.globalPath != filepath.Join(prefix, "lib", "node_modules") {
-		t.Fatalf("globalPath = %s, want prefix node_modules path", monitor.globalPath)
-	}
 }
 
 func npmGlobalPackages(t *testing.T, monitor *NPMMonitor) []*core.PackageInfo {
@@ -487,10 +471,6 @@ func TestNPMGlobalPackagesFallbackWithFakeNPM(t *testing.T) {
 }
 
 const fakeNPMFallbackPackagesScript = `#!/bin/sh
-if [ "$1" = "config" ] && [ "$2" = "get" ] && [ "$3" = "prefix" ]; then
-  printf '%s\n' "$FAKE_NPM_PREFIX"
-  exit 0
-fi
 if [ "$1" = "list" ] && [ "$2" = "-g" ] && [ "$3" = "--depth=0" ] && [ "$4" = "--json" ]; then
   printf 'not json\n'
   exit 0

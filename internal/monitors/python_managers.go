@@ -2,7 +2,6 @@ package monitors
 
 import (
 	"bufio"
-	"context"
 	"encoding/json"
 	"fmt"
 	"os/exec"
@@ -46,44 +45,33 @@ var pythonPackageValueFlags = map[string]bool{
 }
 
 type PipMonitor struct {
-	*ProcessMonitor
+	*BaseMonitor
 	commandName string
 }
 
 func NewPipMonitor() Monitor {
 	return &PipMonitor{
-		ProcessMonitor: NewProcessMonitor(core.ToolPip, pipCommandName),
-		commandName:    pipCommandName,
+		BaseMonitor: NewBaseMonitor(core.ToolPip),
+		commandName: pipCommandName,
 	}
 }
 
 func (m *PipMonitor) Initialize(config *core.Config) error {
-	if commandName, err := firstAvailableCommand(pip3CommandName, pipCommandName); err == nil {
-		m.commandName = commandName
-		m.binaryPath = commandName
-	} else {
+	commandName, err := firstAvailableCommand(pip3CommandName, pipCommandName)
+	if err != nil {
 		return fmt.Errorf("pip not found: %w", err)
 	}
-
-	return m.ProcessMonitor.Initialize(config)
+	m.commandName = commandName
+	return m.BaseMonitor.Initialize(config)
 }
 
 func (m *PipMonitor) ParseCommand(cmd string, args []string) (*core.ExecutionRecord, error) {
-	record := newPythonExecutionRecord(core.ToolPip, cmd, args)
+	record := newExecutionRecord(core.ToolPip, cmd, args)
 	if len(args) == 0 {
 		return record, nil
 	}
 	applyPipSubcommand(record, args[0], args[1:])
 	return record, nil
-}
-
-func newPythonExecutionRecord(tool, cmd string, args []string) *core.ExecutionRecord {
-	return &core.ExecutionRecord{
-		Tool:     tool,
-		Command:  cmd,
-		Args:     args,
-		Metadata: make(map[string]interface{}),
-	}
 }
 
 func applyPipSubcommand(record *core.ExecutionRecord, subcommand string, args []string) {
@@ -123,18 +111,13 @@ func (m *PipMonitor) GetInstalledPackages() ([]*core.PackageInfo, error) {
 	return parsePythonPackageLines(core.ToolPip, string(output)), nil
 }
 
-func (m *PipMonitor) Start(ctx context.Context, eventChan chan<- *core.ExecutionRecord) error {
-	err := m.ProcessMonitor.Start(ctx, eventChan)
-	return err
-}
-
 type UVMonitor struct {
-	*ProcessMonitor
+	*BaseMonitor
 }
 
 func NewUVMonitor() Monitor {
 	return &UVMonitor{
-		ProcessMonitor: NewProcessMonitor(core.ToolUV, uvCommandName),
+		BaseMonitor: NewBaseMonitor(core.ToolUV),
 	}
 }
 
@@ -142,11 +125,11 @@ func (m *UVMonitor) Initialize(config *core.Config) error {
 	if _, err := exec.LookPath(uvCommandName); err != nil {
 		return fmt.Errorf("uv not found: %w", err)
 	}
-	return m.ProcessMonitor.Initialize(config)
+	return m.BaseMonitor.Initialize(config)
 }
 
 func (m *UVMonitor) ParseCommand(cmd string, args []string) (*core.ExecutionRecord, error) {
-	record := newPythonExecutionRecord(core.ToolUV, cmd, args)
+	record := newExecutionRecord(core.ToolUV, cmd, args)
 	if len(args) == 0 {
 		return record, nil
 	}
@@ -181,18 +164,13 @@ func (m *UVMonitor) GetInstalledPackages() ([]*core.PackageInfo, error) {
 	return parseUVToolList(string(output)), nil
 }
 
-func (m *UVMonitor) Start(ctx context.Context, eventChan chan<- *core.ExecutionRecord) error {
-	err := m.ProcessMonitor.Start(ctx, eventChan)
-	return err
-}
-
 type PoetryMonitor struct {
-	*ProcessMonitor
+	*BaseMonitor
 }
 
 func NewPoetryMonitor() Monitor {
 	return &PoetryMonitor{
-		ProcessMonitor: NewProcessMonitor(core.ToolPoetry, poetryCommandName),
+		BaseMonitor: NewBaseMonitor(core.ToolPoetry),
 	}
 }
 
@@ -200,11 +178,11 @@ func (m *PoetryMonitor) Initialize(config *core.Config) error {
 	if _, err := exec.LookPath(poetryCommandName); err != nil {
 		return fmt.Errorf("poetry not found: %w", err)
 	}
-	return m.ProcessMonitor.Initialize(config)
+	return m.BaseMonitor.Initialize(config)
 }
 
 func (m *PoetryMonitor) ParseCommand(cmd string, args []string) (*core.ExecutionRecord, error) {
-	record := newPythonExecutionRecord(core.ToolPoetry, cmd, args)
+	record := newExecutionRecord(core.ToolPoetry, cmd, args)
 	if len(args) == 0 {
 		return record, nil
 	}
@@ -252,11 +230,6 @@ func (m *PoetryMonitor) GetInstalledPackages() ([]*core.PackageInfo, error) {
 	return nil, nil
 }
 
-func (m *PoetryMonitor) Start(ctx context.Context, eventChan chan<- *core.ExecutionRecord) error {
-	err := m.ProcessMonitor.Start(ctx, eventChan)
-	return err
-}
-
 func firstAvailableCommand(names ...string) (string, error) {
 	var lastErr error
 	for _, name := range names {
@@ -269,31 +242,20 @@ func firstAvailableCommand(names ...string) (string, error) {
 	return "", lastErr
 }
 
-var pipListCommandOutputs = map[string]func(bool) ([]byte, error){
-	pip3CommandName: runPip3ListCommandOutput,
-	pipCommandName:  runPipCommandListOutput,
-}
-
 func runPipListCommandOutput(commandName string, isFormatted bool) ([]byte, error) {
-	runCommand, ok := pipListCommandOutputs[commandName]
-	if !ok {
+	var command *exec.Cmd
+	switch commandName {
+	case pip3CommandName:
+		command = exec.Command(pip3CommandName, "list")
+	case pipCommandName:
+		command = exec.Command(pipCommandName, "list")
+	default:
 		return nil, fmt.Errorf("unsupported pip command: %s", commandName)
 	}
-	return runCommand(isFormatted)
-}
-
-func runPip3ListCommandOutput(isFormatted bool) ([]byte, error) {
 	if isFormatted {
-		return exec.Command(pip3CommandName, "list", pythonListFormat).Output()
+		command.Args = append(command.Args, pythonListFormat)
 	}
-	return exec.Command(pip3CommandName, "list").Output()
-}
-
-func runPipCommandListOutput(isFormatted bool) ([]byte, error) {
-	if isFormatted {
-		return exec.Command(pipCommandName, "list", pythonListFormat).Output()
-	}
-	return exec.Command(pipCommandName, "list").Output()
+	return command.Output()
 }
 
 func parseUVPipCommand(record *core.ExecutionRecord, args []string) {

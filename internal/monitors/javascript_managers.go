@@ -2,9 +2,9 @@ package monitors
 
 import (
 	"bufio"
-	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os/exec"
 	"slices"
 	"strings"
@@ -22,12 +22,12 @@ const (
 )
 
 type PNPMMonitor struct {
-	*ProcessMonitor
+	*BaseMonitor
 }
 
 func NewPNPMMonitor() Monitor {
 	return &PNPMMonitor{
-		ProcessMonitor: NewProcessMonitor(core.ToolPNPM, pnpmCommandName),
+		BaseMonitor: NewBaseMonitor(core.ToolPNPM),
 	}
 }
 
@@ -35,7 +35,7 @@ func (m *PNPMMonitor) Initialize(config *core.Config) error {
 	if _, err := exec.LookPath(pnpmCommandName); err != nil {
 		return fmt.Errorf("pnpm not found: %w", err)
 	}
-	return m.ProcessMonitor.Initialize(config)
+	return m.BaseMonitor.Initialize(config)
 }
 
 func (m *PNPMMonitor) ParseCommand(cmd string, args []string) (*core.ExecutionRecord, error) {
@@ -58,18 +58,13 @@ func (m *PNPMMonitor) GetInstalledPackages() ([]*core.PackageInfo, error) {
 	return parseSimplePackageLines(core.ToolPNPM, string(output)), nil
 }
 
-func (m *PNPMMonitor) Start(ctx context.Context, eventChan chan<- *core.ExecutionRecord) error {
-	err := m.ProcessMonitor.Start(ctx, eventChan)
-	return err
-}
-
 type BunMonitor struct {
-	*ProcessMonitor
+	*BaseMonitor
 }
 
 func NewBunMonitor() Monitor {
 	return &BunMonitor{
-		ProcessMonitor: NewProcessMonitor(core.ToolBun, bunCommandName),
+		BaseMonitor: NewBaseMonitor(core.ToolBun),
 	}
 }
 
@@ -77,7 +72,7 @@ func (m *BunMonitor) Initialize(config *core.Config) error {
 	if _, err := exec.LookPath(bunCommandName); err != nil {
 		return fmt.Errorf("bun not found: %w", err)
 	}
-	return m.ProcessMonitor.Initialize(config)
+	return m.BaseMonitor.Initialize(config)
 }
 
 func (m *BunMonitor) ParseCommand(cmd string, args []string) (*core.ExecutionRecord, error) {
@@ -100,30 +95,16 @@ func (m *BunMonitor) GetInstalledPackages() ([]*core.PackageInfo, error) {
 	return parseSimplePackageLines(core.ToolBun, string(output)), nil
 }
 
-func (m *BunMonitor) Start(ctx context.Context, eventChan chan<- *core.ExecutionRecord) error {
-	err := m.ProcessMonitor.Start(ctx, eventChan)
-	return err
-}
-
 func parseJavaScriptManagerCommand(tool, cmd string, args []string) *core.ExecutionRecord {
-	record := newJavaScriptExecutionRecord(tool, cmd, args)
+	record := newExecutionRecord(tool, cmd, args)
 	if len(args) == 0 {
 		return record
 	}
 	subcommand := args[0]
 	record.Metadata["subcommand"] = subcommand
-	record.Metadata["global"] = contains(args, jsGlobalShortFlag) || contains(args, jsGlobalLongFlag)
+	record.Metadata["global"] = slices.Contains(args, jsGlobalShortFlag) || slices.Contains(args, jsGlobalLongFlag)
 	applyJavaScriptSubcommand(record, subcommand, args)
 	return record
-}
-
-func newJavaScriptExecutionRecord(tool, cmd string, args []string) *core.ExecutionRecord {
-	return &core.ExecutionRecord{
-		Tool:     tool,
-		Command:  cmd,
-		Args:     args,
-		Metadata: make(map[string]interface{}),
-	}
 }
 
 func applyJavaScriptSubcommand(record *core.ExecutionRecord, subcommand string, args []string) {
@@ -295,21 +276,15 @@ func parseNodePackageJSON(tool string, output []byte) ([]*core.PackageInfo, erro
 func packagesFromNodeLists(tool string, projects []nodePackageList) []*core.PackageInfo {
 	seen := make(map[string]nodePackageInfo)
 	for _, project := range projects {
-		mergeNodeDeps(seen, project.Dependencies)
-		mergeNodeDeps(seen, project.DevDependencies)
-		mergeNodeDeps(seen, project.OptionalDependencies)
+		maps.Copy(seen, project.Dependencies)
+		maps.Copy(seen, project.DevDependencies)
+		maps.Copy(seen, project.OptionalDependencies)
 	}
 	return packagesFromNodeDeps(tool, seen)
 }
 
-func mergeNodeDeps(seen map[string]nodePackageInfo, deps map[string]nodePackageInfo) {
-	for name, info := range deps {
-		seen[name] = info
-	}
-}
-
 func packagesFromNodeDeps(tool string, deps map[string]nodePackageInfo) []*core.PackageInfo {
-	names := sortedNodePackageNames(deps)
+	names := slices.Sorted(maps.Keys(deps))
 	packages := make([]*core.PackageInfo, len(names))
 	for index, name := range names {
 		info := deps[name]
@@ -322,15 +297,6 @@ func packagesFromNodeDeps(tool string, deps map[string]nodePackageInfo) []*core.
 		}
 	}
 	return packages
-}
-
-func sortedNodePackageNames(deps map[string]nodePackageInfo) []string {
-	names := make([]string, 0, len(deps))
-	for name := range deps {
-		names = append(names, name)
-	}
-	slices.Sort(names)
-	return names
 }
 
 func parseSimplePackageLines(tool, output string) []*core.PackageInfo {

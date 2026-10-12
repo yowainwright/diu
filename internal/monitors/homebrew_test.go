@@ -2,8 +2,6 @@ package monitors
 
 import (
 	"context"
-	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/yowainwright/diu/internal/core"
@@ -296,49 +294,22 @@ func TestHomebrewInitialize(t *testing.T) {
 	}
 }
 
-func TestHomebrewDetectAndListWithFakeBrew(t *testing.T) {
+func TestHomebrewGetInstalledPackagesWithFakeBrew(t *testing.T) {
 	prependFakeCommand(t, homebrewCommandName, fakeHomebrewInfoScript)
-	cellar := prepareFakeHomebrewPaths(t)
 	config := testHomebrewConfig()
 	monitor := initializedHomebrewMonitor(t, config)
 
-	assertHomebrewPaths(t, monitor, cellar)
 	packages := installedHomebrewPackages(t, monitor)
 	assertDetectedHomebrewPackages(t, packages)
 }
 
 const fakeHomebrewInfoScript = `#!/bin/sh
-if [ "$1" = "--cellar" ]; then
-  printf '%s\n' "$FAKE_BREW_CELLAR"
-  exit 0
-fi
-if [ "$1" = "--prefix" ]; then
-  printf '%s\n' "$FAKE_BREW_PREFIX"
-  exit 0
-fi
 if [ "$1" = "info" ] && [ "$2" = "--json=v2" ] && [ "$3" = "--installed" ]; then
   printf '%s\n' '{"formulae":[{"name":"jq","dependencies":["oniguruma"],"installed":[{"version":"1.7","time":1704164645}]}],"casks":[{"token":"firefox","version":"128.0","installed_time":1704164645}]}'
   exit 0
 fi
 exit 2
 `
-
-func prepareFakeHomebrewPaths(t *testing.T) string {
-	t.Helper()
-
-	tempDir := t.TempDir()
-	cellar := filepath.Join(tempDir, "Cellar")
-	prefix := filepath.Join(tempDir, "prefix")
-	caskroom := filepath.Join(prefix, "Caskroom")
-	for _, dir := range []string{cellar, caskroom} {
-		if err := os.MkdirAll(dir, core.OwnerDirectoryMode); err != nil {
-			t.Fatalf("Failed to create %s: %v", dir, err)
-		}
-	}
-	t.Setenv("FAKE_BREW_CELLAR", cellar)
-	t.Setenv("FAKE_BREW_PREFIX", prefix)
-	return cellar
-}
 
 func testHomebrewConfig() *core.Config {
 	config := core.DefaultConfig()
@@ -355,17 +326,6 @@ func initializedHomebrewMonitor(t *testing.T, config *core.Config) *HomebrewMoni
 		t.Fatalf("Initialize failed: %v", err)
 	}
 	return monitor
-}
-
-func assertHomebrewPaths(t *testing.T, monitor *HomebrewMonitor, cellar string) {
-	t.Helper()
-
-	if !contains(monitor.cellarPaths, cellar) {
-		t.Fatalf("cellarPaths = %#v, want %s", monitor.cellarPaths, cellar)
-	}
-	if monitor.caskroom == "" {
-		t.Fatalf("caskroom was not detected")
-	}
 }
 
 func installedHomebrewPackages(t *testing.T, monitor *HomebrewMonitor) []*core.PackageInfo {
@@ -429,10 +389,6 @@ func TestHomebrewUsesFastInstalledPackageLists(t *testing.T) {
 }
 
 const fakeHomebrewListScript = `#!/bin/sh
-if [ "$1" = "--prefix" ]; then
-  printf '%s\n' "$FAKE_BREW_PREFIX"
-  exit 0
-fi
 if [ "$1" = "list" ] && [ "$2" = "--formula" ] && [ "$3" = "--versions" ]; then
   printf 'jq 1.7.1\n'
   exit 0
@@ -469,10 +425,6 @@ func TestHomebrewRejectsInvalidInstalledInfo(t *testing.T) {
 }
 
 const fakeInvalidHomebrewInfoScript = `#!/bin/sh
-if [ "$1" = "--prefix" ]; then
-  printf '%s\n' "$FAKE_BREW_PREFIX"
-  exit 0
-fi
 if [ "$1" = "info" ] && [ "$2" = "--json=v2" ] && [ "$3" = "--installed" ]; then
   printf 'not json\n'
   exit 0
