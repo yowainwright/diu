@@ -1,7 +1,6 @@
 package monitors
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
 	"maps"
@@ -11,6 +10,7 @@ import (
 	"time"
 
 	"github.com/yowainwright/diu/internal/core"
+	"github.com/yowainwright/diu/internal/helpers"
 )
 
 const (
@@ -285,30 +285,23 @@ func packagesFromNodeLists(tool string, projects []nodePackageList) []*core.Pack
 
 func packagesFromNodeDeps(tool string, deps map[string]nodePackageInfo) []*core.PackageInfo {
 	names := slices.Sorted(maps.Keys(deps))
-	packages := make([]*core.PackageInfo, len(names))
-	for index, name := range names {
+	return helpers.Map(names, func(name string) *core.PackageInfo {
 		info := deps[name]
-		packages[index] = &core.PackageInfo{
+		return &core.PackageInfo{
 			Name:        name,
 			Version:     info.Version,
 			Tool:        tool,
 			InstallDate: time.Now(),
 			Path:        info.Path,
 		}
-	}
-	return packages
+	})
 }
 
 func parseSimplePackageLines(tool, output string) []*core.PackageInfo {
-	var packages []*core.PackageInfo
-	scanner := bufio.NewScanner(strings.NewReader(output))
-	for scanner.Scan() {
-		pkg := simplePackageFromLine(tool, scanner.Text())
-		if pkg == nil {
-			continue
-		}
-		packages = append(packages, pkg)
-	}
+	packages, _ := helpers.ScanLines(strings.NewReader(output), func(line string) (*core.PackageInfo, bool) {
+		pkg := simplePackageFromLine(tool, line)
+		return pkg, pkg != nil
+	})
 	return packages
 }
 

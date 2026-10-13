@@ -1,7 +1,7 @@
 package monitors
 
 import (
-	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os/exec"
@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/yowainwright/diu/internal/core"
+	"github.com/yowainwright/diu/internal/helpers"
 )
 
 const (
@@ -165,14 +166,9 @@ func setHomebrewPackageType(record *core.ExecutionRecord, args []string) {
 }
 
 func (m *HomebrewMonitor) extractPackagesFromArgs(args []string) []string {
-	var packages []string
-	for _, arg := range args {
-		if strings.HasPrefix(arg, "-") {
-			continue
-		}
-		packages = append(packages, arg)
-	}
-	return packages
+	return helpers.Filter(args, func(arg string) bool {
+		return !strings.HasPrefix(arg, "-")
+	})
 }
 
 //nolint:legibility // Monitor interface requires this method name.
@@ -229,21 +225,18 @@ func (m *HomebrewMonitor) listPackages(cmd *exec.Cmd, tool string) ([]*core.Pack
 }
 
 func parseHomebrewPackageList(output []byte, tool string) ([]*core.PackageInfo, error) {
-	var packages []*core.PackageInfo
-	scanner := bufio.NewScanner(strings.NewReader(string(output)))
-	for scanner.Scan() {
-		fields := strings.Fields(scanner.Text())
+	return helpers.ScanLines(bytes.NewReader(output), func(line string) (*core.PackageInfo, bool) {
+		fields := strings.Fields(line)
 		if len(fields) == 0 {
-			continue
+			return nil, false
 		}
 		version := ""
 		if len(fields) > 1 {
 			version = fields[len(fields)-1]
 		}
 		pkg := &core.PackageInfo{Name: fields[0], Version: version, Tool: tool}
-		packages = append(packages, pkg)
-	}
-	return packages, scanner.Err()
+		return pkg, true
+	})
 }
 
 type homebrewInstalledInfo struct {

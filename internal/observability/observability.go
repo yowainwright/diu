@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/yowainwright/diu/internal/core"
+	"github.com/yowainwright/diu/internal/helpers"
 	"github.com/yowainwright/diu/internal/safefs"
 )
 
@@ -84,11 +85,9 @@ func ReadRecentLogs(dataDir string) ([]string, error) {
 
 func RedactLines(lines []string, replacements map[string]string) []string {
 	keys := replacementKeys(replacements)
-	redacted := make([]string, len(lines))
-	for index, line := range lines {
-		redacted[index] = redact(line, keys, replacements)
-	}
-	return redacted
+	return helpers.Map(lines, func(line string) string {
+		return redact(line, keys, replacements)
+	})
 }
 
 func RedactText(value string, replacements map[string]string) string {

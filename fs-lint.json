@@ -14,7 +14,10 @@
       "internal/observability/{observability,types,constants,helpers}_test.go",
       "!internal/safefs/**",
       "internal/safefs/{safefs,types,constants,helpers}.go",
-      "internal/safefs/{safefs,types,constants,helpers}_test.go"
+      "internal/safefs/{safefs,types,constants,helpers}_test.go",
+      "!internal/helpers/**",
+      "internal/helpers/{helpers,types,constants}.go",
+      "internal/helpers/{helpers,types,constants}_test.go"
     ]
   }
 }

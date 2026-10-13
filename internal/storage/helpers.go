@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/yowainwright/diu/internal/core"
+	"github.com/yowainwright/diu/internal/helpers"
 	"github.com/yowainwright/diu/internal/safefs"
 )
 
@@ -844,20 +845,9 @@ func lockStorageWithContext(ctx context.Context, file *os.File) error {
 		if !isContention {
 			return err
 		}
-		if err := waitForStorageLockRetry(ctx); err != nil {
+		if err := helpers.Sleep(ctx, storageLockRetryDelay); err != nil {
 			return err
 		}
-	}
-}
-
-func waitForStorageLockRetry(ctx context.Context) error {
-	timer := time.NewTimer(storageLockRetryDelay)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-timer.C:
-		return nil
 	}
 }
 
