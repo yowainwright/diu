@@ -68,7 +68,7 @@ func WaitUntil(ctx context.Context, interval time.Duration, ready func() bool) e
 		return errors.New("poll interval must be positive")
 	}
 	for {
-		if err := ctx.Err(); err != nil {
+		if err := contextError(ctx); err != nil {
 			return err
 		}
 		if ready() {
@@ -78,4 +78,16 @@ func WaitUntil(ctx context.Context, interval time.Duration, ready func() bool) e
 			return err
 		}
 	}
+}
+
+func contextError(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	deadline, limited := ctx.Deadline()
+	expired := limited && !time.Now().Before(deadline)
+	if expired {
+		return context.DeadlineExceeded
+	}
+	return nil
 }
