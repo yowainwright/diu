@@ -2,11 +2,9 @@
 
 [![Codecov](https://codecov.io/gh/yowainwright/diu/branch/main/graph/badge.svg)](https://codecov.io/gh/yowainwright/diu)
 
-## Do I Use?
+DIU, Do I Use, is a macOS CLI that tracks global development tool usage in zsh.
 
-DIU is a macOS CLI that tracks global development tool usage in zsh.
-
-## Get Started
+## Quick Start
 
 <!-- setup workflow and shell integration from setupProject and installZshShellIntegration -->
 ```bash
@@ -15,6 +13,10 @@ diu setup
 ```
 
 Supports Apple Silicon and Intel Macs. Open a new zsh terminal after setup.
+
+## Why was this built?
+
+We install a lot of tools on a macs every day. But, do we use them? DUI aims to provide a dead simple way to know what we've installed and used  on our macs. 
 
 ## Commands
 
@@ -424,13 +426,9 @@ diu <version> (commit <commit>, built <date>)
 | Go | Go | Binaries in `GOBIN` or `GOPATH/bin` |
 | Python | pip, uv | pip packages and uv tools |
 
-## Code
-
-[CLI](cmd/diu/README.md) · [Internal packages](internal/README.md) · [Contributing](.github/CONTRIBUTING.md)
-
 ## License
 
-MIT
+[MIT](./LICENSE)
 
 ## Author
 
