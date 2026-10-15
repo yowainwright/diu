@@ -33,7 +33,7 @@ func TestCLIZshListenerRefreshesOpenShellAndMatchesCommands(t *testing.T) {
 		"echo else listener-tool",
 		"echo ';' listener-tool",
 		"echo 'if' listener-tool",
-		"cat < /dev/null > listener-tool",
+		": < /dev/null > listener-tool",
 		"builtin listener-tool",
 		"builtin -- listener-tool",
 		"command -v listener-tool",
@@ -174,6 +174,9 @@ func waitCLIZshOutput(t *testing.T, output <-chan string, expected string) {
 				t.Fatalf("zsh output closed before %q; output=%q", expected, strings.Join(seen, "\n"))
 			}
 			seen = append(seen, line)
+			if strings.Contains(line, "_diu_capture_timestamp:") {
+				t.Fatalf("zsh timestamp capture printed an error: %s", line)
+			}
 			if strings.Contains(line, expected) {
 				return
 			}

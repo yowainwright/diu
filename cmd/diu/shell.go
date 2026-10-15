@@ -138,9 +138,24 @@ _diu_prune_recorders() {
     done
     _DIU_RECORDER_PIDS=("${active[@]}")
 }
+_diu_record_unmapped() {
+    (( ${#_DIU_RECORDER_PIDS} < _DIU_RECORDER_LIMIT )) || return 0
+    [[ "${1:t}" == diu ]] && return 0
+    local lookup=-w
+    case "$2" in command|env|sudo|exec) lookup=-wp ;; esac
+    case "$(builtin whence "$lookup" -- "$1")" in
+        "$1: command"|"$1: hashed") ;;
+        *) return 0 ;;
+    esac
+    "$diu_binary" record --background "--executable=${1:t}" </dev/null >/dev/null 2>&1 &!
+    _DIU_RECORDER_PIDS+=("$!")
+}
 _diu_record_command() {
     (( command_position )) && [[ "$1" != *=* ]] || return 1
     local word="${(Q)1}" tool package executable
+    [[ "$1" == '~/'* ]] && word="$HOME/${word#\~/}"
+    local invocation="$word" prefix="$command_prefix"
+    (( exec_prefix )) && prefix=exec
     word="${word:t}"
     command_position=0
     exec_prefix=0
@@ -151,7 +166,10 @@ _diu_record_command() {
     fi
     command_prefix=""
     tool="${_DIU_TOOL_MAP[$word]-}"
-    [[ -n "$tool" ]] || return 0
+    if [[ -z "$tool" ]]; then
+        _diu_record_unmapped "$invocation" "$prefix"
+        return 0
+    fi
     package="${_DIU_PACKAGE_MAP[$word]}"
     executable="${_DIU_EXECUTABLE_MAP[$word]}"
     _diu_emit_record "$tool" "$package" "$executable"
@@ -172,8 +190,8 @@ _diu_capture_timestamp() {
     zmodload zsh/datetime 2>/dev/null || return 1
     local -a now=($epochtime)
     local formatted
-    TZ=UTC0 strftime -s formatted '%Y-%m-%dT%H:%M:%S.%3.Z' "$now[1]" "$now[2]" || return 1
-    timestamp="$formatted"
+    TZ=UTC0 strftime -s formatted '%Y-%m-%dT%H:%M:%S' "$now[1]" || return 1
+    printf -v timestamp '%s.%03dZ' "$formatted" "$(( now[2] / 1000000 ))"
 }
 _diu_preexec() {
     local submitted="$3" diu_binary timestamp

@@ -44,6 +44,7 @@ const (
 	ToolPoetry       = "poetry"
 	ToolGoBinary     = "go-binary"
 	ToolHomebrewCask = "homebrew-cask"
+	ToolExecutable   = "executable"
 
 	DefaultDaemonPort        = 8080
 	DefaultAPIPort           = 8081

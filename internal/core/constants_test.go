@@ -55,11 +55,12 @@ func TestNormalizeToolName(t *testing.T) {
 
 func normalizeToolNameCases() map[string]string {
 	return map[string]string{
-		"brew":     ToolHomebrew,
-		"Homebrew": ToolHomebrew,
-		"golang":   ToolGo,
-		" npm ":    ToolNPM,
-		"pip3":     ToolPip,
-		"python3":  ToolPip,
+		"brew":       ToolHomebrew,
+		"Homebrew":   ToolHomebrew,
+		"golang":     ToolGo,
+		" npm ":      ToolNPM,
+		"pip3":       ToolPip,
+		"python3":    ToolPip,
+		"executable": ToolExecutable,
 	}
 }

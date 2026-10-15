@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -31,6 +32,75 @@ func TestRunExecutionRejectsInvalidConfig(t *testing.T) {
 			t.Fatalf("RunExecution error = %v", err)
 		}
 	})
+}
+
+func TestRunExecutionRecordsUnmappedExecutable(t *testing.T) {
+	for _, name := range []string{"pnpm", "two words", `quote"and'`, `back\slash`, "line\nbreak", "--help"} {
+		t.Run(name, func(t *testing.T) {
+			config := setupTestHomeConfig(t)
+			if err := NewCommand().Execute([]string{"--executable=" + name}); err != nil {
+				t.Fatal(err)
+			}
+			assertStoredUnmappedLaunch(t, config, name)
+		})
+	}
+}
+
+func TestRunExecutionRejectsEmptyInput(t *testing.T) {
+	setupTestHomeConfig(t)
+	withStdin(t, "", func() {
+		if err := NewCommand().Execute([]string{"--executable="}); err == nil {
+			t.Fatal("empty input must not create a launch")
+		}
+	})
+}
+
+func assertStoredUnmappedLaunch(t *testing.T, config *core.Config, name string) {
+	t.Helper()
+	store := openTestStore(t, config)
+	defer closeTestStore(t, store)
+	records, err := store.GetExecutions(storage.QueryOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("expected one execution, got %#v", records)
+	}
+	assertUnmappedLaunch(t, records[0], name)
+	assertUnmappedUsage(t, store, name)
+}
+
+func assertUnmappedLaunch(t *testing.T, record *core.ExecutionRecord, name string) {
+	t.Helper()
+	isLaunch := record.Kind == core.ExecutionKindLaunchAttempt
+	correctTool := record.Tool == core.ToolExecutable
+	correctCommand := record.Command == name
+	validIdentity := isLaunch && correctTool && correctCommand
+	if !validIdentity {
+		t.Fatalf("unexpected unmapped launch: %#v", record)
+	}
+	wantPackages := []string{name}
+	if !slices.Equal(record.PackagesAffected, wantPackages) {
+		t.Fatalf("unexpected package identity: %#v", record.PackagesAffected)
+	}
+	if record.Metadata["executable"] != name {
+		t.Fatalf("missing launch metadata: %#v", record)
+	}
+	if record.Timestamp.IsZero() {
+		t.Fatal("missing launch timestamp")
+	}
+}
+
+func assertUnmappedUsage(t *testing.T, store storage.Storage, name string) {
+	t.Helper()
+	pkg, err := store.GetPackage(core.ToolExecutable, name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	validUsage := pkg.UsageCount == 1 && !pkg.LastUsed.IsZero()
+	if !validUsage {
+		t.Fatalf("unexpected usage: %#v", pkg)
+	}
 }
 
 func TestRunExecutionUsesBackgroundRecorderWhenRequested(t *testing.T) {

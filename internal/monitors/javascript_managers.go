@@ -2,6 +2,7 @@ package monitors
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"os/exec"
@@ -52,8 +53,8 @@ func (m *PNPMMonitor) GetInstalledPackages() ([]*core.PackageInfo, error) {
 	}
 
 	output, err = exec.Command(pnpmCommandName, "list", jsGlobalShortFlag, "--depth=0").Output()
-	if err != nil && len(output) == 0 {
-		return nil, fmt.Errorf("failed to list global pnpm packages: %w", err)
+	if err != nil {
+		return nil, globalPackageListError(pnpmCommandName, err)
 	}
 	return parseSimplePackageLines(core.ToolPNPM, string(output)), nil
 }
@@ -89,10 +90,39 @@ func (m *BunMonitor) GetInstalledPackages() ([]*core.PackageInfo, error) {
 	}
 
 	output, err = exec.Command(bunCommandName, "pm", "ls", jsGlobalShortFlag).Output()
-	if err != nil && len(output) == 0 {
-		return nil, fmt.Errorf("failed to list global bun packages: %w", err)
+	if err != nil {
+		if len(output) == 0 && missingBunGlobalManifest(err) {
+			return nil, nil
+		}
+		return nil, globalPackageListError(bunCommandName, err)
 	}
 	return parseSimplePackageLines(core.ToolBun, string(output)), nil
+}
+
+func missingBunGlobalManifest(err error) bool {
+	var exitErr *exec.ExitError
+	missingManifestExit := errors.As(err, &exitErr) && exitErr.ExitCode() == 1
+	if !missingManifestExit {
+		return false
+	}
+	lines := strings.Split(strings.TrimSpace(string(exitErr.Stderr)), "\n")
+	if len(lines) != 2 {
+		return false
+	}
+	missingManifest := strings.HasPrefix(lines[0], "error: No package.json was found for directory \"")
+	initializationHint := lines[1] == "note: Run \"bun init\" to initialize a project"
+	return missingManifest && initializationHint
+}
+
+func globalPackageListError(tool string, err error) error {
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		diagnostic := strings.TrimSpace(string(exitErr.Stderr))
+		if diagnostic != "" {
+			return fmt.Errorf("failed to list global %s packages: %w: %s", tool, err, diagnostic)
+		}
+	}
+	return fmt.Errorf("failed to list global %s packages: %w", tool, err)
 }
 
 func parseJavaScriptManagerCommand(tool, cmd string, args []string) *core.ExecutionRecord {

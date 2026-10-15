@@ -2,7 +2,10 @@ package monitors
 
 import (
 	"context"
+	"errors"
+	"os/exec"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/yowainwright/diu/internal/core"
@@ -324,6 +327,86 @@ exit 2
 	}
 	if _, err := monitor.GetInstalledPackages(); err == nil {
 		t.Fatal("Expected error for failed bun list")
+	}
+}
+
+func TestBunGetInstalledPackagesWithoutGlobalManifest(t *testing.T) {
+	prependFakeCommand(t, bunCommandName, `#!/bin/sh
+printf '%s\n' 'error: No package.json was found for directory "/custom/bun/global"' >&2
+printf '%s\n' 'note: Run "bun init" to initialize a project' >&2
+exit 1
+`)
+	packages, err := initializedBunMonitor(t).GetInstalledPackages()
+	if err != nil {
+		t.Fatalf("Empty global inventory returned an error: %v", err)
+	}
+	if len(packages) != 0 {
+		t.Fatalf("Empty global inventory returned packages: %#v", packages)
+	}
+}
+
+func TestBunGetInstalledPackagesWithEmptyGlobalDirectory(t *testing.T) {
+	if _, err := exec.LookPath(bunCommandName); err != nil {
+		t.Skip("bun is not installed")
+	}
+	t.Setenv("BUN_INSTALL_GLOBAL_DIR", t.TempDir())
+	packages, err := initializedBunMonitor(t).GetInstalledPackages()
+	if err != nil {
+		t.Fatalf("Empty global directory returned an error: %v", err)
+	}
+	if len(packages) != 0 {
+		t.Fatalf("Empty global directory returned packages: %#v", packages)
+	}
+}
+
+func TestBunGetInstalledPackagesRejectsAdditionalErrors(t *testing.T) {
+	prependFakeCommand(t, bunCommandName, `#!/bin/sh
+printf '%s\n' 'error: No package.json was found for directory "/custom/bun/global"' >&2
+printf '%s\n' 'error: permission denied' >&2
+printf '%s\n' 'note: Run "bun init" to initialize a project' >&2
+exit 1
+`)
+	if _, err := initializedBunMonitor(t).GetInstalledPackages(); err == nil {
+		t.Fatal("Expected error instead of empty inventory")
+	}
+}
+
+func TestPNPMGetInstalledPackagesReportsInactiveShim(t *testing.T) {
+	prependFakeCommand(t, pnpmCommandName, `#!/bin/sh
+printf '%s\n' 'mise ERROR No version is set for shim: pnpm' >&2
+exit 1
+`)
+	_, err := initializedPNPMMonitor(t).GetInstalledPackages()
+	reportsInactiveShim := err != nil && strings.Contains(err.Error(), "No version is set for shim: pnpm")
+	if !reportsInactiveShim {
+		t.Fatalf("Expected inactive shim diagnostic, got %v", err)
+	}
+}
+
+func TestJavaScriptManagerGetInstalledPackagesPreservesFailures(t *testing.T) {
+	for _, tool := range []string{pnpmCommandName, bunCommandName} {
+		t.Run(tool, func(t *testing.T) {
+			assertJavaScriptManagerListFailure(t, tool, "")
+			assertJavaScriptManagerListFailure(t, tool, "├── tsx@4.19.0")
+		})
+	}
+}
+
+func assertJavaScriptManagerListFailure(t *testing.T, tool, output string) {
+	t.Helper()
+	script := "#!/bin/sh\nprintf '%s' '" + output + "'\nprintf '%s\\n' 'permission denied' >&2\nexit 1\n"
+	prependFakeCommand(t, tool, script)
+	monitor, err := NewMonitor(tool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = monitor.GetInstalledPackages()
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("Expected original process error, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "permission denied") {
+		t.Fatalf("Process diagnostic was lost: %v", err)
 	}
 }
 

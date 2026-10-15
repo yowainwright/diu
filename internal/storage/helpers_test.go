@@ -19,6 +19,32 @@ func TestWriteAllReturnsWriterError(t *testing.T) {
 	}
 }
 
+func TestShouldUpdateInventoryAcceptsExecutable(t *testing.T) {
+	store := newTestStorage(t)
+	defer closeStorage(t, store)
+	record := core.ExecutionRecord{Kind: core.ExecutionKindLaunchAttempt, Tool: core.ToolExecutable, Command: "pnpm"}
+	if !store.shouldUpdateInventory(record) {
+		t.Fatal("unmapped executable usage was ignored")
+	}
+}
+
+func TestApplyExecutionCountsEachLaunchOnce(t *testing.T) {
+	store := newTestStorage(t)
+	defer closeStorage(t, store)
+	record := core.ExecutionRecord{
+		Kind: core.ExecutionKindLaunchAttempt, Tool: core.ToolExecutable, Command: "pnpm",
+		PackagesAffected: []string{"pnpm"}, Timestamp: time.Now(),
+	}
+	for want := 1; want <= 2; want++ {
+		store.applyExecution(record)
+		packages := store.data.Packages[core.ToolExecutable]
+		pkg := packages["pnpm"]
+		if pkg.UsageCount != want {
+			t.Fatalf("usage count = %d, want %d", pkg.UsageCount, want)
+		}
+	}
+}
+
 func TestRemoveMissingPackagesReportsEmptyBucketRemoval(t *testing.T) {
 	store := newTestStorage(t)
 	defer closeStorage(t, store)
