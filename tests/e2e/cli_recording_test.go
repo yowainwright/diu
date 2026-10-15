@@ -171,6 +171,48 @@ func TestCLIZshPreservesUnmappedExecutableNames(t *testing.T) {
 	finishCLIZsh(t, command, input, stderr)
 }
 
+func TestCLIZshRecordsHomeRelativeExecutable(t *testing.T) {
+	f := unmappedCLIFixture(t)
+	f.setup(t)
+	command, input, output, stderr := startCLIZsh(t, f)
+	writeZshInput(t, input, homeRelativeCLICommands)
+	waitCLIZshOutput(t, output, "DIU_HOME_0")
+	assertCLIFile(t, filepath.Join(f.home, "unlisted-tool-ran"), "")
+	records := waitCLIRecords(t, f, 1)
+	if len(records) != 1 {
+		t.Fatalf("expected one home-relative launch, got %#v", records)
+	}
+	assertCLIRecordedLaunchIdentity(t, records[0], core.ToolExecutable, "unlisted-tool")
+	assertCLIRecordedToolUse(t, f, core.ToolExecutable, "unlisted-tool", 1)
+	finishCLIZsh(t, command, input, stderr)
+}
+
+const homeRelativeCLICommands = `'~/bin/unlisted-tool' --version || true
+"~/bin/unlisted-tool" --version || true
+\~/bin/unlisted-tool --version || true
+~/bin/unlisted-tool --version
+print -r -- DIU_HOME_$?
+`
+
+func TestCLIZshPreservesHomeRelativeQuoting(t *testing.T) {
+	f := unmappedCLIFixture(t)
+	name := "$(touch DIU_REEVALUATED)"
+	writeCLIFile(t, filepath.Join(f.bin, name), unmappedCLIToolScript, 0o700)
+	f.setup(t)
+	command, input, output, stderr := startCLIZsh(t, f)
+	writeZshInput(t, input, "~/bin/'"+name+"' --version\nprint -r -- DIU_QUOTED_HOME_$?\n")
+	waitCLIZshOutput(t, output, "DIU_QUOTED_HOME_0")
+	assertCLIMissing(t, filepath.Join(f.home, "DIU_REEVALUATED"))
+	assertCLIFile(t, filepath.Join(f.home, name+"-ran"), "")
+	records := waitCLIRecords(t, f, 1)
+	if len(records) != 1 {
+		t.Fatalf("expected one literal executable launch, got %#v", records)
+	}
+	assertCLIRecordedLaunchIdentity(t, records[0], core.ToolExecutable, name)
+	assertCLIRecordedToolUse(t, f, core.ToolExecutable, name, 1)
+	finishCLIZsh(t, command, input, stderr)
+}
+
 func TestCLIZshPreservesMappedToolRecording(t *testing.T) {
 	f := mappedAliasCLIFixture(t)
 	f.setup(t)

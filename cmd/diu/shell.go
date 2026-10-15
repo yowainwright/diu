@@ -153,6 +153,7 @@ _diu_record_unmapped() {
 _diu_record_command() {
     (( command_position )) && [[ "$1" != *=* ]] || return 1
     local word="${(Q)1}" tool package executable
+    [[ "$1" == '~/'* ]] && word="$HOME/${word#\~/}"
     local invocation="$word" prefix="$command_prefix"
     (( exec_prefix )) && prefix=exec
     word="${word:t}"
