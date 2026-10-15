@@ -743,6 +743,16 @@ func TestUninstallPlan(t *testing.T) {
 	}
 }
 
+func TestUninstallPlanRejectsUnownedExecutable(t *testing.T) {
+	pkg := &core.PackageInfo{Name: "pnpm", Tool: core.ToolExecutable}
+	if supportsUninstall(pkg) {
+		t.Fatal("unmapped executable permits automatic uninstall")
+	}
+	if command, err := uninstallPlan(pkg); err == nil {
+		t.Fatalf("unmapped executable produced an uninstall command: %v", command)
+	}
+}
+
 type uninstallPlanCase struct {
 	name string
 	pkg  *core.PackageInfo

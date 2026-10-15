@@ -29,6 +29,18 @@ func TestRenderZshIntegrationEscapesExecutableMapEntries(t *testing.T) {
 	)
 }
 
+func TestRenderZshIntegrationIncludesUnmappedCommandFallback(t *testing.T) {
+	contents, err := renderZshIntegration(nil, "/unused/integration.zsh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertShellIntegrationContains(t, contents,
+		`_diu_record_unmapped "$invocation" "$prefix"`,
+		`"--executable=${1:t}"`,
+		`builtin whence "$lookup" -- "$1"`,
+	)
+}
+
 func TestInstallZshSourceBlockWritesThroughSymlink(t *testing.T) {
 	path, target, integrationPath := createSymlinkedZshConfig(t)
 	if err := installZshSourceBlock(path, integrationPath); err != nil {

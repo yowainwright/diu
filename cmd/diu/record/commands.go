@@ -1,6 +1,7 @@
 package record
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -30,6 +31,7 @@ const (
 
 func NewCommand() *dx.Command {
 	var shouldUseBackground bool
+	var executable string
 	cmd := &dx.Command{
 		Use:      "record",
 		Short:    "Record an execution event from stdin",
@@ -37,6 +39,7 @@ func NewCommand() *dx.Command {
 		RunE:     RunExecution,
 	}
 	cmd.Flags().BoolVar(&shouldUseBackground, "background", defaultBackgroundEnabled, "Admit bounded background recording")
+	cmd.Flags().StringVar(&executable, "executable", "", "Record an unmapped executable launch")
 	return cmd
 }
 
@@ -45,11 +48,31 @@ func RunExecution(cmd *dx.Command, _ []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
+	input, err := launchAttemptInput(cmd)
+	if err != nil {
+		return err
+	}
 	background, _ := cmd.Flags().GetBool("background")
 	if background {
-		return startBackgroundRecorder(config, dx.TerminalOut().Stdin())
+		return startBackgroundRecorder(config, input)
 	}
-	return recordFallbackExecution(config, dx.TerminalOut().Stdin())
+	return recordFallbackExecution(config, input)
+}
+
+func launchAttemptInput(cmd *dx.Command) (io.Reader, error) {
+	name, _ := cmd.Flags().GetString("executable")
+	if name == "" {
+		return dx.TerminalOut().Stdin(), nil
+	}
+	record := core.ExecutionRecord{
+		Kind:             core.ExecutionKindLaunchAttempt,
+		Tool:             core.ToolExecutable,
+		Command:          name,
+		PackagesAffected: []string{name},
+		Metadata:         map[string]interface{}{"executable": name},
+	}
+	payload, err := json.Marshal(record)
+	return bytes.NewReader(payload), err
 }
 
 func storeFallbackExecutionFrom(config *core.Config, wait time.Duration, input io.Reader) error {

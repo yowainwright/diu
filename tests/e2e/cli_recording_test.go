@@ -4,6 +4,7 @@ package e2e
 
 import (
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -39,34 +40,215 @@ func TestCLIZshListenerRecordsSubmittedCommand(t *testing.T) {
 	finishCLIZsh(t, command, input, stderr)
 }
 
+func TestCLIZshRecordsToolsMissingFromInventory(t *testing.T) {
+	f := unmappedCLIFixture(t)
+	lateTool := prepareCLIUnmappedTools(t, f)
+	command, input, output, stderr := startCLIZsh(t, f)
+	writeCLIFile(t, lateTool, unmappedCLIToolScript, 0o700)
+	for _, name := range []string{"pnpm", "just", "unlisted-tool"} {
+		writeZshInput(t, input, name+" --version\nprint -r -- DIU_COMMAND_$?\n")
+		waitCLIZshOutput(t, output, "DIU_COMMAND_0")
+		assertCLIFile(t, filepath.Join(f.home, name+"-ran"), "")
+	}
+	records := waitCLIRecords(t, f, 3)
+	assertCLIUnmappedRecords(t, f, records)
+	finishCLIZsh(t, command, input, stderr)
+}
+
+func prepareCLIUnmappedTools(t *testing.T, f *cliFixture) string {
+	t.Helper()
+	writeCLIFile(t, filepath.Join(f.home, ".tool-versions"), "pnpm 12.5.1\n", 0o600)
+	before := snapshotCLIHome(t, f.home)
+	f.setup(t)
+	assertCLIChanges(t, before, snapshotCLIHome(t, f.home))
+	assertCLIUnmappedTools(t, f)
+	lateTool := filepath.Join(f.bin, "unlisted-tool")
+	if err := os.Remove(lateTool); err != nil {
+		t.Fatal(err)
+	}
+	return lateTool
+}
+
+func unmappedCLIFixture(t *testing.T) *cliFixture {
+	t.Helper()
+	f := newCLIFixture(t)
+	f.config.Monitoring.EnabledTools = []string{core.ToolPNPM}
+	monitoring := &f.config.Monitoring
+	monitoring.Filesystem.WatchPaths = map[string][]string{}
+	writeCLIConfig(t, f)
+	for _, name := range []string{"pnpm", "just", "unlisted-tool"} {
+		writeCLIFile(t, filepath.Join(f.bin, name), unmappedCLIToolScript, 0o700)
+	}
+	return f
+}
+
+const unmappedCLIToolScript = `#!/bin/sh
+[ "$1" = --version ] || exit 1
+: > "$HOME/${0##*/}-ran"
+printf 'fixture 1.0\n'
+`
+
+func assertCLIUnmappedTools(t *testing.T, f *cliFixture) {
+	t.Helper()
+	integration := filepath.Join(f.config.Daemon.DataDir, "shell-integration.zsh")
+	contents := readCLIFile(t, integration)
+	for _, name := range []string{"pnpm", "just", "unlisted-tool"} {
+		if strings.Contains(contents, "_DIU_TOOL_MAP+=('"+name+"'") {
+			t.Fatalf("fixture tool unexpectedly present in inventory map: %s", name)
+		}
+		assertCLIMissing(t, filepath.Join(f.home, name+"-ran"))
+	}
+}
+
+func assertCLIUnmappedRecords(t *testing.T, f *cliFixture, records []core.ExecutionRecord) {
+	t.Helper()
+	counts := make(map[string]int)
+	for _, record := range records {
+		assertCLIRecordedLaunchIdentity(t, record, core.ToolExecutable, record.Command)
+		counts[record.Command]++
+	}
+	if len(records) != 3 {
+		t.Fatalf("expected three launch records, got %#v", records)
+	}
+	for _, name := range []string{"pnpm", "just", "unlisted-tool"} {
+		if counts[name] != 1 {
+			t.Fatalf("%s launch count = %d, want 1", name, counts[name])
+		}
+		assertCLIRecordedToolUse(t, f, core.ToolExecutable, name, 1)
+	}
+}
+
+func TestCLIZshRecordsExternalCommandBehindFunction(t *testing.T) {
+	f := unmappedCLIFixture(t)
+	f.setup(t)
+	zshrc := filepath.Join(f.home, ".zshrc")
+	contents := readCLIFile(t, zshrc) + "\npnpm() { :; }\n"
+	writeCLIFile(t, zshrc, contents, 0o600)
+	command, input, output, stderr := startCLIZsh(t, f)
+	writeZshInput(t, input, "pnpm --version\ncommand pnpm --version\nprint -r -- DIU_EXTERNAL_$?\n")
+	waitCLIZshOutput(t, output, "DIU_EXTERNAL_0")
+	assertCLIFile(t, filepath.Join(f.home, "pnpm-ran"), "")
+	records := waitCLIRecords(t, f, 1)
+	if len(records) != 1 {
+		t.Fatalf("expected only the external command, got %#v", records)
+	}
+	assertCLIRecordedLaunchIdentity(t, records[0], core.ToolExecutable, "pnpm")
+	assertCLIRecordedToolUse(t, f, core.ToolExecutable, "pnpm", 1)
+	finishCLIZsh(t, command, input, stderr)
+}
+
+func TestCLIZshRejectsNonCommandMatches(t *testing.T) {
+	f := unmappedCLIFixture(t)
+	f.setup(t)
+	command, input, output, stderr := startCLIZsh(t, f)
+	negative := "echo pnpm just unlisted-tool\n: > unlisted-tool\ncommand -v pnpm\nbuiltin pnpm\ndiu --version\nmissing-diu-fixture-command || true\n"
+	writeZshInput(t, input, negative)
+	writeZshInput(t, input, filepath.Join(f.bin, "unlisted-tool")+" --version\nprint -r -- DIU_EXTERNAL_$?\n")
+	waitCLIZshOutput(t, output, "DIU_EXTERNAL_0")
+	records := waitCLIRecords(t, f, 1)
+	if len(records) != 1 {
+		t.Fatalf("non-command matches produced records: %#v", records)
+	}
+	assertCLIRecordedLaunchIdentity(t, records[0], core.ToolExecutable, "unlisted-tool")
+	finishCLIZsh(t, command, input, stderr)
+}
+
+func TestCLIZshPreservesUnmappedExecutableNames(t *testing.T) {
+	f := unmappedCLIFixture(t)
+	name := `odd "name\tool`
+	path := filepath.Join(f.bin, name)
+	writeCLIFile(t, path, unmappedCLIToolScript, 0o700)
+	f.setup(t)
+	command, input, output, stderr := startCLIZsh(t, f)
+	writeZshInput(t, input, "'"+path+"' --version\nprint -r -- DIU_QUOTED_$?\n")
+	waitCLIZshOutput(t, output, "DIU_QUOTED_0")
+	records := waitCLIRecords(t, f, 1)
+	if len(records) != 1 {
+		t.Fatalf("expected one quoted launch, got %#v", records)
+	}
+	assertCLIRecordedLaunchIdentity(t, records[0], core.ToolExecutable, name)
+	assertCLIRecordedToolUse(t, f, core.ToolExecutable, name, 1)
+	finishCLIZsh(t, command, input, stderr)
+}
+
+func TestCLIZshPreservesMappedToolRecording(t *testing.T) {
+	f := mappedAliasCLIFixture(t)
+	f.setup(t)
+	command, input, output, stderr := startCLIZsh(t, f)
+	writeZshInput(t, input, "mapped-tool\nmapped-alias\nprint -r -- DIU_MAPPED_$?\n")
+	waitCLIZshOutput(t, output, "DIU_MAPPED_0")
+	records := waitCLIRecords(t, f, 2)
+	if len(records) != 2 {
+		t.Fatalf("expected two mapped launches, got %#v", records)
+	}
+	for _, record := range records {
+		assertCLIRecordedLaunchIdentity(t, record, core.ToolHomebrew, record.Command)
+	}
+	assertCLIRecordedToolUse(t, f, core.ToolHomebrew, "mapped-tool", 2)
+	finishCLIZsh(t, command, input, stderr)
+}
+
+func mappedAliasCLIFixture(t *testing.T) *cliFixture {
+	t.Helper()
+	f := newCLIFixture(t)
+	path := filepath.Join(f.home, "Cellar", "mapped-tool", "1.0", "bin", "mapped-tool")
+	writeCLIFile(t, path, "#!/bin/sh\nexit 0\n", 0o700)
+	for _, name := range []string{"mapped-tool", "mapped-alias"} {
+		if err := os.Symlink(path, filepath.Join(f.managed, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return f
+}
+
+func TestCLIZshRecordsRepeatedUnmappedCommandsWithoutDaemon(t *testing.T) {
+	f := unmappedCLIFixture(t)
+	f.setup(t)
+	assertCLIExit(t, f.cli(t, "daemon", "stop"), 0)
+	command, input, output, stderr := startCLIZsh(t, f)
+	hashCommand := "hash pnpm=" + filepath.Join(f.bin, "pnpm")
+	writeZshInput(t, input, hashCommand+"\npnpm --version\npnpm --version\nprint -r -- DIU_REPEAT_$?\n")
+	waitCLIZshOutput(t, output, "DIU_REPEAT_0")
+	records := waitCLIRecords(t, f, 2)
+	if len(records) != 2 {
+		t.Fatalf("expected two repeated launches, got %#v", records)
+	}
+	assertCLIRecordedLaunches(t, records, core.ToolExecutable, "pnpm")
+	assertCLIRecordedToolUse(t, f, core.ToolExecutable, "pnpm", 2)
+	finishCLIZsh(t, command, input, stderr)
+}
+
 func TestCLIZshTracksUVExecutablesWithoutProjectArguments(t *testing.T) {
 	f := uvCLIFixture(t)
 	f.setup(t)
 	command, input, output, stderr := startCLIZsh(t, f)
-	commands := `uv add listener-tool
-uv remove listener-tool
-uv pip install listener-tool
-uv tool run --from listener-tool listener-tool
-`
-	writeZshInput(t, input, commands+"print -r -- DIU_'UV_COMMANDS_DONE'\n")
+	writeZshInput(t, input, uvCLICommands+"print -r -- DIU_'UV_COMMANDS_DONE'\n")
 	waitCLIZshOutput(t, output, "DIU_UV_COMMANDS_DONE")
-	assertCLINoRecordedEvents(t, f)
+	records := waitCLIRecords(t, f, 4)
+	assertCLIRecordedLaunches(t, records, core.ToolExecutable, "uv")
 	writeZshInput(t, input, "listener-tool\nprint -r -- DIU_'UV_EXECUTABLE_DONE'\n")
 	waitCLIZshOutput(t, output, "DIU_UV_EXECUTABLE_DONE")
-	records := waitCLIRecords(t, f, 1)
-	if len(records) != 1 {
-		t.Fatalf("uv project arguments produced launches: %#v", records)
+	records = waitCLIRecords(t, f, 5)
+	if len(records) != 5 {
+		t.Fatalf("uv project arguments produced extra launches: %#v", records)
 	}
 	assertCLIRecordedLaunchIdentity(t, records[0], core.ToolUV, "listener-tool")
 	finishCLIZsh(t, command, input, stderr)
 }
+
+const uvCLICommands = `uv add listener-tool
+uv remove listener-tool
+uv pip install listener-tool
+uv tool run --from listener-tool listener-tool
+`
 
 func uvCLIFixture(t *testing.T) *cliFixture {
 	t.Helper()
 	f := newCLIFixture(t)
 	f.config.Monitoring.EnabledTools = []string{core.ToolUV}
 	paths := []string{f.managed}
-	f.config.Monitoring.Filesystem.WatchPaths = map[string][]string{core.ToolUV: paths}
+	monitoring := &f.config.Monitoring
+	monitoring.Filesystem.WatchPaths = map[string][]string{core.ToolUV: paths}
 	writeCLIConfig(t, f)
 	writeCLIFile(t, filepath.Join(f.managed, "listener-tool"), "#!/bin/sh\nexit 0\n", 0o700)
 	uv := `#!/bin/sh
@@ -101,7 +283,10 @@ func waitCLIRecords(t *testing.T, f *cliFixture, count int) []core.ExecutionReco
 func assertCLIRecordedLaunchAttempt(t *testing.T, record core.ExecutionRecord) {
 	t.Helper()
 	assertCLIRecordedLaunchIdentity(t, record, core.ToolNPM, "prettier")
-	if record.Duration != 0 || record.ExitCode != 0 || record.WorkingDir != "" || len(record.Args) != 0 {
+	hasTiming := record.Duration != 0 || record.ExitCode != 0
+	hasContext := record.WorkingDir != "" || len(record.Args) != 0
+	hasExecutionDetails := hasTiming || hasContext
+	if hasExecutionDetails {
 		t.Fatalf("launch attempt included execution details: %#v", record)
 	}
 	assertCLIRecordedExecutable(t, record, "prettier")
@@ -118,8 +303,18 @@ func assertCLIZshRecordedLaunchAttempt(t *testing.T, record core.ExecutionRecord
 
 func assertCLIRecordedLaunchIdentity(t *testing.T, record core.ExecutionRecord, tool, command string) {
 	t.Helper()
-	if record.Kind != core.ExecutionKindLaunchAttempt || record.Tool != tool || record.Command != command {
+	isLaunch := record.Kind == core.ExecutionKindLaunchAttempt
+	hasIdentity := record.Tool == tool && record.Command == command
+	isExpectedLaunch := isLaunch && hasIdentity
+	if !isExpectedLaunch {
 		t.Fatalf("recorded launch identity = %#v", record)
+	}
+}
+
+func assertCLIRecordedLaunches(t *testing.T, records []core.ExecutionRecord, tool, command string) {
+	t.Helper()
+	for _, record := range records {
+		assertCLIRecordedLaunchIdentity(t, record, tool, command)
 	}
 }
 
@@ -132,15 +327,15 @@ func assertCLIRecordedExecutable(t *testing.T, record core.ExecutionRecord, exec
 
 func assertCLIRecordedPackageUse(t *testing.T, f *cliFixture) {
 	t.Helper()
-	assertCLIRecordedToolUse(t, f, core.ToolNPM, "prettier")
+	assertCLIRecordedToolUse(t, f, core.ToolNPM, "prettier", 1)
 }
 
 func assertCLIZshRecordedPackageUse(t *testing.T, f *cliFixture) {
 	t.Helper()
-	assertCLIRecordedToolUse(t, f, core.ToolHomebrew, "listener-tool")
+	assertCLIRecordedToolUse(t, f, core.ToolHomebrew, "listener-tool", 1)
 }
 
-func assertCLIRecordedToolUse(t *testing.T, f *cliFixture, tool, name string) {
+func assertCLIRecordedToolUse(t *testing.T, f *cliFixture, tool, name string, want int) {
 	t.Helper()
 	store, err := storage.NewJSONStorage(f.config)
 	if err != nil {
@@ -151,7 +346,8 @@ func assertCLIRecordedToolUse(t *testing.T, f *cliFixture, tool, name string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if pkg.UsageCount != 1 || pkg.LastUsed.IsZero() {
+	hasUsage := pkg.UsageCount == want && !pkg.LastUsed.IsZero()
+	if !hasUsage {
 		t.Fatalf("package launch usage = %#v", pkg)
 	}
 }

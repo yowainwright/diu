@@ -33,7 +33,7 @@ func TestCLIZshListenerRefreshesOpenShellAndMatchesCommands(t *testing.T) {
 		"echo else listener-tool",
 		"echo ';' listener-tool",
 		"echo 'if' listener-tool",
-		"cat < /dev/null > listener-tool",
+		": < /dev/null > listener-tool",
 		"builtin listener-tool",
 		"builtin -- listener-tool",
 		"command -v listener-tool",
