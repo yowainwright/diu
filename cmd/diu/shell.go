@@ -145,6 +145,7 @@ _diu_record_unmapped() {
     case "$2" in command|env|sudo|exec) lookup=-wp ;; esac
     case "$(builtin whence "$lookup" -- "$1")" in
         "$1: command"|"$1: hashed") ;;
+        "$1: function") builtin whence -p -- "$1" >/dev/null || return 0 ;;
         *) return 0 ;;
     esac
     "$diu_binary" record --background "--executable=${1:t}" </dev/null >/dev/null 2>&1 &!

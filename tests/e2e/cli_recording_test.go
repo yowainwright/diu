@@ -83,7 +83,10 @@ func unmappedCLIFixture(t *testing.T) *cliFixture {
 }
 
 const unmappedCLIToolScript = `#!/bin/sh
-[ "$1" = --version ] || exit 1
+case "$1" in
+    --version|install) ;;
+    *) exit 1 ;;
+esac
 : > "$HOME/${0##*/}-ran"
 printf 'fixture 1.0\n'
 `
@@ -122,15 +125,34 @@ func TestCLIZshRecordsExternalCommandBehindFunction(t *testing.T) {
 	f := unmappedCLIFixture(t)
 	f.setup(t)
 	zshrc := filepath.Join(f.home, ".zshrc")
+	contents := readCLIFile(t, zshrc) + "\npnpm() { command pnpm \"$@\"; }\ndiu_fixture_function() { :; }\n"
+	writeCLIFile(t, zshrc, contents, 0o600)
+	command, input, output, stderr := startCLIZsh(t, f)
+	writeZshInput(t, input, "pnpm --version\npnpm install\ncommand pnpm --version\ndiu_fixture_function\nprint -r -- DIU_EXTERNAL_$?\n")
+	waitCLIZshOutput(t, output, "DIU_EXTERNAL_0")
+	assertCLIFile(t, filepath.Join(f.home, "pnpm-ran"), "")
+	records := waitCLIRecords(t, f, 3)
+	if len(records) != 3 {
+		t.Fatalf("expected three pnpm launches, got %#v", records)
+	}
+	assertCLIRecordedLaunches(t, records, core.ToolExecutable, "pnpm")
+	assertCLIRecordedToolUse(t, f, core.ToolExecutable, "pnpm", 3)
+	finishCLIZsh(t, command, input, stderr)
+}
+
+func TestCLIZshCountsSubmittedToolNameAsLaunchAttempt(t *testing.T) {
+	f := unmappedCLIFixture(t)
+	f.setup(t)
+	zshrc := filepath.Join(f.home, ".zshrc")
 	contents := readCLIFile(t, zshrc) + "\npnpm() { :; }\n"
 	writeCLIFile(t, zshrc, contents, 0o600)
 	command, input, output, stderr := startCLIZsh(t, f)
-	writeZshInput(t, input, "pnpm --version\ncommand pnpm --version\nprint -r -- DIU_EXTERNAL_$?\n")
-	waitCLIZshOutput(t, output, "DIU_EXTERNAL_0")
-	assertCLIFile(t, filepath.Join(f.home, "pnpm-ran"), "")
+	writeZshInput(t, input, "pnpm install\nprint -r -- DIU_ATTEMPT_$?\n")
+	waitCLIZshOutput(t, output, "DIU_ATTEMPT_0")
+	assertCLIMissing(t, filepath.Join(f.home, "pnpm-ran"))
 	records := waitCLIRecords(t, f, 1)
 	if len(records) != 1 {
-		t.Fatalf("expected only the external command, got %#v", records)
+		t.Fatalf("expected one submitted launch attempt, got %#v", records)
 	}
 	assertCLIRecordedLaunchIdentity(t, records[0], core.ToolExecutable, "pnpm")
 	assertCLIRecordedToolUse(t, f, core.ToolExecutable, "pnpm", 1)
