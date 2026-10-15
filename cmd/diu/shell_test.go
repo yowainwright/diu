@@ -2,9 +2,11 @@ package main
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/yowainwright/diu/internal/core"
 )
@@ -39,6 +41,39 @@ func TestRenderZshIntegrationIncludesUnmappedCommandFallback(t *testing.T) {
 		`"--executable=${1:t}"`,
 		`builtin whence "$lookup" -- "$1"`,
 	)
+}
+
+func TestZshCaptureTimestamp(t *testing.T) {
+	before := time.Now().Add(-time.Second)
+	output := captureZshTimestamp(t)
+	timestamp, err := time.Parse(time.RFC3339Nano, output)
+	if err != nil {
+		t.Fatalf("invalid launch timestamp %q: %v", output, err)
+	}
+	isCurrent := !timestamp.Before(before) && !timestamp.After(time.Now())
+	if !isCurrent {
+		t.Fatalf("launch timestamp %q is not current UTC time", output)
+	}
+	if len(output) != len("2026-10-14T12:00:00.000Z") {
+		t.Fatalf("expected milliseconds and UTC suffix, got %q", output)
+	}
+}
+
+func captureZshTimestamp(t *testing.T) string {
+	t.Helper()
+	zsh, err := exec.LookPath("zsh")
+	if err != nil {
+		t.Skip("zsh is unavailable")
+	}
+	script := "typeset -gi _DIU_IN_PREEXEC=1\n" + zshPreexecHook
+	script += "\n_diu_capture_timestamp || exit 1\nprint -r -- \"$timestamp\"\n"
+	command := exec.CommandContext(t.Context(), zsh, "-df", "-c", script)
+	command.Env = []string{"PATH=/usr/bin:/bin", "TZ=America/Los_Angeles"}
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("timestamp capture failed: %v: %s", err, output)
+	}
+	return strings.TrimSpace(string(output))
 }
 
 func TestInstallZshSourceBlockWritesThroughSymlink(t *testing.T) {

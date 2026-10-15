@@ -190,8 +190,8 @@ _diu_capture_timestamp() {
     zmodload zsh/datetime 2>/dev/null || return 1
     local -a now=($epochtime)
     local formatted
-    TZ=UTC0 strftime -s formatted '%Y-%m-%dT%H:%M:%S.%3.Z' "$now[1]" "$now[2]" || return 1
-    timestamp="$formatted"
+    TZ=UTC0 strftime -s formatted '%Y-%m-%dT%H:%M:%S' "$now[1]" || return 1
+    printf -v timestamp '%s.%03dZ' "$formatted" "$(( now[2] / 1000000 ))"
 }
 _diu_preexec() {
     local submitted="$3" diu_binary timestamp
