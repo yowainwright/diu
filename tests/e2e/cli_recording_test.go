@@ -140,6 +140,25 @@ func TestCLIZshRecordsExternalCommandBehindFunction(t *testing.T) {
 	finishCLIZsh(t, command, input, stderr)
 }
 
+func TestCLIZshCountsSubmittedToolNameAsLaunchAttempt(t *testing.T) {
+	f := unmappedCLIFixture(t)
+	f.setup(t)
+	zshrc := filepath.Join(f.home, ".zshrc")
+	contents := readCLIFile(t, zshrc) + "\npnpm() { :; }\n"
+	writeCLIFile(t, zshrc, contents, 0o600)
+	command, input, output, stderr := startCLIZsh(t, f)
+	writeZshInput(t, input, "pnpm install\nprint -r -- DIU_ATTEMPT_$?\n")
+	waitCLIZshOutput(t, output, "DIU_ATTEMPT_0")
+	assertCLIMissing(t, filepath.Join(f.home, "pnpm-ran"))
+	records := waitCLIRecords(t, f, 1)
+	if len(records) != 1 {
+		t.Fatalf("expected one submitted launch attempt, got %#v", records)
+	}
+	assertCLIRecordedLaunchIdentity(t, records[0], core.ToolExecutable, "pnpm")
+	assertCLIRecordedToolUse(t, f, core.ToolExecutable, "pnpm", 1)
+	finishCLIZsh(t, command, input, stderr)
+}
+
 func TestCLIZshRejectsNonCommandMatches(t *testing.T) {
 	f := unmappedCLIFixture(t)
 	f.setup(t)
