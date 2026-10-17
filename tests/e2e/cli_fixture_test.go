@@ -92,6 +92,56 @@ func writeCLIManagers(t *testing.T, f *cliFixture) {
 	}
 }
 
+func newCLICargoFixture(t *testing.T) *cliFixture {
+	t.Helper()
+	f := newCLIFixture(t)
+	root := filepath.Join(f.home, "cargo-root")
+	f.env = append(f.env, "CARGO_INSTALL_ROOT="+root, "CARGO_HOME="+filepath.Join(f.home, ".cargo"))
+	f.env = append(f.env, "PATH="+filepath.Join(root, "bin")+":"+f.basePath())
+	monitoring := &f.config.Monitoring
+	monitoring.EnabledTools = []string{core.ToolCargo}
+	monitoring.Filesystem.WatchPaths = map[string][]string{}
+	writeCLIConfig(t, f)
+	writeCLIFile(t, filepath.Join(f.bin, "cargo"), cargoFixtureScript, 0o700)
+	writeCLIFile(t, filepath.Join(f.home, "cargo-inventory"), cargoFixtureInventory, 0o600)
+	for _, name := range []string{"rg", "tool-one", "tool-two", "unrelated"} {
+		path := filepath.Join(root, "bin", name)
+		writeCLIFile(t, path, "#!/bin/sh\nprintf '%s\\n' \"${0##*/}\"\n", 0o700)
+	}
+	return f
+}
+
+const cargoFixtureInventory = `cli-tools v1.2.3 (/fixture/source):
+    tool-one
+    tool-two
+ripgrep v14.1.1:
+    rg
+`
+
+const cargoFixtureScript = `#!/bin/sh
+set -eu
+case "$1" in
+    install)
+        [ "$2" = --list ]
+        if [ -f "$HOME/cargo-scan-failed" ]; then
+            printf 'cargo inventory unavailable\n' >&2
+            exit 1
+        fi
+        /bin/cat "$HOME/cargo-inventory"
+        ;;
+    uninstall)
+        printf '%s\n' "$@" > "$HOME/cargo-uninstall-args"
+        if [ -f "$HOME/cargo-uninstall-failed" ]; then exit 7; fi
+        [ "$2" = --root ] && [ "$3" = "$CARGO_INSTALL_ROOT" ] && [ "$4" = ripgrep@14.1.1 ]
+        /bin/rm "$CARGO_INSTALL_ROOT/bin/rg"
+        /bin/sed '/^ripgrep /,$d' "$HOME/cargo-inventory" > "$HOME/cargo-next"
+        /bin/mv "$HOME/cargo-next" "$HOME/cargo-inventory"
+        ;;
+    --version) printf 'cargo fixture\n' ;;
+    *) exit 2 ;;
+esac
+`
+
 const probeFixtureScript = `#!/bin/bash
 printf 'cwd=<%s>\ntoken=<%s>\n' "$PWD" "$DIU_TEST_TOKEN"
 printf 'argument=<%s>\n' "$@"

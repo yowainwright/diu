@@ -127,18 +127,16 @@ func defaultMonitoringConfig() MonitoringConfig {
 		homeDir = dir
 	}
 	return MonitoringConfig{
-		EnabledTools: []string{
-			ToolHomebrew,
-			ToolNPM,
-			ToolPNPM,
-			ToolBun,
-			ToolGo,
-			ToolPip,
-			ToolUV,
-			ToolPoetry,
-		},
-		Methods:    []string{MonitorMethodProcess},
-		Filesystem: defaultFilesystemConfig(homeDir),
+		EnabledTools: defaultEnabledTools(),
+		Methods:      []string{MonitorMethodProcess},
+		Filesystem:   defaultFilesystemConfig(homeDir),
+	}
+}
+
+func defaultEnabledTools() []string {
+	return []string{
+		ToolHomebrew, ToolNPM, ToolPNPM, ToolBun, ToolGo,
+		ToolCargo, ToolPip, ToolUV, ToolPoetry,
 	}
 }
 

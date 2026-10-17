@@ -23,6 +23,66 @@ func TestCLIRecordsBackgroundLaunchAttempt(t *testing.T) {
 	assertCLIRecordedPackageUse(t, f)
 }
 
+func TestCLIZshRecordsCargoCrates(t *testing.T) {
+	for _, mode := range []string{"daemon", "fallback"} {
+		t.Run(mode, func(t *testing.T) {
+			f := newCLICargoFixture(t)
+			f.setup(t)
+			if mode == "daemon" {
+				startCLIDaemon(t, f)
+			}
+			assertCLICargoLaunches(t, f)
+		})
+	}
+}
+
+func assertCLICargoLaunches(t *testing.T, f *cliFixture) {
+	t.Helper()
+	command, input, output, stderr := startCLIZsh(t, f)
+	writeZshInput(t, input, "rg --version\ntool-one\ntool-two\nprint -r -- DIU_CARGO_DONE\n")
+	waitCLIZshOutput(t, output, "DIU_CARGO_DONE")
+	records := waitCLIRecords(t, f, 3)
+	if len(records) != 3 {
+		t.Fatalf("records = %#v, want three Cargo launches", records)
+	}
+	for _, record := range records {
+		assertCLIRecordedLaunchIdentity(t, record, core.ToolCargo, record.Command)
+	}
+	assertCLIRecordedToolUse(t, f, core.ToolCargo, "ripgrep", 1)
+	assertCLIRecordedToolUse(t, f, core.ToolCargo, "cli-tools", 2)
+	finishCLIZsh(t, command, input, stderr)
+}
+
+func TestCLICargoScanFailurePreservesInventoryAndTracking(t *testing.T) {
+	f := failedCLICargoScanFixture(t)
+	command, input, output, stderr := startCLIZsh(t, f)
+	writeZshInput(t, input, "rg --version\nprint -r -- DIU_CARGO_FALLBACK\n")
+	waitCLIZshOutput(t, output, "DIU_CARGO_FALLBACK")
+	records := waitCLIRecords(t, f, 1)
+	if len(records) != 1 {
+		t.Fatalf("records = %#v, want one generic launch", records)
+	}
+	assertCLIRecordedLaunchIdentity(t, records[0], core.ToolExecutable, "rg")
+	assertCLIRecordedToolUse(t, f, core.ToolExecutable, "rg", 1)
+	finishCLIZsh(t, command, input, stderr)
+}
+
+func failedCLICargoScanFixture(t *testing.T) *cliFixture {
+	t.Helper()
+	f := newCLICargoFixture(t)
+	f.setup(t)
+	before := f.cli(t, "packages", "--tool", "cargo", "--format", "json")
+	assertCLIExit(t, before, 0)
+	writeCLIFile(t, filepath.Join(f.home, "cargo-scan-failed"), "", 0o600)
+	assertCLIExit(t, f.cli(t, "scan"), 0)
+	after := f.cli(t, "packages", "--tool", "cargo", "--format", "json")
+	assertCLIExit(t, after, 0)
+	if after.stdout != before.stdout {
+		t.Fatalf("failed scan changed inventory: before=%s after=%s", before.stdout, after.stdout)
+	}
+	return f
+}
+
 func TestCLIZshListenerRecordsSubmittedCommand(t *testing.T) {
 	f := newCLIFixture(t)
 	writeCLIFile(t, filepath.Join(f.managed, "listener-tool"), "#!/bin/sh\nexit 17\n", 0o700)
