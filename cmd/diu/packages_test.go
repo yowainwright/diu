@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -46,7 +47,7 @@ func assertUninstallArguments(t *testing.T, test uninstallPlanCase) {
 }
 
 func TestRunUninstallRejectsInvalidNamesBeforeStartingManagers(t *testing.T) {
-	tools := []string{core.ToolHomebrew, homebrewCaskTool, core.ToolNPM, core.ToolPNPM, core.ToolBun, core.ToolPip, core.ToolUV}
+	tools := []string{core.ToolHomebrew, homebrewCaskTool, core.ToolNPM, core.ToolPNPM, core.ToolBun, core.ToolPip, core.ToolUV, core.ToolCargo}
 	for _, tool := range tools {
 		t.Run(tool, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "started")
@@ -63,7 +64,7 @@ func TestRunUninstallRejectsInvalidNamesBeforeStartingManagers(t *testing.T) {
 
 func writeUninstallManagerFixtures(t *testing.T) {
 	t.Helper()
-	for _, name := range []string{homebrewCommandName, npmCommandName, pnpmCommandName, bunCommandName, pip3CommandName, uvCommandName} {
+	for _, name := range []string{homebrewCommandName, npmCommandName, pnpmCommandName, bunCommandName, pip3CommandName, uvCommandName, core.ToolCargo} {
 		prependFakeCommand(t, name, "#!/bin/sh\nprintf started > \"$DIU_TEST_UNINSTALL_STARTED\"\n")
 	}
 }
@@ -750,6 +751,52 @@ func TestUninstallPlanRejectsUnownedExecutable(t *testing.T) {
 	}
 	if command, err := uninstallPlan(pkg); err == nil {
 		t.Fatalf("unmapped executable produced an uninstall command: %v", command)
+	}
+}
+
+func TestUninstallPlanCargoUsesVerifiedRoot(t *testing.T) {
+	_, root := cargoExecutableFixture(t)
+	pkg := &core.PackageInfo{Name: "ripgrep", Version: "14.1.1", Tool: core.ToolCargo, Path: filepath.Join(root, "bin", "rg")}
+	plan, err := uninstallPlan(pkg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"cargo", "uninstall", "--root", root, "ripgrep@14.1.1"}
+	validPlan := slices.Equal(plan, want) && supportsUninstall(pkg)
+	if !validPlan {
+		t.Fatalf("plan = %v, want %v", plan, want)
+	}
+}
+
+func TestUninstallPlanCargoRejectsChangedInventory(t *testing.T) {
+	_, root := cargoExecutableFixture(t)
+	for _, name := range []string{"ripgrep", "unlisted"} {
+		pkg := &core.PackageInfo{Name: name, Version: "99.0.0", Tool: core.ToolCargo, Path: filepath.Join(root, "bin", "rg")}
+		if plan, err := uninstallPlan(pkg); err == nil {
+			t.Fatalf("changed inventory produced uninstall plan: %v", plan)
+		}
+	}
+}
+
+func TestUninstallPlanCargoRejectsUnknownRoot(t *testing.T) {
+	cargoExecutableFixture(t)
+	pkg := &core.PackageInfo{Name: "ripgrep", Version: "14.1.1", Tool: core.ToolCargo}
+	if plan, err := uninstallPlan(pkg); err == nil {
+		t.Fatalf("unverified root produced uninstall plan: %v", plan)
+	}
+}
+
+func TestPrintDryRunUninstallQuotesCargoRoot(t *testing.T) {
+	_, root := cargoExecutableFixture(t)
+	root = filepath.Join(root, "custom root")
+	pkg := &core.PackageInfo{Name: "ripgrep", Version: "14.1.1", Tool: core.ToolCargo, Path: filepath.Join(root, "bin", "rg")}
+	output := captureStdout(t, func() {
+		if err := printDryRunUninstall(pkg); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if !strings.Contains(output, "--root '"+root+"'") {
+		t.Fatalf("unquoted root in dry-run: %q", output)
 	}
 }
 

@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -17,6 +18,7 @@ import (
 	"github.com/yowainwright/diu/internal/core"
 	"github.com/yowainwright/diu/internal/dx"
 	"github.com/yowainwright/diu/internal/helpers"
+	"github.com/yowainwright/diu/internal/monitors"
 	"github.com/yowainwright/diu/internal/safefs"
 	"github.com/yowainwright/diu/internal/storage"
 )
@@ -696,8 +698,22 @@ func printDryRunUninstall(pkg *core.PackageInfo) error {
 	if err != nil {
 		return err
 	}
-	cliOutput().Println(strings.Join(printableUninstallPlan(pkg, plan), " "))
+	arguments := helpers.Map(printableUninstallPlan(pkg, plan), quoteUninstallArgument)
+	cliOutput().Println(strings.Join(arguments, " "))
 	return nil
+}
+
+func quoteUninstallArgument(argument string) string {
+	isPlain := argument != "" && strings.IndexFunc(argument, unsafeShellCharacter) < 0
+	if isPlain {
+		return argument
+	}
+	return zshSingleQuote(argument)
+}
+
+func unsafeShellCharacter(char rune) bool {
+	isPlain := packageNameAlphaNumeric(char) || strings.ContainsRune("_./:@=+-", char)
+	return !isPlain
 }
 
 func exactPackageMatches(packages []*core.PackageInfo, name string) []*core.PackageInfo {
@@ -902,7 +918,7 @@ func validateRemovableExecutableFile(cleanPath string) error {
 
 func supportsUninstall(pkg *core.PackageInfo) bool {
 	switch pkg.Tool {
-	case core.ToolHomebrew, homebrewCaskTool, core.ToolNPM, core.ToolPNPM, core.ToolBun, core.ToolPip, core.ToolUV, core.ToolGo, core.ToolGoBinary:
+	case core.ToolHomebrew, homebrewCaskTool, core.ToolNPM, core.ToolPNPM, core.ToolBun, core.ToolPip, core.ToolUV, core.ToolGo, core.ToolGoBinary, core.ToolCargo:
 		return true
 	default:
 		return false
@@ -955,6 +971,8 @@ func uninstallPlan(pkg *core.PackageInfo) ([]string, error) {
 		return pipUninstallPlan(pkg)
 	case core.ToolUV:
 		return namedPackageUninstallPlan(pkg, uvCommandName, "tool", uninstallSubcommand)
+	case core.ToolCargo:
+		return cargoUninstallPlan(pkg)
 	case core.ToolGo, core.ToolGoBinary:
 		return goBinaryUninstallPlan(pkg)
 	default:
@@ -986,6 +1004,52 @@ func namedPackageUninstallPlan(pkg *core.PackageInfo, commandName string, args .
 	}
 	plan := append([]string{commandName}, args...)
 	return append(plan, pkg.Name), nil
+}
+
+func cargoUninstallPlan(pkg *core.PackageInfo) ([]string, error) {
+	if err := validatePackageManagerName(pkg.Name); err != nil {
+		return nil, err
+	}
+	root, err := cargoUninstallRoot(pkg.Path)
+	if err != nil {
+		return nil, err
+	}
+	if err := verifyCargoPackage(pkg, root); err != nil {
+		return nil, err
+	}
+	spec := pkg.Name + "@" + pkg.Version
+	return []string{core.ToolCargo, uninstallSubcommand, "--root", root, spec}, nil
+}
+
+func cargoUninstallRoot(path string) (string, error) {
+	if path == "" {
+		return "", fmt.Errorf("cargo install root is unknown; add its bin directory to PATH and run diu scan")
+	}
+	if err := rejectParentPathSegments(path); err != nil {
+		return "", err
+	}
+	bin := filepath.Dir(path)
+	validPath := filepath.IsAbs(path) && filepath.Base(bin) == "bin"
+	if !validPath {
+		return "", fmt.Errorf("invalid cargo executable path: %s", path)
+	}
+	return filepath.Dir(bin), nil
+}
+
+func verifyCargoPackage(pkg *core.PackageInfo, root string) error {
+	binaries, err := monitors.CargoExecutables(root)
+	if err != nil {
+		return err
+	}
+	for _, current := range binaries {
+		hasIdentity := current.Name == pkg.Name && current.Version == pkg.Version
+		hasPath := current.Path == pkg.Path
+		isInstalled := hasIdentity && hasPath
+		if isInstalled {
+			return nil
+		}
+	}
+	return fmt.Errorf("cargo package %s changed since the last scan; run diu scan", pkg.Name)
 }
 
 func pipUninstallPlan(pkg *core.PackageInfo) ([]string, error) {

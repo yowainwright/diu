@@ -424,6 +424,7 @@ diu <version> (commit <commit>, built <date>)
 | macOS | Homebrew | Formulae and casks |
 | JavaScript | npm, pnpm, Bun | Global packages |
 | Go | Go | Binaries in `GOBIN` or `GOPATH/bin` |
+| Rust | Cargo | Installed CLI crates and their binaries |
 | Python | pip, uv | pip packages and uv tools |
 
 ## License

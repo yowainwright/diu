@@ -24,16 +24,25 @@ func NewMonitor(tool string) (Monitor, error) {
 		return NewHomebrewMonitor(), nil
 	case core.ToolGo:
 		return NewGoMonitor(), nil
-	case core.ToolNPM:
-		return NewNPMMonitor(), nil
-	case core.ToolPNPM:
-		return NewPNPMMonitor(), nil
-	case core.ToolBun:
-		return NewBunMonitor(), nil
+	case core.ToolCargo:
+		return NewCargoMonitor(), nil
+	case core.ToolNPM, core.ToolPNPM, core.ToolBun:
+		return newJavaScriptMonitor(normalizedTool), nil
 	case core.ToolPip, core.ToolUV, core.ToolPoetry:
 		return newPythonMonitor(normalizedTool), nil
 	default:
 		return nil, fmt.Errorf("unsupported tool: %s", tool)
+	}
+}
+
+func newJavaScriptMonitor(tool string) Monitor {
+	switch tool {
+	case core.ToolNPM:
+		return NewNPMMonitor()
+	case core.ToolPNPM:
+		return NewPNPMMonitor()
+	default:
+		return NewBunMonitor()
 	}
 }
 

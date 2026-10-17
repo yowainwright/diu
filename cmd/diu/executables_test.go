@@ -31,6 +31,52 @@ func TestShouldSkipExecutable(t *testing.T) {
 	}
 }
 
+func TestDiscoverExecutablesMapsCargoCrates(t *testing.T) {
+	config, root := cargoExecutableFixture(t)
+	targets := discoverExecutables(config)
+	if len(targets) != 3 {
+		t.Fatalf("targets = %#v, want three Cargo binaries", targets)
+	}
+	want := map[string]string{"rg": "ripgrep", "tool-one": "cli-tools", "tool-two": "cli-tools"}
+	for _, target := range targets {
+		validTarget := target.Tool == core.ToolCargo && target.Package == want[target.Name]
+		if !validTarget {
+			t.Fatalf("unexpected Cargo target: %#v", target)
+		}
+		if target.OriginalPath != filepath.Join(root, "bin", target.Name) {
+			t.Fatalf("unexpected Cargo path: %#v", target)
+		}
+	}
+}
+
+func cargoExecutableFixture(t *testing.T) (*core.Config, string) {
+	t.Helper()
+	root := t.TempDir()
+	bin := filepath.Join(root, "bin")
+	if err := os.MkdirAll(bin, core.OwnerDirectoryMode); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"rg", "tool-one", "tool-two", "unrelated"} {
+		writeExecutableForTest(t, filepath.Join(bin, name), "#!/bin/sh\nexit 0\n")
+	}
+	t.Setenv("CARGO_INSTALL_ROOT", root)
+	t.Setenv("PATH", bin+":"+os.Getenv("PATH"))
+	prependFakeCommand(t, "cargo", "#!/bin/sh\nprintf 'ripgrep v14.1.1:\\n    rg\\ncli-tools v1.2.3:\\n    tool-one\\n    tool-two\\n'\n")
+	config := core.DefaultConfig()
+	config.Monitoring.EnabledTools = []string{core.ToolCargo}
+	return config, root
+}
+
+func TestDiscoverExecutablesSkipsShadowedCargoBinary(t *testing.T) {
+	config, _ := cargoExecutableFixture(t)
+	prependFakeCommand(t, "rg", "#!/bin/sh\nexit 0\n")
+	for _, target := range discoverExecutables(config) {
+		if target.Name == "rg" {
+			t.Fatalf("shadowed binary attributed to Cargo: %#v", target)
+		}
+	}
+}
+
 func TestDiscoverExecutablesUsesConfiguredToolsAndPATHPriority(t *testing.T) {
 	config, preferredDir := configuredExecutableDiscovery(t)
 	targets := discoverExecutables(config)
