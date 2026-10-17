@@ -56,24 +56,29 @@ func CargoExecutables(root string) (map[string]*core.PackageInfo, error) {
 	if root == "" {
 		root = os.Getenv("CARGO_INSTALL_ROOT")
 	}
-	binaries, err := readCargoExecutables(root)
+	if root != "" {
+		return readCargoExecutables(root)
+	}
+	configured, err := readCargoExecutables("")
 	if err != nil {
 		return nil, err
 	}
-	if root == "" {
-		resolveCargoPaths(binaries)
+	binaries, err := readCargoRoots()
+	if err != nil {
+		return nil, err
 	}
+	mergeCargoInventory(binaries, configured)
 	return binaries, nil
 }
 
 func readCargoExecutables(root string) (map[string]*core.PackageInfo, error) {
-	args := []string{"install", "--list"}
-	if root != "" {
-		args = append(args, "--root", root)
-	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	output, err := exec.CommandContext(ctx, core.ToolCargo, args...).Output()
+	command := exec.CommandContext(ctx, "cargo", "install", "--list")
+	if root != "" {
+		command.Env = append(os.Environ(), "CARGO_INSTALL_ROOT="+root)
+	}
+	output, err := command.Output()
 	if err != nil {
 		return nil, globalPackageListError(core.ToolCargo, err)
 	}
@@ -162,28 +167,27 @@ func validCargoVersion(version string) bool {
 	return valid
 }
 
-func resolveCargoPaths(binaries map[string]*core.PackageInfo) {
-	if len(binaries) == 0 {
-		return
-	}
+func readCargoRoots() (map[string]*core.PackageInfo, error) {
+	binaries := make(map[string]*core.PackageInfo)
 	for _, root := range cargoInstallRoots() {
 		installed, err := readCargoExecutables(root)
-		if err == nil {
-			mergeCargoPaths(binaries, installed)
+		if err != nil {
+			return nil, err
 		}
+		mergeCargoInventory(binaries, installed)
 	}
+	return binaries, nil
 }
 
-func mergeCargoPaths(binaries, installed map[string]*core.PackageInfo) {
-	for name, pkg := range binaries {
-		candidate := installed[name]
-		canResolve := candidate != nil && pkg.Path == ""
-		if !canResolve {
-			continue
-		}
-		hasIdentity := pkg.Name == candidate.Name && pkg.Version == candidate.Version
-		if hasIdentity {
-			pkg.Path = candidate.Path
+func mergeCargoInventory(binaries, installed map[string]*core.PackageInfo) {
+	seen := make(map[string]bool)
+	for _, pkg := range binaries {
+		seen[pkg.Name] = true
+	}
+	for name, pkg := range installed {
+		isNew := !seen[pkg.Name] && binaries[name] == nil
+		if isNew {
+			binaries[name] = pkg
 		}
 	}
 }
@@ -219,8 +223,13 @@ func existingCargoRoots(candidates []string) []string {
 }
 
 func cargoRootHasReceipt(root string) bool {
+	directory, err := os.OpenRoot(root)
+	if err != nil {
+		return false
+	}
+	defer func() { _ = directory.Close() }()
 	for _, name := range []string{".crates.toml", ".crates2.json"} {
-		info, err := os.Stat(filepath.Join(root, name))
+		info, err := directory.Stat(name)
 		hasReceipt := err == nil && info.Mode().IsRegular()
 		if hasReceipt {
 			return true

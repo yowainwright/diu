@@ -52,6 +52,49 @@ func assertCLICargoUninstalled(t *testing.T, f *cliFixture) {
 	}
 }
 
+func TestCLICargoUninstallPreservesOtherRoot(t *testing.T) {
+	f := multipleCargoRootsFixture(t)
+	f.setup(t)
+	result := f.cli(t, "manage", "--uninstall", "ripgrep", "--tool", "cargo", "--yes")
+	assertCLIExit(t, result, 0)
+	root := filepath.Join(f.home, "cargo-root")
+	want := "uninstall\n--root\n" + root + "\nripgrep@14.1.1\n"
+	assertCLIFile(t, filepath.Join(f.home, "cargo-uninstall-args"), want)
+	assertCLIMissing(t, filepath.Join(root, "bin", "rg"))
+	assertCLIFile(t, filepath.Join(f.home, ".cargo", "bin", "rg"), "other installation\n")
+}
+
+func multipleCargoRootsFixture(t *testing.T) *cliFixture {
+	t.Helper()
+	f := newCLICargoFixture(t)
+	first, second := filepath.Join(f.home, "cargo-root"), filepath.Join(f.home, ".cargo")
+	f.env = append(f.env, "CARGO_INSTALL_ROOT=")
+	writeCLIFile(t, filepath.Join(first, "inventory"), "ripgrep v14.1.1:\n    rg\n", 0o600)
+	writeCLIFile(t, filepath.Join(second, "inventory"), "ripgrep v14.1.0:\n    rg\n", 0o600)
+	writeCLIFile(t, filepath.Join(second, "bin", "rg"), "other installation\n", 0o700)
+	for _, root := range []string{first, second} {
+		writeCLIFile(t, filepath.Join(root, ".crates.toml"), "[v1]\n", 0o600)
+	}
+	writeCLIFile(t, filepath.Join(f.bin, "cargo"), multipleCargoRootsScript, 0o700)
+	return f
+}
+
+const multipleCargoRootsScript = `#!/bin/sh
+set -eu
+root=${CARGO_INSTALL_ROOT:-$CARGO_HOME}
+case "$1" in
+    install) /bin/cat "$root/inventory" ;;
+    uninstall)
+        printf '%s\n' "$@" > "$HOME/cargo-uninstall-args"
+        [ "$2" = --root ] && [ "$4" = ripgrep@14.1.1 ]
+        /bin/rm "$3/bin/rg"
+        : > "$3/inventory"
+        ;;
+    --version) printf 'cargo fixture\n' ;;
+    *) exit 2 ;;
+esac
+`
+
 type cliResult struct {
 	stdout string
 	stderr string
