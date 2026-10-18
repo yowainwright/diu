@@ -23,6 +23,113 @@ func TestCLIRecordsBackgroundLaunchAttempt(t *testing.T) {
 	assertCLIRecordedPackageUse(t, f)
 }
 
+func TestCLIZshRecordsCargoCrates(t *testing.T) {
+	for _, mode := range []string{"daemon", "fallback"} {
+		t.Run(mode, func(t *testing.T) {
+			f := newCLICargoFixture(t)
+			f.setup(t)
+			if mode == "daemon" {
+				startCLIDaemon(t, f)
+			}
+			assertCLICargoLaunches(t, f)
+		})
+	}
+}
+
+func assertCLICargoLaunches(t *testing.T, f *cliFixture) {
+	t.Helper()
+	command, input, output, stderr := startCLIZsh(t, f)
+	writeZshInput(t, input, "rg --version\ntool-one\ntool-two\nprint -r -- DIU_CARGO_DONE\n")
+	waitCLIZshOutput(t, output, "DIU_CARGO_DONE")
+	records := waitCLIRecords(t, f, 3)
+	if len(records) != 3 {
+		t.Fatalf("records = %#v, want three Cargo launches", records)
+	}
+	for _, record := range records {
+		assertCLIRecordedLaunchIdentity(t, record, core.ToolCargo, record.Command)
+	}
+	assertCLIRecordedToolUse(t, f, core.ToolCargo, "ripgrep", 1)
+	assertCLIRecordedToolUse(t, f, core.ToolCargo, "cli-tools", 2)
+	finishCLIZsh(t, command, input, stderr)
+}
+
+func TestCLICargoScanFailurePreservesInventoryAndTracking(t *testing.T) {
+	f := failedCLICargoScanFixture(t)
+	command, input, output, stderr := startCLIZsh(t, f)
+	writeZshInput(t, input, "rg --version\nprint -r -- DIU_CARGO_FALLBACK\n")
+	waitCLIZshOutput(t, output, "DIU_CARGO_FALLBACK")
+	records := waitCLIRecords(t, f, 1)
+	if len(records) != 1 {
+		t.Fatalf("records = %#v, want one generic launch", records)
+	}
+	assertCLIRecordedLaunchIdentity(t, records[0], core.ToolExecutable, "rg")
+	assertCLIRecordedToolUse(t, f, core.ToolExecutable, "rg", 1)
+	finishCLIZsh(t, command, input, stderr)
+}
+
+func failedCLICargoScanFixture(t *testing.T) *cliFixture {
+	t.Helper()
+	f := newCLICargoFixture(t)
+	f.setup(t)
+	before := f.cli(t, "packages", "--tool", "cargo", "--format", "json")
+	assertCLIExit(t, before, 0)
+	writeCLIFile(t, filepath.Join(f.home, "cargo-scan-failed"), "", 0o600)
+	assertCLIExit(t, f.cli(t, "scan"), 0)
+	after := f.cli(t, "packages", "--tool", "cargo", "--format", "json")
+	assertCLIExit(t, after, 0)
+	if after.stdout != before.stdout {
+		t.Fatalf("failed scan changed inventory: before=%s after=%s", before.stdout, after.stdout)
+	}
+	return f
+}
+
+func TestCLICargoPartialScanPreservesInventoryAndTracking(t *testing.T) {
+	f := partialCLICargoScanFixture(t)
+	assertCLICargoPartialInventory(t, f)
+	command, input, output, stderr := startCLIZsh(t, f)
+	writeZshInput(t, input, "rg --version\nprint -r -- DIU_CARGO_PARTIAL\n")
+	waitCLIZshOutput(t, output, "DIU_CARGO_PARTIAL")
+	records := waitCLIRecords(t, f, 1)
+	assertCLIRecordedLaunchIdentity(t, records[0], core.ToolCargo, "rg")
+	assertCLIRecordedToolUse(t, f, core.ToolCargo, "ripgrep", 1)
+	finishCLIZsh(t, command, input, stderr)
+}
+
+func partialCLICargoScanFixture(t *testing.T) *cliFixture {
+	t.Helper()
+	f := multipleCargoRootsFixture(t)
+	second := filepath.Join(f.home, ".cargo", "inventory")
+	writeCLIFile(t, second, "secondary v1.0.0:\n    secondary\n", 0o600)
+	f.setup(t)
+	first := filepath.Join(f.home, "cargo-root", "inventory")
+	writeCLIFile(t, first, "ripgrep v14.1.2:\n    rg\n", 0o600)
+	writeCLIFile(t, second, "damaged receipt\n", 0o600)
+	result := f.cli(t, "scan")
+	assertCLIExit(t, result, 0)
+	if !strings.Contains(result.stderr, "invalid cargo package") {
+		t.Fatalf("partial scan warning missing: %q", result.stderr)
+	}
+	return f
+}
+
+func assertCLICargoPartialInventory(t *testing.T, f *cliFixture) {
+	t.Helper()
+	result := f.cli(t, "packages", "--tool", "cargo", "--format", "json")
+	assertCLIExit(t, result, 0)
+	var packages []*core.PackageInfo
+	if err := json.Unmarshal([]byte(result.stdout), &packages); err != nil {
+		t.Fatal(err)
+	}
+	versions := make(map[string]string)
+	for _, pkg := range packages {
+		versions[pkg.Name] = pkg.Version
+	}
+	valid := versions["ripgrep"] == "14.1.2" && versions["secondary"] == "1.0.0"
+	if !valid {
+		t.Fatalf("partial scan lost healthy updates or failed-root inventory: %s", result.stdout)
+	}
+}
+
 func TestCLIZshListenerRecordsSubmittedCommand(t *testing.T) {
 	f := newCLIFixture(t)
 	writeCLIFile(t, filepath.Join(f.managed, "listener-tool"), "#!/bin/sh\nexit 17\n", 0o700)

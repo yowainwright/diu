@@ -39,6 +39,7 @@ const (
 	ToolPNPM         = "pnpm"
 	ToolBun          = "bun"
 	ToolGo           = "go"
+	ToolCargo        = "cargo"
 	ToolPip          = "pip"
 	ToolUV           = "uv"
 	ToolPoetry       = "poetry"

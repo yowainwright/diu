@@ -18,7 +18,7 @@ func TestMain(m *testing.M) {
 func TestNewMonitorSupportsConfiguredTools(t *testing.T) {
 	config := core.DefaultConfig()
 	assertNewMonitorSupportsTools(t, config.Monitoring.EnabledTools)
-	aliases := []string{"brew", "golang", "pip3", "python", "python3", " NPM ", " PNPM ", " BUN ", " UV ", " POETRY "}
+	aliases := []string{"brew", "golang", "pip3", "python", "python3", " NPM ", " PNPM ", " BUN ", " UV ", " POETRY ", " CARGO "}
 	assertNewMonitorSupportsTools(t, aliases)
 	assertNewMonitorRejectsBogusTool(t)
 }

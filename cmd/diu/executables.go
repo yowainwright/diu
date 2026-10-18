@@ -13,6 +13,7 @@ import (
 
 	"github.com/yowainwright/diu/internal/core"
 	"github.com/yowainwright/diu/internal/dx"
+	"github.com/yowainwright/diu/internal/monitors"
 	"github.com/yowainwright/diu/internal/safefs"
 )
 
@@ -43,7 +44,37 @@ func discoverExecutables(config *core.Config) []executableTarget {
 	addGoExecutableDirs(config, targets)
 	addToolExecutableDirs(config, targets, core.ToolPip, pythonUserBaseBinDir)
 	addToolExecutableDirs(config, targets, core.ToolUV, uvToolBinDir)
+	addCargoExecutables(config, targets)
 	return slices.SortedFunc(maps.Values(targets), compareExecutableTargets)
+}
+
+func addCargoExecutables(config *core.Config, targets map[string]executableTarget) {
+	if !monitoringToolEnabled(config, core.ToolCargo) {
+		return
+	}
+	binaries, _ := monitors.CargoExecutables("")
+	for name, pkg := range binaries {
+		addCargoExecutable(targets, name, pkg)
+	}
+}
+
+func addCargoExecutable(targets map[string]executableTarget, name string, pkg *core.PackageInfo) {
+	canTrack := !shouldSkipExecutable(name) && usableExecutablePath(pkg.Path)
+	if !canTrack {
+		return
+	}
+	active, err := exec.LookPath(name)
+	isActive := err == nil && sameExecutable(active, pkg.Path)
+	if !isActive {
+		return
+	}
+	existing := targets[name]
+	samePath := sameExecutable(existing.OriginalPath, pkg.Path)
+	keepExisting := !samePath && preferExistingExecutable(existing, pkg.Path)
+	if keepExisting {
+		return
+	}
+	targets[name] = executableTarget{Name: name, OriginalPath: pkg.Path, Tool: core.ToolCargo, Package: pkg.Name}
 }
 
 func compareExecutableTargets(a, b executableTarget) int {
@@ -167,7 +198,7 @@ var defaultExecutablePathDeps = executablePathDeps{
 
 func shouldSkipExecutable(name string) bool {
 	switch name {
-	case "", ".", "..", "diu", "brew", core.ToolNPM, core.ToolPNPM, core.ToolBun, core.ToolGo, core.ToolPip, "pip3", core.ToolUV, core.ToolPoetry:
+	case "", ".", "..", "diu", "brew", core.ToolNPM, core.ToolPNPM, core.ToolBun, core.ToolGo, core.ToolCargo, core.ToolPip, "pip3", core.ToolUV, core.ToolPoetry:
 		return true
 	default:
 		return strings.HasPrefix(name, ".")
