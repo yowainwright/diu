@@ -2,6 +2,7 @@ package monitors
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"os"
@@ -33,10 +34,7 @@ func (m *CargoMonitor) ParseCommand(cmd string, args []string) (*core.ExecutionR
 //nolint:legibility // Monitor interface requires this method name.
 func (m *CargoMonitor) GetInstalledPackages() ([]*core.PackageInfo, error) {
 	binaries, err := CargoExecutables("")
-	if err != nil {
-		return nil, err
-	}
-	return cargoPackages(binaries), nil
+	return cargoPackages(binaries), err
 }
 
 func cargoPackages(binaries map[string]*core.PackageInfo) []*core.PackageInfo {
@@ -59,16 +57,10 @@ func CargoExecutables(root string) (map[string]*core.PackageInfo, error) {
 	if root != "" {
 		return readCargoExecutables(root)
 	}
-	configured, err := readCargoExecutables("")
-	if err != nil {
-		return nil, err
-	}
-	binaries, err := readCargoRoots()
-	if err != nil {
-		return nil, err
-	}
+	configured, configuredErr := readCargoExecutables("")
+	binaries, rootsErr := readCargoRoots()
 	mergeCargoInventory(binaries, configured)
-	return binaries, nil
+	return binaries, errors.Join(configuredErr, rootsErr)
 }
 
 func readCargoExecutables(root string) (map[string]*core.PackageInfo, error) {
@@ -169,14 +161,16 @@ func validCargoVersion(version string) bool {
 
 func readCargoRoots() (map[string]*core.PackageInfo, error) {
 	binaries := make(map[string]*core.PackageInfo)
+	var failures []error
 	for _, root := range cargoInstallRoots() {
 		installed, err := readCargoExecutables(root)
 		if err != nil {
-			return nil, err
+			failures = append(failures, fmt.Errorf("cargo root %q: %w", root, err))
+			continue
 		}
 		mergeCargoInventory(binaries, installed)
 	}
-	return binaries, nil
+	return binaries, errors.Join(failures...)
 }
 
 func mergeCargoInventory(binaries, installed map[string]*core.PackageInfo) {

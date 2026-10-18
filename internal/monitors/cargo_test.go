@@ -66,6 +66,18 @@ func assertCargoPackages(t *testing.T, packages []*core.PackageInfo, root string
 	}
 }
 
+func TestGetInstalledPackagesCargoPreservesPartialInventory(t *testing.T) {
+	healthy := partialCargoRootsFixture(t, "second")
+	packages, err := NewCargoMonitor().GetInstalledPackages()
+	assertPartialCargoError(t, err)
+	if len(packages) != 1 {
+		t.Fatalf("healthy inventory lost: %#v", packages)
+	}
+	if packages[0].Path != filepath.Join(healthy, "bin", "rg") {
+		t.Fatalf("healthy inventory root changed: %#v", packages[0])
+	}
+}
+
 func TestCargoExecutablesResolvesInstallRoots(t *testing.T) {
 	for _, kind := range []string{"default", "cargo_home", "config"} {
 		t.Run(kind, func(t *testing.T) {
@@ -145,6 +157,55 @@ if [ "$CARGO_INSTALL_ROOT" = "$DIU_FIRST_ROOT" ]; then
 else
     printf '    second-only\n'
 fi
+`
+
+func TestCargoExecutablesPreservesHealthyRootsAfterFailure(t *testing.T) {
+	for _, failed := range []string{"first", "second", "configured"} {
+		t.Run(failed, func(t *testing.T) {
+			healthy := partialCargoRootsFixture(t, failed)
+			binaries, err := CargoExecutables("")
+			assertPartialCargoError(t, err)
+			pkg := binaries["rg"]
+			valid := pkg != nil && pkg.Path == filepath.Join(healthy, "bin", "rg")
+			if !valid {
+				t.Fatalf("healthy root lost: %#v", binaries)
+			}
+		})
+	}
+}
+
+func partialCargoRootsFixture(t *testing.T, failed string) string {
+	t.Helper()
+	first := cargoRootFixture(t, "config")
+	second := t.TempDir()
+	writeFakeCommand(t, second, ".crates.toml", "[v1]\n")
+	t.Setenv("CARGO_HOME", second)
+	healthy, broken := first, second
+	if failed == "first" {
+		healthy, broken = second, first
+	}
+	if failed == "configured" {
+		broken = "configured"
+	}
+	t.Setenv("DIU_FAILED_CARGO_ROOT", broken)
+	prependFakeCommand(t, "cargo", partialCargoRootsScript)
+	return healthy
+}
+
+func assertPartialCargoError(t *testing.T, err error) {
+	t.Helper()
+	hasError := err != nil && strings.Contains(err.Error(), "inventory failed")
+	if !hasError {
+		t.Fatalf("partial scan error = %v", err)
+	}
+}
+
+const partialCargoRootsScript = `#!/bin/sh
+if [ "${CARGO_INSTALL_ROOT:-configured}" = "$DIU_FAILED_CARGO_ROOT" ]; then
+    printf 'inventory failed\n' >&2
+    exit 1
+fi
+printf 'ripgrep v14.1.1:\n    rg\n'
 `
 
 func TestGetInstalledPackagesCargoRejectsMalformedInventory(t *testing.T) {

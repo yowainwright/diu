@@ -83,6 +83,53 @@ func failedCLICargoScanFixture(t *testing.T) *cliFixture {
 	return f
 }
 
+func TestCLICargoPartialScanPreservesInventoryAndTracking(t *testing.T) {
+	f := partialCLICargoScanFixture(t)
+	assertCLICargoPartialInventory(t, f)
+	command, input, output, stderr := startCLIZsh(t, f)
+	writeZshInput(t, input, "rg --version\nprint -r -- DIU_CARGO_PARTIAL\n")
+	waitCLIZshOutput(t, output, "DIU_CARGO_PARTIAL")
+	records := waitCLIRecords(t, f, 1)
+	assertCLIRecordedLaunchIdentity(t, records[0], core.ToolCargo, "rg")
+	assertCLIRecordedToolUse(t, f, core.ToolCargo, "ripgrep", 1)
+	finishCLIZsh(t, command, input, stderr)
+}
+
+func partialCLICargoScanFixture(t *testing.T) *cliFixture {
+	t.Helper()
+	f := multipleCargoRootsFixture(t)
+	second := filepath.Join(f.home, ".cargo", "inventory")
+	writeCLIFile(t, second, "secondary v1.0.0:\n    secondary\n", 0o600)
+	f.setup(t)
+	first := filepath.Join(f.home, "cargo-root", "inventory")
+	writeCLIFile(t, first, "ripgrep v14.1.2:\n    rg\n", 0o600)
+	writeCLIFile(t, second, "damaged receipt\n", 0o600)
+	result := f.cli(t, "scan")
+	assertCLIExit(t, result, 0)
+	if !strings.Contains(result.stderr, "invalid cargo package") {
+		t.Fatalf("partial scan warning missing: %q", result.stderr)
+	}
+	return f
+}
+
+func assertCLICargoPartialInventory(t *testing.T, f *cliFixture) {
+	t.Helper()
+	result := f.cli(t, "packages", "--tool", "cargo", "--format", "json")
+	assertCLIExit(t, result, 0)
+	var packages []*core.PackageInfo
+	if err := json.Unmarshal([]byte(result.stdout), &packages); err != nil {
+		t.Fatal(err)
+	}
+	versions := make(map[string]string)
+	for _, pkg := range packages {
+		versions[pkg.Name] = pkg.Version
+	}
+	valid := versions["ripgrep"] == "14.1.2" && versions["secondary"] == "1.0.0"
+	if !valid {
+		t.Fatalf("partial scan lost healthy updates or failed-root inventory: %s", result.stdout)
+	}
+}
+
 func TestCLIZshListenerRecordsSubmittedCommand(t *testing.T) {
 	f := newCLIFixture(t)
 	writeCLIFile(t, filepath.Join(f.managed, "listener-tool"), "#!/bin/sh\nexit 17\n", 0o700)

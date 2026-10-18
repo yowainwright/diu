@@ -126,9 +126,9 @@ func (s *packageScanner) scanManager(tool string) {
 	packages, err := monitor.GetInstalledPackages()
 	if err != nil {
 		s.noticeScanFailure("scan", tool, err)
-		return
+	} else {
+		s.scan.complete(inventoryScopes(normalizedTool, s.config))
 	}
-	s.scan.complete(inventoryScopes(normalizedTool, s.config))
 	s.addPackages(packages)
 }
 

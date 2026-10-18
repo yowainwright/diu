@@ -52,10 +52,7 @@ func addCargoExecutables(config *core.Config, targets map[string]executableTarge
 	if !monitoringToolEnabled(config, core.ToolCargo) {
 		return
 	}
-	binaries, err := monitors.CargoExecutables("")
-	if err != nil {
-		return
-	}
+	binaries, _ := monitors.CargoExecutables("")
 	for name, pkg := range binaries {
 		addCargoExecutable(targets, name, pkg)
 	}
