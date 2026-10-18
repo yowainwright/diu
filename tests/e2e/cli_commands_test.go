@@ -95,6 +95,52 @@ case "$1" in
 esac
 `
 
+func TestCLICargoUninstallRejectsStaleRootAfterScan(t *testing.T) {
+	f := cargoRootSwitchFixture(t)
+	oldBinary := filepath.Join(f.home, "cargo-root", "bin", "rg")
+	before := readCLIFile(t, oldBinary)
+	assertCLIExit(t, f.cli(t, "scan"), 0)
+	for _, flag := range []string{"--dry-run", "--yes"} {
+		result := f.cli(t, "manage", "--uninstall", "ripgrep", "--tool", "cargo", flag)
+		assertCLIExit(t, result, 1)
+		if !strings.Contains(result.stderr, "cargo install root is unknown") {
+			t.Fatalf("missing unknown-root error: %q", result.stderr)
+		}
+	}
+	assertCLIMissing(t, filepath.Join(f.home, "cargo-uninstall-args"))
+	assertCLIFile(t, oldBinary, before)
+	assertCLIFile(t, filepath.Join(f.home, "cargo-other", "bin", "rg"), "other installation\n")
+}
+
+func cargoRootSwitchFixture(t *testing.T) *cliFixture {
+	t.Helper()
+	f := newCLICargoFixture(t)
+	first, second := filepath.Join(f.home, "cargo-root"), filepath.Join(f.home, "cargo-other")
+	for _, root := range []string{first, second} {
+		writeCLIFile(t, filepath.Join(root, "inventory"), "ripgrep v14.1.1:\n    rg\n", 0o600)
+	}
+	writeCLIFile(t, filepath.Join(second, "bin", "rg"), "other installation\n", 0o700)
+	f.env = append(f.env, "DIU_CARGO_CONFIGURED_ROOT="+second)
+	writeCLIFile(t, filepath.Join(f.bin, "cargo"), cargoRootSwitchScript, 0o700)
+	f.setup(t)
+	f.env = append(f.env, "CARGO_INSTALL_ROOT=", "PATH="+f.basePath())
+	return f
+}
+
+const cargoRootSwitchScript = `#!/bin/sh
+set -eu
+root=${CARGO_INSTALL_ROOT:-$DIU_CARGO_CONFIGURED_ROOT}
+case "$1" in
+    install) /bin/cat "$root/inventory" ;;
+    uninstall)
+        printf '%s\n' "$@" > "$HOME/cargo-uninstall-args"
+        /bin/rm "$3/bin/rg"
+        ;;
+    --version) printf 'cargo fixture\n' ;;
+    *) exit 2 ;;
+esac
+`
+
 type cliResult struct {
 	stdout string
 	stderr string
