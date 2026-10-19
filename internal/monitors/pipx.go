@@ -52,7 +52,7 @@ func (m *PipxMonitor) GetInstalledPackages() ([]*core.PackageInfo, error) {
 func readPipxSnapshot() (*pipxSnapshot, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	output, err := exec.CommandContext(ctx, core.ToolPipx, "list", "--json").Output()
+	output, err := exec.CommandContext(ctx, "pipx", "list", "--json").Output()
 	if err != nil {
 		return nil, globalPackageListError(core.ToolPipx, err)
 	}
