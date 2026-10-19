@@ -315,7 +315,8 @@ func mergePackageDetails(pkg, existing *core.PackageInfo) {
 	if pkg.Version == "" {
 		pkg.Version = existing.Version
 	}
-	if pkg.Path == "" {
+	shouldRestorePath := pkg.Path == "" && pkg.Tool != core.ToolCargo
+	if shouldRestorePath {
 		pkg.Path = existing.Path
 	}
 }
