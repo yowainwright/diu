@@ -76,7 +76,7 @@ func assertDefaultMonitoringConfig(t *testing.T, config *Config) {
 	if len(config.Monitoring.EnabledTools) == 0 {
 		t.Error("Expected enabled tools to be configured")
 	}
-	for _, tool := range []string{ToolPNPM, ToolBun, ToolPip, ToolUV, ToolPoetry, ToolCargo} {
+	for _, tool := range []string{ToolPNPM, ToolBun, ToolPip, ToolUV, ToolPoetry, ToolCargo, ToolPipx} {
 		if !slices.Contains(config.Monitoring.EnabledTools, tool) {
 			t.Errorf("Expected %s to be enabled by default, got %#v", tool, config.Monitoring.EnabledTools)
 		}

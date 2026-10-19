@@ -17,6 +17,53 @@ import (
 	"github.com/yowainwright/diu/internal/storage"
 )
 
+func TestCLIPipxUninstallPreservesOtherInstallAndHistory(t *testing.T) {
+	f := newCLIPipxFixture(t)
+	f.setup(t)
+	assertCLIPipxLaunches(t, f)
+	historyPath := storage.ExecutionLogPath(f.config.Storage.JSONFile)
+	history := readCLIFile(t, historyPath)
+	assertCLIPipxUninstallPreviewAndFailure(t, f)
+	result := f.cli(t, "manage", "--uninstall", "px-tools@dev", "--tool", "pipx", "--yes")
+	assertCLIExit(t, result, 0)
+	assertCLIFile(t, filepath.Join(f.home, "pipx-uninstall-args"), "uninstall\npx-tools@dev\n")
+	assertCLIPipxUninstalled(t, f)
+	assertCLIFile(t, historyPath, history)
+}
+
+func assertCLIPipxUninstallPreviewAndFailure(t *testing.T, f *cliFixture) {
+	t.Helper()
+	preview := f.cli(t, "manage", "--uninstall", "px-tools@dev", "--tool", "pipx", "--dry-run")
+	assertCLIExit(t, preview, 0)
+	if !strings.Contains(preview.stdout, "pipx uninstall px-tools@dev") {
+		t.Fatalf("unexpected pipx preview: %q", preview.stdout)
+	}
+	assertCLIMissing(t, filepath.Join(f.home, "pipx-uninstall-args"))
+	failed := filepath.Join(f.home, "pipx-uninstall-failed")
+	writeCLIFile(t, failed, "", 0o600)
+	assertCLIExit(t, f.cli(t, "manage", "--uninstall", "px-tools@dev", "--tool", "pipx", "--yes"), 7)
+	assertCLIRecordedToolUse(t, f, "pipx", "px-tools@dev", 1)
+	if err := os.Remove(failed); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func assertCLIPipxUninstalled(t *testing.T, f *cliFixture) {
+	t.Helper()
+	root := filepath.Join(f.home, "pipx root", "venvs")
+	assertCLIMissing(t, filepath.Join(root, "px-tools@dev", "bin", "px-one"))
+	assertCLIFile(t, filepath.Join(root, "px-tools", "bin", "px-one"), "#!/bin/sh\nexit 0\n")
+	assertCLIExit(t, f.cli(t, "scan"), 0)
+	remaining := f.cli(t, "packages", "--tool", "pipx", "--format", "json")
+	assertCLIExit(t, remaining, 0)
+	hasSuffix := strings.Contains(remaining.stdout, "px-tools@dev")
+	hasOtherInstall := strings.Contains(remaining.stdout, "px-tools")
+	isExpected := !hasSuffix && hasOtherInstall
+	if !isExpected {
+		t.Fatalf("unexpected remaining pipx inventory: %s", remaining.stdout)
+	}
+}
+
 func TestCLICargoUninstall(t *testing.T) {
 	f := newCLICargoFixture(t)
 	f.setup(t)

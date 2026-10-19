@@ -23,6 +23,72 @@ func TestCLIRecordsBackgroundLaunchAttempt(t *testing.T) {
 	assertCLIRecordedPackageUse(t, f)
 }
 
+func TestCLIZshRecordsPipxInstalls(t *testing.T) {
+	for _, mode := range []string{"daemon", "fallback"} {
+		t.Run(mode, func(t *testing.T) {
+			f := newCLIPipxFixture(t)
+			f.setup(t)
+			if mode == "daemon" {
+				startCLIDaemon(t, f)
+			}
+			assertCLIPipxLaunches(t, f)
+		})
+	}
+}
+
+func assertCLIPipxLaunches(t *testing.T, f *cliFixture) {
+	t.Helper()
+	command, input, output, stderr := startCLIZsh(t, f)
+	writeZshInput(t, input, "px-one\npx-two\npx-one@dev\nuv-owned\nprint -r -- DIU_PIPX_DONE\n")
+	waitCLIZshOutput(t, output, "DIU_PIPX_DONE")
+	records := waitCLIRecords(t, f, 4)
+	if len(records) != 4 {
+		t.Fatalf("records = %#v, want four launches", records)
+	}
+	assertCLIPipxRecordIdentities(t, records)
+	assertCLIRecordedToolUse(t, f, core.ToolPipx, "px-tools", 2)
+	assertCLIRecordedToolUse(t, f, core.ToolPipx, "px-tools@dev", 1)
+	assertCLIRecordedToolUse(t, f, core.ToolExecutable, "uv-owned", 1)
+	finishCLIZsh(t, command, input, stderr)
+}
+
+func assertCLIPipxRecordIdentities(t *testing.T, records []core.ExecutionRecord) {
+	t.Helper()
+	for _, record := range records {
+		tool := core.ToolPipx
+		if record.Command == "uv-owned" {
+			tool = core.ToolExecutable
+		}
+		assertCLIRecordedLaunchIdentity(t, record, tool, record.Command)
+	}
+}
+
+func TestCLIPipxScanFailurePreservesInventoryAndTracking(t *testing.T) {
+	f := newCLIPipxFixture(t)
+	f.setup(t)
+	before := f.cli(t, "packages", "--tool", "pipx", "--format", "json")
+	assertCLIExit(t, before, 0)
+	writeCLIFile(t, filepath.Join(f.home, "pipx-scan-failed"), "", 0o600)
+	assertCLIExit(t, f.cli(t, "scan"), 0)
+	after := f.cli(t, "packages", "--tool", "pipx", "--format", "json")
+	assertCLIExit(t, after, 0)
+	if after.stdout != before.stdout {
+		t.Fatal("failed pipx scan changed saved inventory")
+	}
+	assertCLIPipxGenericLaunch(t, f)
+}
+
+func assertCLIPipxGenericLaunch(t *testing.T, f *cliFixture) {
+	t.Helper()
+	command, input, output, stderr := startCLIZsh(t, f)
+	writeZshInput(t, input, "px-one\nprint -r -- DIU_PIPX_FALLBACK\n")
+	waitCLIZshOutput(t, output, "DIU_PIPX_FALLBACK")
+	records := waitCLIRecords(t, f, 1)
+	assertCLIRecordedLaunchIdentity(t, records[0], core.ToolExecutable, "px-one")
+	assertCLIRecordedToolUse(t, f, core.ToolExecutable, "px-one", 1)
+	finishCLIZsh(t, command, input, stderr)
+}
+
 func TestCLIZshRecordsCargoCrates(t *testing.T) {
 	for _, mode := range []string{"daemon", "fallback"} {
 		t.Run(mode, func(t *testing.T) {

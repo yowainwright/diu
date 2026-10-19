@@ -45,6 +45,7 @@ func discoverExecutables(config *core.Config) []executableTarget {
 	addToolExecutableDirs(config, targets, core.ToolPip, pythonUserBaseBinDir)
 	addToolExecutableDirs(config, targets, core.ToolUV, uvToolBinDir)
 	addCargoExecutables(config, targets)
+	addPipxExecutables(config, targets)
 	return slices.SortedFunc(maps.Values(targets), compareExecutableTargets)
 }
 
@@ -54,11 +55,21 @@ func addCargoExecutables(config *core.Config, targets map[string]executableTarge
 	}
 	binaries, _ := monitors.CargoExecutables("")
 	for name, pkg := range binaries {
-		addCargoExecutable(targets, name, pkg)
+		addOwnedExecutable(targets, name, pkg)
 	}
 }
 
-func addCargoExecutable(targets map[string]executableTarget, name string, pkg *core.PackageInfo) {
+func addPipxExecutables(config *core.Config, targets map[string]executableTarget) {
+	if !monitoringToolEnabled(config, core.ToolPipx) {
+		return
+	}
+	binaries, _ := monitors.PipxExecutables()
+	for name, pkg := range binaries {
+		addOwnedExecutable(targets, name, pkg)
+	}
+}
+
+func addOwnedExecutable(targets map[string]executableTarget, name string, pkg *core.PackageInfo) {
 	canTrack := !shouldSkipExecutable(name) && usableExecutablePath(pkg.Path)
 	if !canTrack {
 		return
@@ -74,7 +85,7 @@ func addCargoExecutable(targets map[string]executableTarget, name string, pkg *c
 	if keepExisting {
 		return
 	}
-	targets[name] = executableTarget{Name: name, OriginalPath: pkg.Path, Tool: core.ToolCargo, Package: pkg.Name}
+	targets[name] = executableTarget{Name: name, OriginalPath: pkg.Path, Tool: pkg.Tool, Package: pkg.Name}
 }
 
 func compareExecutableTargets(a, b executableTarget) int {
@@ -198,7 +209,7 @@ var defaultExecutablePathDeps = executablePathDeps{
 
 func shouldSkipExecutable(name string) bool {
 	switch name {
-	case "", ".", "..", "diu", "brew", core.ToolNPM, core.ToolPNPM, core.ToolBun, core.ToolGo, core.ToolCargo, core.ToolPip, "pip3", core.ToolUV, core.ToolPoetry:
+	case "", ".", "..", "diu", "brew", core.ToolNPM, core.ToolPNPM, core.ToolBun, core.ToolGo, core.ToolCargo, core.ToolPipx, core.ToolPip, "pip3", core.ToolUV, core.ToolPoetry:
 		return true
 	default:
 		return strings.HasPrefix(name, ".")

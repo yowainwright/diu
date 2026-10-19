@@ -425,7 +425,7 @@ diu <version> (commit <commit>, built <date>)
 | JavaScript | npm, pnpm, Bun | Global packages |
 | Go | Go | Binaries in `GOBIN` or `GOPATH/bin` |
 | Rust | Cargo | Installed CLI crates and their binaries |
-| Python | pip, uv | pip packages and uv tools |
+| Python | pip, uv, pipx | pip packages, uv tools, and pipx applications |
 
 ## License
 

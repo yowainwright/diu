@@ -111,6 +111,83 @@ func newCLICargoFixture(t *testing.T) *cliFixture {
 	return f
 }
 
+func newCLIPipxFixture(t *testing.T) *cliFixture {
+	t.Helper()
+	f := newCLIFixture(t)
+	root, bin := filepath.Join(f.home, "pipx root"), filepath.Join(f.home, "shared-bin")
+	f.env = append(f.env, "PIPX_HOME="+root, "PIPX_BIN_DIR="+bin, "PATH="+bin+":"+f.basePath())
+	monitoring := &f.config.Monitoring
+	monitoring.EnabledTools = []string{core.ToolPipx}
+	monitoring.Filesystem.WatchPaths = map[string][]string{}
+	writeCLIConfig(t, f)
+	writeCLIFile(t, filepath.Join(f.bin, "pipx"), pipxFixtureScript, 0o700)
+	full := `{"pipx_spec_version":"0.1","venvs":{` + pipxBaseEntry + "," + pipxSuffixedEntry + "}}"
+	remaining := `{"pipx_spec_version":"0.1","venvs":{` + pipxBaseEntry + "}}"
+	writeCLIFile(t, filepath.Join(f.home, "pipx-inventory"), strings.ReplaceAll(full, "/pipx-home", root), 0o600)
+	writeCLIFile(t, filepath.Join(f.home, "pipx-remaining"), strings.ReplaceAll(remaining, "/pipx-home", root), 0o600)
+	writeCLIPipxExecutables(t, f, root, bin)
+	return f
+}
+
+func writeCLIPipxExecutables(t *testing.T, f *cliFixture, root, bin string) {
+	t.Helper()
+	writeCLIFile(t, filepath.Join(bin, "uv-owned"), "#!/bin/sh\nexit 0\n", 0o700)
+	for _, suffix := range []string{"", "@dev"} {
+		writeCLIPipxCommand(t, f, root, suffix, "px-one")
+		writeCLIPipxCommand(t, f, root, suffix, "px-two")
+	}
+}
+
+func writeCLIPipxCommand(t *testing.T, f *cliFixture, root, suffix, command string) {
+	t.Helper()
+	path := filepath.Join(root, "venvs", "px-tools"+suffix, "bin", command)
+	writeCLIFile(t, path, "#!/bin/sh\nexit 0\n", 0o700)
+	exposed := filepath.Join(f.home, "shared-bin", command+suffix)
+	if err := os.Symlink(path, exposed); err != nil {
+		t.Fatal(err)
+	}
+}
+
+const pipxBaseEntry = `"px-tools":{"metadata":{"main_package":{
+  "package":"px-tools","package_version":"1.0.0","suffix":"","include_apps":true,
+  "apps":["px-one","px-two"],"app_paths":[
+    {"__type__":"Path","__Path__":"/pipx-home/venvs/px-tools/bin/px-one"},
+    {"__type__":"Path","__Path__":"/pipx-home/venvs/px-tools/bin/px-two"}
+  ]
+}}}`
+
+const pipxSuffixedEntry = `"px-tools@dev":{"metadata":{"main_package":{
+  "package":"px-tools","package_version":"1.0.0","suffix":"@dev","include_apps":true,
+  "apps":["px-one","px-two"],"app_paths":[
+    {"__type__":"Path","__Path__":"/pipx-home/venvs/px-tools@dev/bin/px-one"},
+    {"__type__":"Path","__Path__":"/pipx-home/venvs/px-tools@dev/bin/px-two"}
+  ]
+}}}`
+
+const pipxFixtureScript = `#!/bin/sh
+set -eu
+case "$1" in
+    list)
+        [ "$2" = --json ]
+        if [ -f "$HOME/pipx-scan-failed" ]; then
+            printf 'pipx inventory unavailable\n' >&2
+            exit 1
+        fi
+        /bin/cat "$HOME/pipx-inventory"
+        ;;
+    uninstall)
+        printf '%s\n' "$@" > "$HOME/pipx-uninstall-args"
+        if [ -f "$HOME/pipx-uninstall-failed" ]; then exit 7; fi
+        [ "$#" -eq 2 ] && [ "$2" = px-tools@dev ]
+        /bin/rm "$PIPX_BIN_DIR/px-one@dev" "$PIPX_BIN_DIR/px-two@dev"
+        /bin/rm "$PIPX_HOME/venvs/px-tools@dev/bin/px-one" "$PIPX_HOME/venvs/px-tools@dev/bin/px-two"
+        /bin/cp "$HOME/pipx-remaining" "$HOME/pipx-inventory"
+        ;;
+    --version) printf 'pipx fixture\n' ;;
+    *) exit 2 ;;
+esac
+`
+
 const cargoFixtureInventory = `cli-tools v1.2.3 (/fixture/source):
     tool-one
     tool-two
