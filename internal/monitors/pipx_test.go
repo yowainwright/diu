@@ -182,6 +182,62 @@ func pipxDependencyOnlyFixture(t *testing.T) string {
 	return root
 }
 
+func TestGetInstalledPackagesPipxLocatesInjectedOnlyInstall(t *testing.T) {
+	root := pipxInjectedOnlyFixture(t)
+	packages, err := NewPipxMonitor().GetInstalledPackages()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(packages) != 1 {
+		t.Fatalf("packages = %#v, want the parent install only", packages)
+	}
+	pkg := packages[0]
+	hasIdentity := pkg.Name == "library@dev" && pkg.Version == "1.0.0"
+	want := filepath.Join(root, "venvs", "library@dev", "bin", "plugin")
+	isLocated := hasIdentity && pkg.Path == want
+	if !isLocated {
+		t.Fatalf("injected-only install lost identity or location: %#v", pkg)
+	}
+}
+
+func pipxInjectedOnlyFixture(t *testing.T) string {
+	t.Helper()
+	root := pipxInventoryFixture(t)
+	output := `{"pipx_spec_version":"0.1","venvs":{"library@dev":{"metadata":{
+		"main_package":{"package":"library","package_version":"1.0.0","suffix":"@dev",
+			"include_apps":true,"apps":[],"app_paths":[]},
+		"injected_packages":{"plugin":{"package":"plugin","package_version":"2.0.0","suffix":"",
+			"include_apps":true,"apps":["plugin"],"app_paths":[
+				{"__type__":"Path","__Path__":"/pipx-home/venvs/library@dev/bin/plugin"}
+			]}}
+	}}}}`
+	t.Setenv("DIU_PIPX_JSON", strings.ReplaceAll(output, "/pipx-home", root))
+	return root
+}
+
+func TestGetInstalledPackagesPipxRejectsForeignInjectedLocation(t *testing.T) {
+	pipxInjectedOnlyFixture(t)
+	output := strings.ReplaceAll(os.Getenv("DIU_PIPX_JSON"), "/venvs/library@dev/bin/", "/venvs/other/bin/")
+	t.Setenv("DIU_PIPX_JSON", output)
+	if _, err := NewPipxMonitor().GetInstalledPackages(); err == nil {
+		t.Fatal("injected command outside the parent install was accepted")
+	}
+}
+
+func TestGetInstalledPackagesPipxSkipsUnexposedInjectedLocation(t *testing.T) {
+	pipxInjectedOnlyFixture(t)
+	output := strings.ReplaceAll(os.Getenv("DIU_PIPX_JSON"), `"include_apps":true`, `"include_apps":false`)
+	t.Setenv("DIU_PIPX_JSON", output)
+	packages, err := NewPipxMonitor().GetInstalledPackages()
+	if err != nil {
+		t.Fatal(err)
+	}
+	isUnlocated := len(packages) == 1 && packages[0].Path == ""
+	if !isUnlocated {
+		t.Fatalf("unexposed injected command supplied a location: %#v", packages)
+	}
+}
+
 func TestPipxExecutablesKeepsUnexposedInstallInInventory(t *testing.T) {
 	pipxInventoryFixture(t)
 	output := strings.Replace(os.Getenv("DIU_PIPX_JSON"), `"metadata": {`, `"metadata": {"exposure_enabled": false,`, 1)

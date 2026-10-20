@@ -39,8 +39,8 @@ func (m *PipxMonitor) GetInstalledPackages() ([]*core.PackageInfo, error) {
 	}
 	var packages []*core.PackageInfo
 	for _, name := range slices.Sorted(maps.Keys(snapshot.Venvs)) {
-		main := snapshot.Venvs[name].Metadata.MainPackage
-		pkg, err := pipxPackageInfo(name, main)
+		metadata := snapshot.Venvs[name].Metadata
+		pkg, err := pipxPackageInfo(name, metadata)
 		if err != nil {
 			return nil, err
 		}
@@ -83,7 +83,7 @@ func PipxExecutables() (map[string]*core.PackageInfo, error) {
 }
 
 func addPipxEnvironmentExecutables(binaries map[string]*core.PackageInfo, name string, metadata pipxMetadata) error {
-	pkg, err := pipxPackageInfo(name, metadata.MainPackage)
+	pkg, err := pipxPackageInfo(name, metadata)
 	if err != nil {
 		return err
 	}
@@ -168,21 +168,22 @@ func pipxExposedPaths(pkg *pipxPackage) []pipxPath {
 	return paths
 }
 
-func pipxPackageInfo(name string, main *pipxPackage) (*core.PackageInfo, error) {
+func pipxPackageInfo(name string, metadata pipxMetadata) (*core.PackageInfo, error) {
+	main := metadata.MainPackage
 	if err := validatePipxPackage(name, main); err != nil {
 		return nil, err
 	}
-	path, err := pipxInstallPath(name, main)
+	path, err := pipxInstallPath(name, metadata)
 	if err != nil {
 		return nil, err
 	}
 	return &core.PackageInfo{Name: name, Tool: core.ToolPipx, Version: main.Version, Path: path}, nil
 }
 
-func pipxInstallPath(name string, main *pipxPackage) (string, error) {
-	candidates := main.AppPaths
-	if len(candidates) == 0 {
-		candidates = pipxExposedPaths(main)
+func pipxInstallPath(name string, metadata pipxMetadata) (string, error) {
+	candidates, err := pipxInstallCandidates(name, metadata)
+	if err != nil {
+		return "", err
 	}
 	var paths []string
 	for _, path := range candidates {
@@ -195,6 +196,24 @@ func pipxInstallPath(name string, main *pipxPackage) (string, error) {
 		return "", nil
 	}
 	return slices.Min(paths), nil
+}
+
+func pipxInstallCandidates(name string, metadata pipxMetadata) ([]pipxPath, error) {
+	paths := metadata.MainPackage.AppPaths
+	if len(paths) == 0 {
+		paths = pipxExposedPaths(metadata.MainPackage)
+	}
+	if len(paths) > 0 {
+		return paths, nil
+	}
+	for _, key := range slices.Sorted(maps.Keys(metadata.InjectedPackages)) {
+		member := metadata.InjectedPackages[key]
+		if err := validatePipxPackage(name, member); err != nil {
+			return nil, err
+		}
+		paths = append(paths, pipxExposedPaths(member)...)
+	}
+	return paths, nil
 }
 
 func validatePipxPackage(name string, main *pipxPackage) error {

@@ -768,6 +768,33 @@ func TestUninstallPlanPipxUsesScannedIdentity(t *testing.T) {
 	}
 }
 
+func TestUninstallPlanPipxUsesInjectedOnlyInstall(t *testing.T) {
+	pkg := pipxInjectedUninstallFixture(t)
+	plan, err := uninstallPlan(pkg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"pipx", "uninstall", "px-tools@dev"}
+	if !slices.Equal(plan, want) {
+		t.Fatalf("plan = %v, want parent uninstall %v", plan, want)
+	}
+}
+
+func pipxInjectedUninstallFixture(t *testing.T) *core.PackageInfo {
+	t.Helper()
+	_, root := pipxExecutableFixture(t)
+	output := `{"pipx_spec_version":"0.1","venvs":{"px-tools@dev":{"metadata":{
+		"main_package":{"package":"px-tools","package_version":"1.0.0","suffix":"@dev",
+			"include_apps":true,"apps":[],"app_paths":[]},
+		"injected_packages":{"plugin":{"package":"plugin","package_version":"2.0.0","suffix":"",
+			"include_apps":true,"apps":["px-one"],"app_paths":[
+				{"__type__":"Path","__Path__":"/pipx-home/venvs/px-tools@dev/bin/px-one"}
+			]}}
+	}}}}`
+	t.Setenv("DIU_PIPX_JSON", strings.ReplaceAll(output, "/pipx-home", root))
+	return pipxPackageFixture(root)
+}
+
 func pipxPackageFixture(root string) *core.PackageInfo {
 	return &core.PackageInfo{
 		Name: "px-tools@dev", Tool: core.ToolPipx, Version: "1.0.0",
