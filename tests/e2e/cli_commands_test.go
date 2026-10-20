@@ -98,6 +98,7 @@ func TestCLIRubyGemsUninstallPreservesOtherVersionsAndHistory(t *testing.T) {
 	assertCLIExit(t, f.cli(t, "manage", "--uninstall", "cli-tools", "--tool", "gem", "--yes"), 0)
 	assertCLIGemUninstalled(t, f)
 	assertCLIFile(t, historyPath, history)
+	assertCLIGemRemainingLaunch(t, f)
 }
 
 func assertCLIGemBlockedRemoval(t *testing.T, f *cliFixture) {
@@ -118,14 +119,38 @@ func assertCLIGemUninstalled(t *testing.T, f *cliFixture) {
 	root := filepath.Join(f.home, "gem home")
 	args := "uninstall\ncli-tools\n--version\n2.0.0\n--install-dir\n" + root + "\n--platform\nruby\n--executables\n--abort-on-dependent\n--no-user-install\n--no-force\n--no-ignore-dependencies\n"
 	assertCLIFile(t, filepath.Join(f.home, "gem-uninstall-args"), args)
-	assertCLIMissing(t, filepath.Join(root, "bin", "gem-one"))
+	assertCLIMissing(t, filepath.Join(root, "gems", "cli-tools-2.0.0", "bin", "gem-one"))
 	assertCLIFile(t, filepath.Join(root, "gems", "cli-tools-1.0.0", "bin", "gem-one"), "older gem version\n")
 	assertCLIExit(t, f.cli(t, "scan"), 0)
-	result := f.cli(t, "packages", "--tool", "gem", "--format", "json")
-	assertCLIExit(t, result, 0)
-	if strings.Contains(result.stdout, "cli-tools") {
-		t.Fatalf("removed gem remains in inventory: %s", result.stdout)
+	assertCLIGemRemainingVersion(t, f, root)
+}
+
+func assertCLIGemRemainingVersion(t *testing.T, f *cliFixture, root string) {
+	t.Helper()
+	store, err := storage.NewJSONStorage(f.config)
+	if err != nil {
+		t.Fatal(err)
 	}
+	defer func() { _ = store.Close() }()
+	pkg, err := store.GetPackage(core.ToolGem, "cli-tools")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hasVersion := pkg.Version == "1.0.0" && pkg.Path == filepath.Join(root, "gems", "cli-tools-1.0.0")
+	if !hasVersion {
+		t.Fatalf("scan did not select the remaining gem version: %#v", pkg)
+	}
+}
+
+func assertCLIGemRemainingLaunch(t *testing.T, f *cliFixture) {
+	t.Helper()
+	command, input, output, stderr := startCLIZsh(t, f)
+	writeZshInput(t, input, "gem-one\nprint -r -- DIU_GEM_REMAINING_DONE\n")
+	waitCLIZshOutput(t, output, "DIU_GEM_REMAINING_DONE")
+	records := waitCLIRecords(t, f, 5)
+	assertCLIRecordedLaunchIdentity(t, records[0], core.ToolGem, "gem-one")
+	assertCLIRecordedToolUse(t, f, core.ToolGem, "cli-tools", 1)
+	finishCLIZsh(t, command, input, stderr)
 }
 
 func assertCLICargoUninstalled(t *testing.T, f *cliFixture) {

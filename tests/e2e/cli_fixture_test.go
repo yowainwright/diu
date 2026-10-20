@@ -149,7 +149,8 @@ func writeCLIGemInventory(t *testing.T, f *cliFixture, root string) {
 	t.Helper()
 	prefix := `{"schema":1,"ruby":"` + filepath.Join(f.bin, "ruby") + `","packages":[`
 	full := prefix + gemToolsEntry + "," + gemOtherEntry + "]}"
-	remaining := prefix + gemOtherEntry + "]}"
+	older := strings.ReplaceAll(gemToolsEntry, "2.0.0", "1.0.0")
+	remaining := prefix + older + "," + gemOtherEntry + "]}"
 	writeCLIFile(t, filepath.Join(f.home, "gem-inventory"), strings.ReplaceAll(full, "/gem-home", root), 0o600)
 	writeCLIFile(t, filepath.Join(f.home, "gem-remaining"), strings.ReplaceAll(remaining, "/gem-home", root), 0o600)
 }
@@ -158,10 +159,10 @@ func writeCLIGemCommands(t *testing.T, f *cliFixture, root string) {
 	t.Helper()
 	for _, command := range []string{"gem-one", "gem-two"} {
 		writeCLIGemCommand(t, f, root, "cli-tools-2.0.0", command)
+		old := filepath.Join(root, "gems", "cli-tools-1.0.0", "bin", command)
+		writeCLIFile(t, old, "older gem version\n", 0o700)
 	}
 	writeCLIGemCommand(t, f, root, "other-cli-1.0.0", "gem-other")
-	old := filepath.Join(root, "gems", "cli-tools-1.0.0", "bin", "gem-one")
-	writeCLIFile(t, old, "older gem version\n", 0o700)
 	writeCLIFile(t, filepath.Join(root, "bin", "unrelated"), "#!/bin/sh\nexit 0\n", 0o700)
 }
 
@@ -207,7 +208,6 @@ case "$1" in
         if [ -f "$HOME/gem-uninstall-failed" ]; then exit 7; fi
         [ "$2" = cli-tools ] && [ "$3" = --version ] && [ "$4" = 2.0.0 ]
         [ "$5" = --install-dir ] && [ "$6" = "$GEM_HOME" ]
-        /bin/rm "$GEM_HOME/bin/gem-one" "$GEM_HOME/bin/gem-two"
         /bin/rm "$GEM_HOME/gems/cli-tools-2.0.0/bin/gem-one" "$GEM_HOME/gems/cli-tools-2.0.0/bin/gem-two"
         /bin/cp "$HOME/gem-remaining" "$HOME/gem-inventory"
         ;;
