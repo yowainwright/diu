@@ -918,7 +918,7 @@ func validateRemovableExecutableFile(cleanPath string) error {
 
 func supportsUninstall(pkg *core.PackageInfo) bool {
 	switch pkg.Tool {
-	case core.ToolHomebrew, homebrewCaskTool, core.ToolNPM, core.ToolPNPM, core.ToolBun, core.ToolPip, core.ToolUV, core.ToolGo, core.ToolGoBinary, core.ToolCargo, core.ToolPipx:
+	case core.ToolHomebrew, homebrewCaskTool, core.ToolNPM, core.ToolPNPM, core.ToolBun, core.ToolPip, core.ToolUV, core.ToolGo, core.ToolGoBinary, core.ToolCargo, core.ToolPipx, core.ToolGem:
 		return true
 	default:
 		return false
@@ -971,10 +971,8 @@ func uninstallPlan(pkg *core.PackageInfo) ([]string, error) {
 		return pipUninstallPlan(pkg)
 	case core.ToolUV:
 		return namedPackageUninstallPlan(pkg, uvCommandName, "tool", uninstallSubcommand)
-	case core.ToolCargo:
-		return cargoUninstallPlan(pkg)
-	case core.ToolPipx:
-		return pipxUninstallPlan(pkg)
+	case core.ToolCargo, core.ToolPipx, core.ToolGem:
+		return verifiedUninstallPlan(pkg)
 	case core.ToolGo, core.ToolGoBinary:
 		return goBinaryUninstallPlan(pkg)
 	default:
@@ -987,6 +985,17 @@ func homebrewUninstallPlan(pkg *core.PackageInfo) ([]string, error) {
 		return namedPackageUninstallPlan(pkg, homebrewCommandName, uninstallSubcommand, homebrewCaskFlag)
 	}
 	return namedPackageUninstallPlan(pkg, homebrewCommandName, uninstallSubcommand)
+}
+
+func verifiedUninstallPlan(pkg *core.PackageInfo) ([]string, error) {
+	switch pkg.Tool {
+	case core.ToolCargo:
+		return cargoUninstallPlan(pkg)
+	case core.ToolPipx:
+		return pipxUninstallPlan(pkg)
+	default:
+		return gemUninstallPlan(pkg)
+	}
 }
 
 func javascriptUninstallPlan(pkg *core.PackageInfo) ([]string, error) {
@@ -1083,6 +1092,34 @@ func verifyPipxPackage(pkg *core.PackageInfo) error {
 		}
 	}
 	return fmt.Errorf("pipx install %s changed since the last scan; run diu scan", pkg.Name)
+}
+
+func gemUninstallPlan(pkg *core.PackageInfo) ([]string, error) {
+	if err := validatePackageManagerName(pkg.Name); err != nil {
+		return nil, err
+	}
+	if strings.ContainsAny(pkg.Name, `/\`) {
+		return nil, fmt.Errorf("invalid gem name: %s", pkg.Name)
+	}
+	if pkg.Path == "" {
+		return nil, fmt.Errorf("gem install location is unknown; run diu scan")
+	}
+	if err := monitors.VerifyRubyGemsRemoval(pkg); err != nil {
+		return nil, err
+	}
+	root := filepath.Dir(filepath.Dir(pkg.Path))
+	platform := rubyGemsPlatform(pkg)
+	return []string{core.ToolGem, uninstallSubcommand, pkg.Name, "--version", pkg.Version, "--install-dir", root, "--platform", platform, "--executables", "--abort-on-dependent", "--no-user-install", "--no-force", "--no-ignore-dependencies"}, nil
+}
+
+func rubyGemsPlatform(pkg *core.PackageInfo) string {
+	prefix := pkg.Name + "-" + pkg.Version
+	suffix := strings.TrimPrefix(filepath.Base(pkg.Path), prefix)
+	platform := strings.TrimPrefix(suffix, "-")
+	if platform == "" {
+		return "ruby"
+	}
+	return platform
 }
 
 func pipUninstallPlan(pkg *core.PackageInfo) ([]string, error) {

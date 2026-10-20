@@ -46,6 +46,7 @@ func discoverExecutables(config *core.Config) []executableTarget {
 	addToolExecutableDirs(config, targets, core.ToolUV, uvToolBinDir)
 	addCargoExecutables(config, targets)
 	addPipxExecutables(config, targets)
+	addRubyGemsExecutables(config, targets)
 	return slices.SortedFunc(maps.Values(targets), compareExecutableTargets)
 }
 
@@ -64,6 +65,16 @@ func addPipxExecutables(config *core.Config, targets map[string]executableTarget
 		return
 	}
 	binaries, _ := monitors.PipxExecutables()
+	for name, pkg := range binaries {
+		addOwnedExecutable(targets, name, pkg)
+	}
+}
+
+func addRubyGemsExecutables(config *core.Config, targets map[string]executableTarget) {
+	if !monitoringToolEnabled(config, core.ToolGem) {
+		return
+	}
+	binaries, _ := monitors.RubyGemsExecutables()
 	for name, pkg := range binaries {
 		addOwnedExecutable(targets, name, pkg)
 	}
@@ -209,7 +220,7 @@ var defaultExecutablePathDeps = executablePathDeps{
 
 func shouldSkipExecutable(name string) bool {
 	switch name {
-	case "", ".", "..", "diu", "brew", core.ToolNPM, core.ToolPNPM, core.ToolBun, core.ToolGo, core.ToolCargo, core.ToolPipx, core.ToolPip, "pip3", core.ToolUV, core.ToolPoetry:
+	case "", ".", "..", "diu", "brew", core.ToolNPM, core.ToolPNPM, core.ToolBun, core.ToolGo, core.ToolCargo, core.ToolPipx, core.ToolGem, core.ToolPip, "pip3", core.ToolUV, core.ToolPoetry:
 		return true
 	default:
 		return strings.HasPrefix(name, ".")

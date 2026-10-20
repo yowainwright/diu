@@ -47,3 +47,28 @@ type pipxPath struct {
 	Type string `json:"__type__"`
 	Path string `json:"__Path__"`
 }
+
+type RubyGemsMonitor struct {
+	*BaseMonitor
+}
+
+type rubyGemsSnapshot struct {
+	Schema   int              `json:"schema"`
+	Ruby     string           `json:"ruby"`
+	Packages []rubyGemPackage `json:"packages"`
+}
+
+type rubyGemPackage struct {
+	Name        string              `json:"name"`
+	Version     string              `json:"version"`
+	Root        string              `json:"root"`
+	Path        string              `json:"path"`
+	Platform    string              `json:"platform"`
+	IsDefault   *bool               `json:"default"`
+	Executables []rubyGemExecutable `json:"executables"`
+}
+
+type rubyGemExecutable struct {
+	Name string `json:"name"`
+	Path string `json:"path"`
+}
