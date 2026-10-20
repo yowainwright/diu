@@ -77,6 +77,150 @@ func TestDiscoverExecutablesSkipsShadowedCargoBinary(t *testing.T) {
 	}
 }
 
+func TestDiscoverExecutablesMapsOnlyOwnedPipxCommands(t *testing.T) {
+	config, _ := pipxExecutableFixture(t)
+	targets := discoverExecutables(config)
+	if len(targets) != 4 {
+		t.Fatalf("targets = %#v, want four pipx commands", targets)
+	}
+	for _, target := range targets {
+		identity := "px-tools"
+		if strings.HasSuffix(target.Name, "@dev") {
+			identity += "@dev"
+		}
+		isOwned := target.Tool == core.ToolPipx && target.Package == identity
+		if !isOwned {
+			t.Fatalf("unexpected pipx target: %#v", target)
+		}
+	}
+}
+
+func TestDiscoverExecutablesSkipsShadowedPipxCommand(t *testing.T) {
+	config, _ := pipxExecutableFixture(t)
+	prependFakeCommand(t, "px-one", "#!/bin/sh\nexit 0\n")
+	for _, target := range discoverExecutables(config) {
+		if target.Name == "px-one" {
+			t.Fatalf("unowned command attributed to pipx: %#v", target)
+		}
+	}
+}
+
+func TestDiscoverExecutablesMapsCurrentAndLegacyPipxSuffixes(t *testing.T) {
+	for _, name := range []string{"px-one.py@dev", "px-one@dev.py"} {
+		t.Run(name, func(t *testing.T) {
+			config := pipxScriptFixture(t, name)
+			targets := discoverExecutables(config)
+			if len(targets) != 1 {
+				t.Fatalf("script targets = %#v, want one exposed command", targets)
+			}
+			target := targets[0]
+			hasIdentity := target.Tool == core.ToolPipx && target.Package == "px-tools@dev"
+			isOwned := target.Name == name && hasIdentity
+			if !isOwned {
+				t.Fatalf("suffixed script lost pipx ownership: %#v", target)
+			}
+		})
+	}
+}
+
+func pipxScriptFixture(t *testing.T, name string) *core.Config {
+	t.Helper()
+	config, root := pipxExecutableFixture(t)
+	path := filepath.Join(root, "venvs", "px-tools@dev", "bin", "px-one.py")
+	writeExecutableForTest(t, path, "#!/bin/sh\nexit 0\n")
+	if err := os.Symlink(path, filepath.Join(root, "shared-bin", name)); err != nil {
+		t.Fatal(err)
+	}
+	output := `{"pipx_spec_version":"0.1","venvs":{"px-tools@dev":{"metadata":{"main_package":{
+		"package":"px-tools","package_version":"1.0.0","suffix":"@dev","include_apps":true,
+		"apps":["px-one.py"],"app_paths":[{"__type__":"Path","__Path__":"` + path + `"}]
+	}}}}}`
+	t.Setenv("DIU_PIPX_JSON", output)
+	return config
+}
+
+func TestDiscoverExecutablesUsesActivePipxInstallForConflictingCommands(t *testing.T) {
+	config := conflictingPipxCommandsFixture(t)
+	targets := discoverExecutables(config)
+	if len(targets) != 2 {
+		t.Fatalf("active pipx install lost to unexposed command conflict: %#v", targets)
+	}
+	for _, target := range targets {
+		if target.Package != "px-tools" {
+			t.Fatalf("inactive pipx install claimed a command: %#v", target)
+		}
+	}
+}
+
+func conflictingPipxCommandsFixture(t *testing.T) *core.Config {
+	t.Helper()
+	config, root := pipxExecutableFixture(t)
+	output := strings.ReplaceAll(os.Getenv("DIU_PIPX_JSON"), "px-tools@dev", "zz-tools")
+	output = strings.ReplaceAll(output, `"suffix":"@dev"`, `"suffix":""`)
+	t.Setenv("DIU_PIPX_JSON", output)
+	bin := filepath.Join(root, "venvs", "zz-tools", "bin")
+	if err := os.MkdirAll(bin, core.OwnerDirectoryMode); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"px-one", "px-two"} {
+		writeExecutableForTest(t, filepath.Join(bin, name), "#!/bin/sh\nexit 0\n")
+	}
+	return config
+}
+
+func pipxExecutableFixture(t *testing.T) (*core.Config, string) {
+	t.Helper()
+	root := t.TempDir()
+	bin := filepath.Join(root, "shared-bin")
+	if err := os.MkdirAll(bin, core.OwnerDirectoryMode); err != nil {
+		t.Fatal(err)
+	}
+	for _, suffix := range []string{"", "@dev"} {
+		writePipxExecutables(t, root, bin, suffix)
+	}
+	writeExecutableForTest(t, filepath.Join(bin, "uv-owned"), "#!/bin/sh\nexit 0\n")
+	t.Setenv("DIU_PIPX_JSON", strings.ReplaceAll(pipxCLIFixtureJSON, "/pipx-home", root))
+	t.Setenv("PATH", bin+":"+os.Getenv("PATH"))
+	prependFakeCommand(t, "pipx", "#!/bin/sh\nprintf '%s' \"$DIU_PIPX_JSON\"\n")
+	config := core.DefaultConfig()
+	config.Monitoring.EnabledTools = []string{core.ToolPipx}
+	return config, root
+}
+
+func writePipxExecutables(t *testing.T, root, bin, suffix string) {
+	t.Helper()
+	venvBin := filepath.Join(root, "venvs", "px-tools"+suffix, "bin")
+	if err := os.MkdirAll(venvBin, core.OwnerDirectoryMode); err != nil {
+		t.Fatal(err)
+	}
+	for _, command := range []string{"px-one", "px-two"} {
+		path := filepath.Join(venvBin, command)
+		writeExecutableForTest(t, path, "#!/bin/sh\nexit 0\n")
+		if err := os.Symlink(path, filepath.Join(bin, command+suffix)); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+const pipxCLIFixtureJSON = `{
+  "pipx_spec_version":"0.1", "venvs": {
+    "px-tools":{"metadata":{"main_package":{
+      "package":"px-tools","package_version":"1.0.0","suffix":"","include_apps":true,
+      "apps":["px-one","px-two"],"app_paths":[
+        {"__type__":"Path","__Path__":"/pipx-home/venvs/px-tools/bin/px-one"},
+        {"__type__":"Path","__Path__":"/pipx-home/venvs/px-tools/bin/px-two"}
+      ]
+    }}},
+    "px-tools@dev":{"metadata":{"main_package":{
+      "package":"px-tools","package_version":"1.0.0","suffix":"@dev","include_apps":true,
+      "apps":["px-one","px-two"],"app_paths":[
+        {"__type__":"Path","__Path__":"/pipx-home/venvs/px-tools@dev/bin/px-one"},
+        {"__type__":"Path","__Path__":"/pipx-home/venvs/px-tools@dev/bin/px-two"}
+      ]
+    }}}
+  }
+}`
+
 func TestDiscoverExecutablesUsesConfiguredToolsAndPATHPriority(t *testing.T) {
 	config, preferredDir := configuredExecutableDiscovery(t)
 	targets := discoverExecutables(config)

@@ -918,7 +918,7 @@ func validateRemovableExecutableFile(cleanPath string) error {
 
 func supportsUninstall(pkg *core.PackageInfo) bool {
 	switch pkg.Tool {
-	case core.ToolHomebrew, homebrewCaskTool, core.ToolNPM, core.ToolPNPM, core.ToolBun, core.ToolPip, core.ToolUV, core.ToolGo, core.ToolGoBinary, core.ToolCargo:
+	case core.ToolHomebrew, homebrewCaskTool, core.ToolNPM, core.ToolPNPM, core.ToolBun, core.ToolPip, core.ToolUV, core.ToolGo, core.ToolGoBinary, core.ToolCargo, core.ToolPipx:
 		return true
 	default:
 		return false
@@ -973,6 +973,8 @@ func uninstallPlan(pkg *core.PackageInfo) ([]string, error) {
 		return namedPackageUninstallPlan(pkg, uvCommandName, "tool", uninstallSubcommand)
 	case core.ToolCargo:
 		return cargoUninstallPlan(pkg)
+	case core.ToolPipx:
+		return pipxUninstallPlan(pkg)
 	case core.ToolGo, core.ToolGoBinary:
 		return goBinaryUninstallPlan(pkg)
 	default:
@@ -1050,6 +1052,37 @@ func verifyCargoPackage(pkg *core.PackageInfo, root string) error {
 		}
 	}
 	return fmt.Errorf("cargo package %s changed since the last scan; run diu scan", pkg.Name)
+}
+
+func pipxUninstallPlan(pkg *core.PackageInfo) ([]string, error) {
+	if err := validatePackageManagerName(pkg.Name); err != nil {
+		return nil, err
+	}
+	if strings.ContainsAny(pkg.Name, `/\`) {
+		return nil, fmt.Errorf("invalid pipx install name: %s", pkg.Name)
+	}
+	if pkg.Path == "" {
+		return nil, fmt.Errorf("pipx install location is unknown; run diu scan")
+	}
+	if err := verifyPipxPackage(pkg); err != nil {
+		return nil, err
+	}
+	return []string{core.ToolPipx, uninstallSubcommand, pkg.Name}, nil
+}
+
+func verifyPipxPackage(pkg *core.PackageInfo) error {
+	packages, err := monitors.NewPipxMonitor().GetInstalledPackages()
+	if err != nil {
+		return err
+	}
+	for _, current := range packages {
+		hasIdentity := current.Name == pkg.Name && current.Version == pkg.Version
+		isInstalled := hasIdentity && current.Path == pkg.Path
+		if isInstalled {
+			return nil
+		}
+	}
+	return fmt.Errorf("pipx install %s changed since the last scan; run diu scan", pkg.Name)
 }
 
 func pipUninstallPlan(pkg *core.PackageInfo) ([]string, error) {

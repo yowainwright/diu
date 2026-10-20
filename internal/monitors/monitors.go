@@ -26,6 +26,8 @@ func NewMonitor(tool string) (Monitor, error) {
 		return NewGoMonitor(), nil
 	case core.ToolCargo:
 		return NewCargoMonitor(), nil
+	case core.ToolPipx:
+		return NewPipxMonitor(), nil
 	case core.ToolNPM, core.ToolPNPM, core.ToolBun:
 		return newJavaScriptMonitor(normalizedTool), nil
 	case core.ToolPip, core.ToolUV, core.ToolPoetry:

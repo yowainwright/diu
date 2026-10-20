@@ -47,7 +47,7 @@ func assertUninstallArguments(t *testing.T, test uninstallPlanCase) {
 }
 
 func TestRunUninstallRejectsInvalidNamesBeforeStartingManagers(t *testing.T) {
-	tools := []string{core.ToolHomebrew, homebrewCaskTool, core.ToolNPM, core.ToolPNPM, core.ToolBun, core.ToolPip, core.ToolUV, core.ToolCargo}
+	tools := []string{core.ToolHomebrew, homebrewCaskTool, core.ToolNPM, core.ToolPNPM, core.ToolBun, core.ToolPip, core.ToolUV, core.ToolCargo, core.ToolPipx}
 	for _, tool := range tools {
 		t.Run(tool, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "started")
@@ -64,7 +64,7 @@ func TestRunUninstallRejectsInvalidNamesBeforeStartingManagers(t *testing.T) {
 
 func writeUninstallManagerFixtures(t *testing.T) {
 	t.Helper()
-	for _, name := range []string{homebrewCommandName, npmCommandName, pnpmCommandName, bunCommandName, pip3CommandName, uvCommandName, core.ToolCargo} {
+	for _, name := range []string{homebrewCommandName, npmCommandName, pnpmCommandName, bunCommandName, pip3CommandName, uvCommandName, core.ToolCargo, core.ToolPipx} {
 		prependFakeCommand(t, name, "#!/bin/sh\nprintf started > \"$DIU_TEST_UNINSTALL_STARTED\"\n")
 	}
 }
@@ -751,6 +751,83 @@ func TestUninstallPlanRejectsUnownedExecutable(t *testing.T) {
 	}
 	if command, err := uninstallPlan(pkg); err == nil {
 		t.Fatalf("unmapped executable produced an uninstall command: %v", command)
+	}
+}
+
+func TestUninstallPlanPipxUsesScannedIdentity(t *testing.T) {
+	_, root := pipxExecutableFixture(t)
+	pkg := pipxPackageFixture(root)
+	plan, err := uninstallPlan(pkg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"pipx", "uninstall", "px-tools@dev"}
+	isExpected := slices.Equal(plan, want) && supportsUninstall(pkg)
+	if !isExpected {
+		t.Fatalf("plan = %v, want %v", plan, want)
+	}
+}
+
+func TestUninstallPlanPipxUsesInjectedOnlyInstall(t *testing.T) {
+	pkg := pipxInjectedUninstallFixture(t)
+	plan, err := uninstallPlan(pkg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"pipx", "uninstall", "px-tools@dev"}
+	if !slices.Equal(plan, want) {
+		t.Fatalf("plan = %v, want parent uninstall %v", plan, want)
+	}
+}
+
+func pipxInjectedUninstallFixture(t *testing.T) *core.PackageInfo {
+	t.Helper()
+	_, root := pipxExecutableFixture(t)
+	output := `{"pipx_spec_version":"0.1","venvs":{"px-tools@dev":{"metadata":{
+		"main_package":{"package":"px-tools","package_version":"1.0.0","suffix":"@dev",
+			"include_apps":true,"apps":[],"app_paths":[]},
+		"injected_packages":{"plugin":{"package":"plugin","package_version":"2.0.0","suffix":"",
+			"include_apps":true,"apps":["px-one"],"app_paths":[
+				{"__type__":"Path","__Path__":"/pipx-home/venvs/px-tools@dev/bin/px-one"}
+			]}}
+	}}}}`
+	t.Setenv("DIU_PIPX_JSON", strings.ReplaceAll(output, "/pipx-home", root))
+	return pipxPackageFixture(root)
+}
+
+func pipxPackageFixture(root string) *core.PackageInfo {
+	return &core.PackageInfo{
+		Name: "px-tools@dev", Tool: core.ToolPipx, Version: "1.0.0",
+		Path: filepath.Join(root, "venvs", "px-tools@dev", "bin", "px-one"),
+	}
+}
+
+func TestUninstallPlanPipxRejectsChangedInstall(t *testing.T) {
+	_, root := pipxExecutableFixture(t)
+	for _, changed := range []string{"version", "location", "unknown"} {
+		pkg := pipxPackageFixture(root)
+		switch changed {
+		case "version":
+			pkg.Version = "2.0.0"
+		case "location":
+			pkg.Path = filepath.Join(t.TempDir(), "venvs", pkg.Name, "bin", "px-one")
+		case "unknown":
+			pkg.Path = ""
+		}
+		if plan, err := uninstallPlan(pkg); err == nil {
+			t.Fatalf("changed %s produced uninstall plan: %v", changed, plan)
+		}
+	}
+}
+
+func TestRunUninstallPipxPreservesFailureCode(t *testing.T) {
+	_, root := pipxExecutableFixture(t)
+	prependFakeCommand(t, "pipx", "#!/bin/sh\nif [ \"$1\" = list ]; then printf '%s' \"$DIU_PIPX_JSON\"; else exit 7; fi\n")
+	err := runUninstall(pipxPackageFixture(root))
+	var commandErr *dx.CommandError
+	hasFailureCode := errors.As(err, &commandErr) && commandErr.Code == 7
+	if !hasFailureCode {
+		t.Fatalf("pipx uninstall error = %v, want exit code 7", err)
 	}
 }
 
