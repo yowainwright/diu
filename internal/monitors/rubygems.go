@@ -268,11 +268,12 @@ def exposed_source?(spec, command)
   active && File.identical?(active, spec.bin_file(command))
 end
 packages = Gem::Specification.map(&:name).uniq.sort.map do |name|
-  candidates = Gem::Specification.find_all_by_name(name, Gem::Requirement.default_prerelease)
+  candidates = Gem::Dependency.new(name, Gem::Requirement.default_prerelease).matching_specs(true)
+  candidates = candidates.reject { |candidate| candidate.executables.empty? }
   spec = candidates.find do |candidate|
     candidate.executables.any? { |command| exposed_source?(candidate, command) }
-  end || Gem::Specification.find_by_name(name, Gem::Requirement.default_prerelease)
-  next if spec.executables.empty?
+  end || candidates.first
+  next unless spec
   commands = spec.executables.sort.map do |command|
     path = Gem.bin_path(name, command, Gem::Requirement.default_prerelease)
     source = spec.bin_file(command)
