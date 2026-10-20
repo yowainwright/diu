@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/yowainwright/diu/internal/core"
 	"github.com/yowainwright/diu/internal/storage"
 )
 
@@ -82,6 +83,49 @@ func TestCLICargoUninstall(t *testing.T) {
 	assertCLIExit(t, f.cli(t, "manage", "--uninstall", "ripgrep", "--tool", "cargo", "--yes"), 0)
 	assertCLICargoUninstalled(t, f)
 	assertCLIFile(t, historyPath, history)
+}
+
+func TestCLIRubyGemsUninstallPreservesOtherVersionsAndHistory(t *testing.T) {
+	f := newCLIGemFixture(t)
+	f.setup(t)
+	assertCLIGemLaunches(t, f)
+	historyPath := storage.ExecutionLogPath(f.config.Storage.JSONFile)
+	history := readCLIFile(t, historyPath)
+	preview := f.cli(t, "manage", "--uninstall", "cli-tools", "--tool", "gem", "--dry-run")
+	assertCLIExit(t, preview, 0)
+	assertCLIMissing(t, filepath.Join(f.home, "gem-uninstall-args"))
+	assertCLIGemBlockedRemoval(t, f)
+	assertCLIExit(t, f.cli(t, "manage", "--uninstall", "cli-tools", "--tool", "gem", "--yes"), 0)
+	assertCLIGemUninstalled(t, f)
+	assertCLIFile(t, historyPath, history)
+}
+
+func assertCLIGemBlockedRemoval(t *testing.T, f *cliFixture) {
+	t.Helper()
+	for marker, code := range map[string]int{"gem-dependent": 1, "gem-uninstall-failed": 7} {
+		path := filepath.Join(f.home, marker)
+		writeCLIFile(t, path, "", 0o600)
+		assertCLIExit(t, f.cli(t, "manage", "--uninstall", "cli-tools", "--tool", "gem", "--yes"), code)
+		assertCLIRecordedToolUse(t, f, core.ToolGem, "cli-tools", 2)
+		if err := os.Remove(path); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func assertCLIGemUninstalled(t *testing.T, f *cliFixture) {
+	t.Helper()
+	root := filepath.Join(f.home, "gem home")
+	args := "uninstall\ncli-tools\n--version\n2.0.0\n--install-dir\n" + root + "\n--platform\nruby\n--executables\n--abort-on-dependent\n--no-user-install\n--no-force\n--no-ignore-dependencies\n"
+	assertCLIFile(t, filepath.Join(f.home, "gem-uninstall-args"), args)
+	assertCLIMissing(t, filepath.Join(root, "bin", "gem-one"))
+	assertCLIFile(t, filepath.Join(root, "gems", "cli-tools-1.0.0", "bin", "gem-one"), "older gem version\n")
+	assertCLIExit(t, f.cli(t, "scan"), 0)
+	result := f.cli(t, "packages", "--tool", "gem", "--format", "json")
+	assertCLIExit(t, result, 0)
+	if strings.Contains(result.stdout, "cli-tools") {
+		t.Fatalf("removed gem remains in inventory: %s", result.stdout)
+	}
 }
 
 func assertCLICargoUninstalled(t *testing.T, f *cliFixture) {

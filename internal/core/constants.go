@@ -41,6 +41,7 @@ const (
 	ToolGo           = "go"
 	ToolCargo        = "cargo"
 	ToolPipx         = "pipx"
+	ToolGem          = "gem"
 	ToolPip          = "pip"
 	ToolUV           = "uv"
 	ToolPoetry       = "poetry"

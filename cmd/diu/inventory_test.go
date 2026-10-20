@@ -149,7 +149,7 @@ func TestMergeExistingPackageCombinesLegacyAndCurrentGoUsage(t *testing.T) {
 func TestMergeExistingPackageDoesNotRestoreUnknownCargoRoot(t *testing.T) {
 	oldPath := filepath.Join(t.TempDir(), "bin", "rg")
 	lastUsed := time.Now().Add(-time.Hour)
-	for tool, want := range map[string]string{core.ToolCargo: "", core.ToolPipx: "", core.ToolNPM: oldPath} {
+	for tool, want := range map[string]string{core.ToolCargo: "", core.ToolPipx: "", core.ToolGem: "", core.ToolNPM: oldPath} {
 		t.Run(tool, func(t *testing.T) {
 			existing := &core.PackageInfo{Name: "ripgrep", Tool: tool, Version: "1.0.0", Path: oldPath, UsageCount: 5, LastUsed: lastUsed}
 			inventory := map[string]map[string]*core.PackageInfo{tool: {"ripgrep": existing}}

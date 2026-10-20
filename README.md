@@ -426,6 +426,7 @@ diu <version> (commit <commit>, built <date>)
 | Go | Go | Binaries in `GOBIN` or `GOPATH/bin` |
 | Rust | Cargo | Installed CLI crates and their binaries |
 | Python | pip, uv, pipx | pip packages, uv tools, and pipx applications |
+| Ruby | RubyGems (`gem`) | CLI gems in the active Ruby environment |
 
 ## License
 

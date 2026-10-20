@@ -36,6 +36,48 @@ func TestCLIZshRecordsPipxInstalls(t *testing.T) {
 	}
 }
 
+func TestCLIZshRecordsRubyGems(t *testing.T) {
+	for _, mode := range []string{"daemon", "fallback"} {
+		t.Run(mode, func(t *testing.T) {
+			f := newCLIGemFixture(t)
+			f.setup(t)
+			if mode == "daemon" {
+				startCLIDaemon(t, f)
+			}
+			assertCLIGemLaunches(t, f)
+		})
+	}
+}
+
+func assertCLIGemLaunches(t *testing.T, f *cliFixture) {
+	t.Helper()
+	command, input, output, stderr := startCLIZsh(t, f)
+	writeZshInput(t, input, "gem-one\ngem-two\ngem-other\nunrelated\nprint -r -- DIU_GEM_DONE\n")
+	waitCLIZshOutput(t, output, "DIU_GEM_DONE")
+	records := waitCLIRecords(t, f, 4)
+	if len(records) != 4 {
+		t.Fatalf("records = %#v, want four launches", records)
+	}
+	assertCLIRecordedToolUse(t, f, core.ToolGem, "cli-tools", 2)
+	assertCLIRecordedToolUse(t, f, core.ToolGem, "other-cli", 1)
+	assertCLIRecordedToolUse(t, f, core.ToolExecutable, "unrelated", 1)
+	finishCLIZsh(t, command, input, stderr)
+}
+
+func TestCLIRubyGemsScanFailurePreservesInventory(t *testing.T) {
+	f := newCLIGemFixture(t)
+	f.setup(t)
+	before := f.cli(t, "packages", "--tool", "gem", "--format", "json")
+	assertCLIExit(t, before, 0)
+	writeCLIFile(t, filepath.Join(f.home, "gem-scan-failed"), "", 0o600)
+	assertCLIExit(t, f.cli(t, "scan"), 0)
+	after := f.cli(t, "packages", "--tool", "gem", "--format", "json")
+	assertCLIExit(t, after, 0)
+	if after.stdout != before.stdout {
+		t.Fatal("failed gem scan changed saved inventory")
+	}
+}
+
 func assertCLIPipxLaunches(t *testing.T, f *cliFixture) {
 	t.Helper()
 	command, input, output, stderr := startCLIZsh(t, f)

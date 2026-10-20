@@ -30,8 +30,8 @@ func NewMonitor(tool string) (Monitor, error) {
 		return NewPipxMonitor(), nil
 	case core.ToolNPM, core.ToolPNPM, core.ToolBun:
 		return newJavaScriptMonitor(normalizedTool), nil
-	case core.ToolPip, core.ToolUV, core.ToolPoetry:
-		return newPythonMonitor(normalizedTool), nil
+	case core.ToolPip, core.ToolUV, core.ToolPoetry, core.ToolGem:
+		return newPythonOrRubyMonitor(normalizedTool), nil
 	default:
 		return nil, fmt.Errorf("unsupported tool: %s", tool)
 	}
@@ -48,8 +48,10 @@ func newJavaScriptMonitor(tool string) Monitor {
 	}
 }
 
-func newPythonMonitor(tool string) Monitor {
+func newPythonOrRubyMonitor(tool string) Monitor {
 	switch tool {
+	case core.ToolGem:
+		return NewRubyGemsMonitor()
 	case core.ToolPip:
 		return NewPipMonitor()
 	case core.ToolUV:

@@ -47,7 +47,7 @@ func assertUninstallArguments(t *testing.T, test uninstallPlanCase) {
 }
 
 func TestRunUninstallRejectsInvalidNamesBeforeStartingManagers(t *testing.T) {
-	tools := []string{core.ToolHomebrew, homebrewCaskTool, core.ToolNPM, core.ToolPNPM, core.ToolBun, core.ToolPip, core.ToolUV, core.ToolCargo, core.ToolPipx}
+	tools := []string{core.ToolHomebrew, homebrewCaskTool, core.ToolNPM, core.ToolPNPM, core.ToolBun, core.ToolPip, core.ToolUV, core.ToolCargo, core.ToolPipx, core.ToolGem}
 	for _, tool := range tools {
 		t.Run(tool, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "started")
@@ -64,7 +64,7 @@ func TestRunUninstallRejectsInvalidNamesBeforeStartingManagers(t *testing.T) {
 
 func writeUninstallManagerFixtures(t *testing.T) {
 	t.Helper()
-	for _, name := range []string{homebrewCommandName, npmCommandName, pnpmCommandName, bunCommandName, pip3CommandName, uvCommandName, core.ToolCargo, core.ToolPipx} {
+	for _, name := range []string{homebrewCommandName, npmCommandName, pnpmCommandName, bunCommandName, pip3CommandName, uvCommandName, core.ToolCargo, core.ToolPipx, core.ToolGem} {
 		prependFakeCommand(t, name, "#!/bin/sh\nprintf started > \"$DIU_TEST_UNINSTALL_STARTED\"\n")
 	}
 }
@@ -765,6 +765,39 @@ func TestUninstallPlanPipxUsesScannedIdentity(t *testing.T) {
 	isExpected := slices.Equal(plan, want) && supportsUninstall(pkg)
 	if !isExpected {
 		t.Fatalf("plan = %v, want %v", plan, want)
+	}
+}
+
+func TestUninstallPlanRubyGemsUsesSelectedVersionAndLocation(t *testing.T) {
+	_, root := gemExecutableFixture(t)
+	pkg := &core.PackageInfo{Name: "cli-tools", Version: "2.0.0", Tool: core.ToolGem, Path: filepath.Join(root, "gems", "cli-tools-2.0.0")}
+	plan, err := uninstallPlan(pkg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"gem", "uninstall", "cli-tools", "--version", "2.0.0", "--install-dir", root, "--platform", "ruby", "--executables", "--abort-on-dependent", "--no-user-install", "--no-force", "--no-ignore-dependencies"}
+	if !slices.Equal(plan, want) {
+		t.Fatalf("plan = %v, want %v", plan, want)
+	}
+}
+
+func TestUninstallPlanRubyGemsRejectsChangedOrProtectedInstall(t *testing.T) {
+	_, root := gemExecutableFixture(t)
+	for _, changed := range []string{"version", "location", "default"} {
+		t.Run(changed, func(t *testing.T) {
+			pkg := &core.PackageInfo{Name: "cli-tools", Version: "2.0.0", Tool: core.ToolGem, Path: filepath.Join(root, "gems", "cli-tools-2.0.0")}
+			switch changed {
+			case "version":
+				pkg.Version = "1.0.0"
+			case "location":
+				pkg.Path = filepath.Join(t.TempDir(), "gems", "cli-tools-2.0.0")
+			case "default":
+				t.Setenv("DIU_GEM_JSON", strings.ReplaceAll(os.Getenv("DIU_GEM_JSON"), `"default":false`, `"default":true`))
+			}
+			if plan, err := uninstallPlan(pkg); err == nil {
+				t.Fatalf("unsafe gem removal accepted: %v", plan)
+			}
+		})
 	}
 }
 
