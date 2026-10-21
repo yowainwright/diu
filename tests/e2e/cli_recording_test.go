@@ -49,6 +49,66 @@ func TestCLIZshRecordsRubyGems(t *testing.T) {
 	}
 }
 
+func TestCLIZshRecordsKrew(t *testing.T) {
+	for _, mode := range []string{"daemon", "fallback"} {
+		t.Run(mode, func(t *testing.T) {
+			f := newCLIKrewFixture(t)
+			f.setup(t)
+			if mode == "daemon" {
+				startCLIDaemon(t, f)
+			}
+			assertCLIKrewLaunches(t, f)
+		})
+	}
+}
+
+func assertCLIKrewLaunches(t *testing.T, f *cliFixture) {
+	t.Helper()
+	command, input, output, stderr := startCLIZsh(t, f)
+	writeZshInput(t, input, "kubectl ctx\nkubectl view-secret --help\nkubectl-ctx\nkubectl get --help\nkubectl --namespace test ctx\nprint -r -- DIU_KREW_DONE\n")
+	waitCLIZshOutput(t, output, "DIU_KREW_DONE")
+	records := waitCLIRecords(t, f, 5)
+	if len(records) != 5 {
+		t.Fatalf("records = %#v, want five launches", records)
+	}
+	assertCLIRecordedToolUse(t, f, core.ToolKrew, "ctx", 2)
+	assertCLIRecordedToolUse(t, f, core.ToolKrew, "view-secret", 1)
+	assertCLIRecordedToolUse(t, f, core.ToolExecutable, "kubectl", 2)
+	finishCLIZsh(t, command, input, stderr)
+}
+
+func TestCLIKrewScanFailurePreservesInventory(t *testing.T) {
+	f := newCLIKrewFixture(t)
+	f.setup(t)
+	before := f.cli(t, "packages", "--tool", "krew", "--format", "json")
+	assertCLIExit(t, before, 0)
+	receipts := filepath.Join(f.home, "krew root", "receipts")
+	if err := os.Rename(receipts, receipts+".backup"); err != nil {
+		t.Fatal(err)
+	}
+	writeCLIFile(t, receipts, "broken directory", 0o600)
+	assertCLIExit(t, f.cli(t, "scan"), 0)
+	after := f.cli(t, "packages", "--tool", "krew", "--format", "json")
+	assertCLIExit(t, after, 0)
+	if after.stdout != before.stdout {
+		t.Fatal("failed Krew scan changed saved inventory")
+	}
+}
+
+func TestCLIRealKrewDispatchAndRemoval(t *testing.T) {
+	for _, mode := range []string{"daemon", "fallback"} {
+		t.Run(mode, func(t *testing.T) {
+			f := newCLIRealKrewFixture(t)
+			f.setup(t)
+			if mode == "daemon" {
+				startCLIDaemon(t, f)
+			}
+			assertCLIKrewLaunches(t, f)
+			assertCLIRealKrewRemoval(t, f)
+		})
+	}
+}
+
 func assertCLIGemLaunches(t *testing.T, f *cliFixture) {
 	t.Helper()
 	command, input, output, stderr := startCLIZsh(t, f)

@@ -768,6 +768,41 @@ func TestUninstallPlanPipxUsesScannedIdentity(t *testing.T) {
 	}
 }
 
+func TestUninstallPlanKrewVerifiesInstalledLocation(t *testing.T) {
+	_, root := krewExecutableFixture(t)
+	root, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pkg := &core.PackageInfo{Name: "ctx", Tool: core.ToolKrew, Version: "v1.2.3", Path: filepath.Join(root, "store", "ctx", "v1.2.3")}
+	plan, err := uninstallPlan(pkg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(plan, " "); got != "kubectl krew uninstall ctx" {
+		t.Fatalf("uninstall plan = %q", got)
+	}
+	assertKrewUnsafeRemoval(t, pkg)
+}
+
+func assertKrewUnsafeRemoval(t *testing.T, pkg *core.PackageInfo) {
+	t.Helper()
+	for _, name := range []string{"krew", "../ctx", "--all", "unknown"} {
+		pkg.Name = name
+		if _, err := uninstallPlan(pkg); err == nil {
+			t.Errorf("unsafe Krew removal accepted for %q", name)
+		}
+	}
+}
+
+func TestUninstallPlanKrewRejectsChangedLocation(t *testing.T) {
+	_, root := krewExecutableFixture(t)
+	pkg := &core.PackageInfo{Name: "ctx", Tool: core.ToolKrew, Version: "v0.0.1", Path: filepath.Join(root, "store", "ctx", "v0.0.1")}
+	if _, err := uninstallPlan(pkg); err == nil {
+		t.Fatal("accepted a Krew installation changed since the scan")
+	}
+}
+
 func TestUninstallPlanRubyGemsUsesSelectedVersionAndLocation(t *testing.T) {
 	_, root := gemExecutableFixture(t)
 	pkg := &core.PackageInfo{Name: "cli-tools", Version: "2.0.0", Tool: core.ToolGem, Path: filepath.Join(root, "gems", "cli-tools-2.0.0")}

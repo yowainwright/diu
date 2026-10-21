@@ -918,7 +918,7 @@ func validateRemovableExecutableFile(cleanPath string) error {
 
 func supportsUninstall(pkg *core.PackageInfo) bool {
 	switch pkg.Tool {
-	case core.ToolHomebrew, homebrewCaskTool, core.ToolNPM, core.ToolPNPM, core.ToolBun, core.ToolPip, core.ToolUV, core.ToolGo, core.ToolGoBinary, core.ToolCargo, core.ToolPipx, core.ToolGem:
+	case core.ToolHomebrew, homebrewCaskTool, core.ToolNPM, core.ToolPNPM, core.ToolBun, core.ToolPip, core.ToolUV, core.ToolGo, core.ToolGoBinary, core.ToolCargo, core.ToolPipx, core.ToolGem, core.ToolKrew:
 		return true
 	default:
 		return false
@@ -971,7 +971,7 @@ func uninstallPlan(pkg *core.PackageInfo) ([]string, error) {
 		return pipUninstallPlan(pkg)
 	case core.ToolUV:
 		return namedPackageUninstallPlan(pkg, uvCommandName, "tool", uninstallSubcommand)
-	case core.ToolCargo, core.ToolPipx, core.ToolGem:
+	case core.ToolCargo, core.ToolPipx, core.ToolGem, core.ToolKrew:
 		return verifiedUninstallPlan(pkg)
 	case core.ToolGo, core.ToolGoBinary:
 		return goBinaryUninstallPlan(pkg)
@@ -993,6 +993,8 @@ func verifiedUninstallPlan(pkg *core.PackageInfo) ([]string, error) {
 		return cargoUninstallPlan(pkg)
 	case core.ToolPipx:
 		return pipxUninstallPlan(pkg)
+	case core.ToolKrew:
+		return krewUninstallPlan(pkg)
 	default:
 		return gemUninstallPlan(pkg)
 	}
@@ -1110,6 +1112,38 @@ func gemUninstallPlan(pkg *core.PackageInfo) ([]string, error) {
 	root := filepath.Dir(filepath.Dir(pkg.Path))
 	platform := rubyGemsPlatform(pkg)
 	return []string{core.ToolGem, uninstallSubcommand, pkg.Name, "--version", pkg.Version, "--install-dir", root, "--platform", platform, "--executables", "--abort-on-dependent", "--no-user-install", "--no-force", "--no-ignore-dependencies"}, nil
+}
+
+func krewUninstallPlan(pkg *core.PackageInfo) ([]string, error) {
+	if err := validatePackageManagerName(pkg.Name); err != nil {
+		return nil, err
+	}
+	isProtected := pkg.Name == core.ToolKrew || strings.ContainsAny(pkg.Name, `/\`)
+	if isProtected {
+		return nil, fmt.Errorf("cannot uninstall Krew plugin %q", pkg.Name)
+	}
+	if pkg.Path == "" {
+		return nil, fmt.Errorf("krew install location is unknown; run diu scan")
+	}
+	if err := verifyKrewPackage(pkg); err != nil {
+		return nil, err
+	}
+	return []string{"kubectl", core.ToolKrew, uninstallSubcommand, pkg.Name}, nil
+}
+
+func verifyKrewPackage(pkg *core.PackageInfo) error {
+	packages, err := monitors.NewKrewMonitor().GetInstalledPackages()
+	if err != nil {
+		return err
+	}
+	for _, current := range packages {
+		hasIdentity := current.Name == pkg.Name && current.Version == pkg.Version
+		isInstalled := hasIdentity && current.Path == pkg.Path
+		if isInstalled {
+			return nil
+		}
+	}
+	return fmt.Errorf("krew install %s changed since the last scan; run diu scan", pkg.Name)
 }
 
 func rubyGemsPlatform(pkg *core.PackageInfo) string {

@@ -18,10 +18,12 @@ import (
 )
 
 type executableTarget struct {
-	Name         string
-	OriginalPath string
-	Tool         string
-	Package      string
+	Name           string
+	OriginalPath   string
+	Tool           string
+	Package        string
+	KubectlPath    string
+	KubectlBuiltin string
 }
 
 func currentShellHomeDir() (string, error) {
@@ -47,7 +49,51 @@ func discoverExecutables(config *core.Config) []executableTarget {
 	addCargoExecutables(config, targets)
 	addPipxExecutables(config, targets)
 	addRubyGemsExecutables(config, targets)
+	addKrewExecutables(config, targets)
 	return slices.SortedFunc(maps.Values(targets), compareExecutableTargets)
+}
+
+func addKrewExecutables(config *core.Config, targets map[string]executableTarget) {
+	if !monitoringToolEnabled(config, core.ToolKrew) {
+		return
+	}
+	binaries, _ := monitors.KrewExecutables()
+	for name, pkg := range binaries {
+		addOwnedExecutable(targets, name, pkg)
+		target := targets[name]
+		if target.Tool != core.ToolKrew {
+			continue
+		}
+		targets[name] = krewDispatchTarget(target)
+	}
+}
+
+func krewDispatchTarget(target executableTarget) executableTarget {
+	kubectl, err := exec.LookPath("kubectl")
+	if err != nil {
+		return target
+	}
+	output, err := readKubectlHelp(target.Package)
+	if err != nil {
+		return target
+	}
+	if !bytes.Contains(output, []byte("\n  kubectl ")) {
+		return target
+	}
+	isUnknown := bytes.Contains(output, []byte("Unknown help topic [`"+target.Package+"`]"))
+	if !isUnknown {
+		target.KubectlBuiltin = target.Package
+	}
+	target.KubectlPath = kubectl
+	return target
+}
+
+func readKubectlHelp(name string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), core.RecorderTimeout)
+	defer cancel()
+	command := exec.CommandContext(ctx, "kubectl", "help", name)
+	command.Env = append(os.Environ(), "LC_ALL=C", "LANG=C")
+	return command.CombinedOutput()
 }
 
 func addCargoExecutables(config *core.Config, targets map[string]executableTarget) {
@@ -220,7 +266,7 @@ var defaultExecutablePathDeps = executablePathDeps{
 
 func shouldSkipExecutable(name string) bool {
 	switch name {
-	case "", ".", "..", "diu", "brew", core.ToolNPM, core.ToolPNPM, core.ToolBun, core.ToolGo, core.ToolCargo, core.ToolPipx, core.ToolGem, core.ToolPip, "pip3", core.ToolUV, core.ToolPoetry:
+	case "", ".", "..", "diu", "brew", "kubectl-krew", core.ToolNPM, core.ToolPNPM, core.ToolBun, core.ToolGo, core.ToolCargo, core.ToolPipx, core.ToolGem, core.ToolPip, "pip3", core.ToolUV, core.ToolPoetry:
 		return true
 	default:
 		return strings.HasPrefix(name, ".")
