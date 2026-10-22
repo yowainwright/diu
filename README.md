@@ -427,6 +427,9 @@ diu <version> (commit <commit>, built <date>)
 | Rust | Cargo | Installed CLI crates and their binaries |
 | Python | pip, uv, pipx | pip packages, uv tools, and pipx applications |
 | Ruby | RubyGems (`gem`) | CLI gems in the active Ruby environment |
+| kubectl | Krew | Plugins installed under `KREW_ROOT` or `~/.krew` |
+
+Krew tracks literal `kubectl <plugin>` commands and direct plugin executables.
 
 RubyGems command tracking supports generated wrappers and direct source links.
 Commands exposed through Ruby version-manager shims, such as rbenv, are recorded as generic executable usage.

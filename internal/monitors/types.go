@@ -2,6 +2,10 @@ package monitors
 
 import "github.com/yowainwright/diu/internal/core"
 
+type KrewMonitor struct {
+	*BaseMonitor
+}
+
 type CargoMonitor struct {
 	*BaseMonitor
 }

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -41,6 +42,69 @@ func TestRenderZshIntegrationIncludesUnmappedCommandFallback(t *testing.T) {
 		`"--executable=${1:t}"`,
 		`builtin whence "$lookup" -- "$1"`,
 	)
+}
+
+func TestZshKrewDispatch(t *testing.T) {
+	config, root := krewExecutableFixture(t)
+	writeExecutableForTest(t, filepath.Join(root, "bin", "kubectl-ctx-extra"), "#!/bin/sh\nexit 0\n")
+	source, err := renderZshIntegration(discoverExecutables(config), "/unused/integration.zsh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for submitted, want := range krewDispatchCases() {
+		t.Run(submitted, func(t *testing.T) {
+			output := parseKrewSubmitted(t, source, submitted)
+			if output != want {
+				t.Fatalf("recorded %q, want %q", output, want)
+			}
+		})
+	}
+}
+
+func krewDispatchCases() map[string]string {
+	cases := map[string]string{
+		"kubectl ctx":                               `"ctx"`,
+		"kubectl view-secret --help":                `"view-secret"`,
+		"kubectl view_secret":                       `"view-secret"`,
+		"kubectl-ctx":                               `"ctx"`,
+		"KREW_ROOT=/other kubectl ctx":              "generic",
+		"kubectl ctx " + strings.Repeat("arg ", 33): "generic",
+		"kubectl get pods":                          "generic",
+		"kubectl api-resources":                     "generic",
+		"kubectl api_resources":                     `"api-resources"`,
+		"kubectl --namespace test ctx":              "generic",
+		"kubectl ctx extra":                         "generic",
+		"kubectl ctx '$dynamic'":                    "generic",
+		"kubectl ctx > output":                      `"ctx"`,
+		"kubectl ctx; kubectl view-secret":          "\"ctx\"\n\"view-secret\"",
+	}
+	maps.Copy(cases, krewEnvironmentDispatchCases())
+	return cases
+}
+
+func krewEnvironmentDispatchCases() map[string]string {
+	return map[string]string{
+		"KREW_ROOT=/other kubectl ctx; kubectl ctx": "generic\n\"ctx\"",
+		"FOO=x true && kubectl ctx":                 "generic\n\"ctx\"",
+		"FOO=x; kubectl ctx":                        `"ctx"`,
+	}
+}
+
+func parseKrewSubmitted(t *testing.T, source, submitted string) string {
+	t.Helper()
+	zsh, err := exec.LookPath("zsh")
+	if err != nil {
+		t.Skip("zsh is unavailable")
+	}
+	script := "typeset -gi _DIU_IN_PREEXEC=1\n" + source
+	script += "\n_diu_emit_record() { print -r -- \"$2\"; }\n_diu_record_unmapped() { print generic; }\n"
+	script += "probe() { local submitted=" + zshSingleQuote(submitted) + "\n"
+	script += "local command_position=1 command_prefix='' command_lookup=0 skip_prefix_argument=0 skip_redirection_target=0 loop_header=0 case_header=0 case_pattern=0 case_depth=0 exec_prefix=0 skip_exec_argument=0\n_diu_parse_submitted\n}\nprobe\ntrue\n"
+	output, err := exec.CommandContext(t.Context(), zsh, "-df", "-c", script).CombinedOutput()
+	if err != nil {
+		t.Fatalf("zsh parser failed: %v: %s", err, output)
+	}
+	return strings.TrimSpace(string(output))
 }
 
 func TestZshCaptureTimestamp(t *testing.T) {

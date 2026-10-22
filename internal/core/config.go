@@ -136,7 +136,7 @@ func defaultMonitoringConfig() MonitoringConfig {
 func defaultEnabledTools() []string {
 	return []string{
 		ToolHomebrew, ToolNPM, ToolPNPM, ToolBun, ToolGo,
-		ToolCargo, ToolPipx, ToolGem, ToolPip, ToolUV, ToolPoetry,
+		ToolCargo, ToolPipx, ToolGem, ToolKrew, ToolPip, ToolUV, ToolPoetry,
 	}
 }
 

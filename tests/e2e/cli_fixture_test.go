@@ -3,9 +3,14 @@
 package e2e
 
 import (
+	"archive/zip"
+	"bytes"
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -90,6 +95,129 @@ func writeCLIManagers(t *testing.T, f *cliFixture) {
 	if err := os.Symlink(cliBinary, filepath.Join(f.bin, "diu")); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func newCLIKrewFixture(t *testing.T) *cliFixture {
+	t.Helper()
+	f := newCLIFixture(t)
+	root := filepath.Join(f.home, "krew root")
+	f.env = append(f.env, "KREW_ROOT="+root, "PATH="+filepath.Join(root, "bin")+":"+f.basePath())
+	monitoring := &f.config.Monitoring
+	monitoring.EnabledTools = []string{core.ToolKrew}
+	monitoring.Filesystem.WatchPaths = map[string][]string{}
+	writeCLIConfig(t, f)
+	for _, name := range []string{"ctx", "view-secret", "krew", "get"} {
+		writeCLIKrewPlugin(t, root, name)
+	}
+	writeCLIFile(t, filepath.Join(f.bin, "kubectl"), krewFixtureScript, 0o700)
+	writeCLIFile(t, filepath.Join(root, "store", "krew", "v1.2.3", "plugin"), krewUninstallFixtureScript, 0o700)
+	return f
+}
+
+func writeCLIKrewPlugin(t *testing.T, root, name string) {
+	t.Helper()
+	writeCLIFile(t, filepath.Join(root, "receipts", name+".yaml"), "kind: Plugin\n", 0o600)
+	path := filepath.Join(root, "store", name, "v1.2.3", "plugin")
+	writeCLIFile(t, path, "#!/bin/sh\nexit 0\n", 0o700)
+	link := filepath.Join(root, "bin", "kubectl-"+strings.ReplaceAll(name, "-", "_"))
+	if err := os.MkdirAll(filepath.Dir(link), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(path, link); err != nil {
+		t.Fatal(err)
+	}
+}
+
+const krewFixtureScript = `#!/bin/sh
+if [ "$1" = help ]; then
+    shift
+    [ "$1" != -- ] || shift
+    if [ "$1" = get ]; then printf 'Usage:\n  kubectl get [flags] [options]\n'; exit 0; fi
+    printf 'Unknown help topic [\140%s\140]\n\nUsage:\n  kubectl [flags] [options]\n' "$1"
+    exit 0
+fi
+case "$1" in get|version|-*) exit 0 ;; esac
+plugin=$(printf '%s' "$1" | tr '-' '_')
+shift
+exec "$KREW_ROOT/bin/kubectl-$plugin" "$@"
+`
+
+const krewUninstallFixtureScript = `#!/bin/sh
+[ "$1" = uninstall ] || exit 1
+printf '%s\n' "$@" > "$DIU_TEST_HOME/krew-uninstall-args"
+[ ! -f "$DIU_TEST_HOME/krew-uninstall-failed" ] || exit 7
+name="$2"
+plugin=$(printf '%s' "$name" | tr '-' '_')
+rm -f "$KREW_ROOT/bin/kubectl-$plugin" "$KREW_ROOT/receipts/$name.yaml"
+rm -rf "$KREW_ROOT/store/$name"
+`
+
+func newCLIRealKrewFixture(t *testing.T) *cliFixture {
+	t.Helper()
+	directory := os.Getenv("DIU_KREW_VERIFICATION_DIR")
+	if directory == "" {
+		t.Skip("real Krew verification binaries are not mounted")
+	}
+	f := newCLIFixture(t)
+	root := filepath.Join(f.home, "krew root")
+	f.env = append(f.env, "KREW_ROOT="+root, "KREW_NO_UPGRADE_CHECK=1", "PATH="+filepath.Join(root, "bin")+":"+f.basePath())
+	monitoring := &f.config.Monitoring
+	monitoring.EnabledTools = []string{core.ToolKrew}
+	monitoring.Filesystem.WatchPaths = map[string][]string{}
+	writeCLIConfig(t, f)
+	if err := os.Symlink(filepath.Join(directory, "kubectl"), filepath.Join(f.bin, "kubectl")); err != nil {
+		t.Fatal(err)
+	}
+	installCLIRealKrew(t, f, directory, root)
+	return f
+}
+
+func installCLIRealKrew(t *testing.T, f *cliFixture, directory, root string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Join(root, "index", "default", ".git"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	platform := "krew-linux_" + runtime.GOARCH
+	binary := filepath.Join(directory, "krew", platform)
+	manifest := "--manifest=" + filepath.Join(directory, "krew.yaml")
+	archive := "--archive=" + filepath.Join(directory, platform+".tar.gz")
+	result := runCLICommand(t, f.command(t, binary, "install", manifest, archive, "--no-update-index"), "")
+	assertCLIExit(t, result, 0)
+	pluginArchive := writeCLIRealKrewArchive(t, f)
+	for _, name := range []string{"ctx", "view-secret", "get", "Custom_tool"} {
+		installCLIRealKrewPlugin(t, f, name, pluginArchive)
+	}
+}
+
+func writeCLIRealKrewArchive(t *testing.T, f *cliFixture) string {
+	t.Helper()
+	var contents bytes.Buffer
+	writer := zip.NewWriter(&contents)
+	header := &zip.FileHeader{Name: "plugin"}
+	header.SetMode(0o700)
+	entry, err := writer.CreateHeader(header)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := entry.Write([]byte("#!/bin/sh\nexit 0\n")); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(f.home, "plugin.zip")
+	writeCLIFile(t, path, contents.String(), 0o600)
+	return path
+}
+
+func installCLIRealKrewPlugin(t *testing.T, f *cliFixture, name, archive string) {
+	t.Helper()
+	digest := sha256.Sum256([]byte(readCLIFile(t, archive)))
+	manifest := fmt.Sprintf("apiVersion: krew.googlecontainertools.github.com/v1alpha2\nkind: Plugin\nmetadata:\n  name: %s\nspec:\n  version: v1.2.3\n  homepage: https://example.invalid\n  shortDescription: Offline DIU fixture\n  platforms:\n  - selector:\n      matchLabels:\n        os: linux\n        arch: %s\n    uri: https://example.invalid/plugin.zip\n    sha256: %x\n    bin: plugin\n", name, runtime.GOARCH, digest)
+	path := filepath.Join(f.home, name+".yaml")
+	writeCLIFile(t, path, manifest, 0o600)
+	result := runCLICommand(t, f.command(t, filepath.Join(f.bin, "kubectl"), "krew", "install", "--manifest="+path, "--archive="+archive, "--no-update-index"), "")
+	assertCLIExit(t, result, 0)
 }
 
 func newCLICargoFixture(t *testing.T) *cliFixture {

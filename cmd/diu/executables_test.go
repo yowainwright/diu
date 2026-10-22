@@ -64,6 +64,40 @@ func TestDiscoverExecutablesMapsRubyGemsCommands(t *testing.T) {
 	}
 }
 
+func krewExecutableFixture(t *testing.T) (*core.Config, string) {
+	t.Helper()
+	root := filepath.Join(t.TempDir(), "krew root")
+	t.Setenv("KREW_ROOT", root)
+	t.Setenv("PATH", filepath.Join(root, "bin")+":"+os.Getenv("PATH"))
+	for _, name := range []string{"ctx", "view-secret", "get", "api-resources", "krew"} {
+		writeKrewExecutableFixture(t, root, name)
+	}
+	writeExecutableForTest(t, filepath.Join(root, "bin", "kubectl"), krewHelpFixtureScript)
+	config := core.DefaultConfig()
+	config.Monitoring.EnabledTools = []string{core.ToolKrew}
+	return config, root
+}
+
+func writeKrewExecutableFixture(t *testing.T, root, name string) {
+	t.Helper()
+	bin := filepath.Join(root, "store", name, "v1.2.3", "plugin")
+	for _, dir := range []string{filepath.Dir(bin), filepath.Join(root, "receipts"), filepath.Join(root, "bin")} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeExecutableForTest(t, bin, "#!/bin/sh\nexit 0\n")
+	if err := os.WriteFile(filepath.Join(root, "receipts", name+".yaml"), []byte("kind: Plugin\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "bin", "kubectl-"+strings.ReplaceAll(name, "-", "_"))
+	if err := os.Symlink(bin, link); err != nil {
+		t.Fatal(err)
+	}
+}
+
+const krewHelpFixtureScript = "#!/bin/sh\nshift\n[ \"$1\" != -- ] || shift\ncase \"$1\" in\n get|api-resources) printf 'Usage:\\n  kubectl %s [flags] [options]\\n' \"$1\" ;;\n *) printf 'Unknown help topic [`%s`]\\n\\nUsage:\\n  kubectl [flags] [options]\\n' \"$1\" ;;\nesac\n"
+
 func gemExecutableFixture(t *testing.T) (*core.Config, string) {
 	t.Helper()
 	root, bin := t.TempDir(), t.TempDir()

@@ -85,6 +85,56 @@ func TestCLICargoUninstall(t *testing.T) {
 	assertCLIFile(t, historyPath, history)
 }
 
+func TestCLIKrewUninstallPreservesOtherPluginsAndHistory(t *testing.T) {
+	f := newCLIKrewFixture(t)
+	f.setup(t)
+	assertCLIKrewLaunches(t, f)
+	historyPath := storage.ExecutionLogPath(f.config.Storage.JSONFile)
+	history := readCLIFile(t, historyPath)
+	assertCLIKrewUninstallPreviewAndFailure(t, f)
+	assertCLIExit(t, f.cli(t, "manage", "--uninstall", "ctx", "--tool", "krew", "--yes"), 0)
+	assertCLIFile(t, filepath.Join(f.home, "krew-uninstall-args"), "uninstall\nctx\n")
+	assertCLIMissing(t, filepath.Join(f.home, "krew root", "receipts", "ctx.yaml"))
+	assertCLIFile(t, filepath.Join(f.home, "krew root", "store", "view-secret", "v1.2.3", "plugin"), "#!/bin/sh\nexit 0\n")
+	assertCLIFile(t, historyPath, history)
+}
+
+func assertCLIKrewUninstallPreviewAndFailure(t *testing.T, f *cliFixture) {
+	t.Helper()
+	preview := f.cli(t, "manage", "--uninstall", "ctx", "--tool", "krew", "--dry-run")
+	assertCLIExit(t, preview, 0)
+	if !strings.Contains(preview.stdout, "kubectl krew uninstall ctx") {
+		t.Fatalf("unexpected Krew preview: %q", preview.stdout)
+	}
+	assertCLIMissing(t, filepath.Join(f.home, "krew-uninstall-args"))
+	marker := filepath.Join(f.home, "krew-uninstall-failed")
+	writeCLIFile(t, marker, "", 0o600)
+	assertCLIExit(t, f.cli(t, "manage", "--uninstall", "ctx", "--tool", "krew", "--yes"), 7)
+	assertCLIRecordedToolUse(t, f, core.ToolKrew, "ctx", 2)
+	if err := os.Remove(marker); err != nil {
+		t.Fatal(err)
+	}
+	assertCLIExit(t, f.cli(t, "manage", "--uninstall", "krew", "--tool", "krew", "--yes"), 1)
+}
+
+func assertCLIRealKrewRemoval(t *testing.T, f *cliFixture) {
+	t.Helper()
+	historyPath := storage.ExecutionLogPath(f.config.Storage.JSONFile)
+	history := readCLIFile(t, historyPath)
+	preview := f.cli(t, "manage", "--uninstall", "ctx", "--tool", "krew", "--dry-run")
+	assertCLIExit(t, preview, 0)
+	path := filepath.Join(f.home, "krew root", "receipts", "ctx.yaml")
+	receipt := readCLIFile(t, path)
+	writeCLIFile(t, path, "invalid: [yaml", 0o600)
+	assertCLIExit(t, f.cli(t, "manage", "--uninstall", "ctx", "--tool", "krew", "--yes"), 1)
+	assertCLIRecordedToolUse(t, f, core.ToolKrew, "ctx", 2)
+	writeCLIFile(t, path, receipt, 0o600)
+	assertCLIExit(t, f.cli(t, "manage", "--uninstall", "ctx", "--tool", "krew", "--yes"), 0)
+	assertCLIMissing(t, path)
+	assertCLIFile(t, filepath.Join(f.home, "krew root", "store", "view-secret", "v1.2.3", "plugin"), "#!/bin/sh\nexit 0\n")
+	assertCLIFile(t, historyPath, history)
+}
+
 func TestCLIRubyGemsUninstallPreservesOtherVersionsAndHistory(t *testing.T) {
 	f := newCLIGemFixture(t)
 	f.setup(t)

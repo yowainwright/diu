@@ -22,7 +22,7 @@ const (
 const zshPreexecHook = `_diu_load_maps() {
     if [[ ! -r "$_DIU_INTEGRATION_FILE" ]]; then
         add-zsh-hook -d preexec _diu_preexec 2>/dev/null || true
-        unset _DIU_TOOL_MAP _DIU_PACKAGE_MAP _DIU_EXECUTABLE_MAP
+        unset _DIU_TOOL_MAP _DIU_PACKAGE_MAP _DIU_EXECUTABLE_MAP _DIU_KREW_PATH_MAP _DIU_KREW_KUBECTL_MAP _DIU_KREW_BUILTIN_MAP
         return 1
     fi
     typeset -gi _DIU_IN_PREEXEC=1
@@ -50,7 +50,7 @@ _diu_skip_redirection() {
 }
 _diu_skip_control_header() {
     if (( loop_header )); then
-        if [[ "$1" == do ]]; then loop_header=0; command_position=1; fi
+        if [[ "$1" == do ]]; then loop_header=0; command_position=1; has_assignments=0; fi
         return 0
     fi
     if (( case_pattern )); then
@@ -61,6 +61,7 @@ _diu_skip_control_header() {
         elif [[ "$1" == ')' ]]; then
             case_pattern=0
             command_position=1
+            has_assignments=0
         fi
         return 0
     fi
@@ -74,8 +75,8 @@ _diu_skip_reserved_word() {
     case "$1" in
         ';;'|';&'|';;&')
             if (( case_depth )); then case_pattern=1; command_position=0; else command_position=1; fi
-            command_prefix=""; command_lookup=0; exec_prefix=0; return 0 ;;
-        ';'|'&&'|'||'|'|'|'|&'|'&'|'('|')') command_position=1; command_prefix=""; command_lookup=0; exec_prefix=0; return 0 ;;
+            command_prefix=""; command_lookup=0; exec_prefix=0; has_assignments=0; return 0 ;;
+        ';'|'&&'|'||'|'|'|'|&'|'&'|'('|')') command_position=1; command_prefix=""; command_lookup=0; exec_prefix=0; has_assignments=0; return 0 ;;
     esac
     if [[ "$1" == esac ]] && (( case_depth )); then
         (( case_depth-- ))
@@ -89,7 +90,7 @@ _diu_skip_reserved_word() {
         command|builtin|noglob|nocorrect|time|env|sudo) command_prefix="$1"; return 0 ;;
         case) (( case_depth++ )); case_header=1; command_position=0; return 0 ;;
         for|select) loop_header=1; command_position=0; return 0 ;;
-        in|if|then|elif|else|while|until|do|!|coproc|'{') return 0 ;;
+        in|if|then|elif|else|while|until|do|!|coproc|'{') has_assignments=0; return 0 ;;
         fi|done|esac|'}') command_position=0; return 0 ;;
     esac
     return 1
@@ -151,8 +152,55 @@ _diu_record_unmapped() {
     "$diu_binary" record --background "--executable=${1:t}" </dev/null >/dev/null 2>&1 &!
     _DIU_RECORDER_PIDS+=("$!")
 }
+_diu_krew_candidates() {
+    local raw argument candidate=kubectl
+    local -i index skip_redirection_target=0
+    for (( index=word_index+1; index<=${#submitted_words}; index++ )); do
+        raw="${submitted_words[index]}"
+        if (( skip_redirection_target )); then skip_redirection_target=0; continue; fi
+        _diu_skip_redirection "$raw" && continue
+        case "$raw" in ';'|'&&'|'||'|'|'|'|&'|'&'|'('|')'|'}') break ;; esac
+        case "$raw" in *'$'*|*$'\x60'*|*'*'*|*'?'*|*'['*) return 1 ;; esac
+        argument="${(Q)raw}"
+        [[ "$argument" == -* ]] && break
+        [[ -n "$argument" ]] || return 1
+        [[ -n "$first_command" ]] || first_command="$argument"
+        candidate+="-${argument//-/_}"
+        candidates+=("$candidate")
+        (( ${#candidates} > 32 )) && return 1
+    done
+    (( ${#candidates} > 0 ))
+}
+_diu_emit_krew_candidate() {
+    local candidate="$1" resolved="$2" dispatcher="$3"
+    local expected="${_DIU_KREW_PATH_MAP[$candidate]-}"
+    [[ -n "$expected" && "$resolved" -ef "$expected" ]] || return 1
+    [[ "$dispatcher" -ef "${_DIU_KREW_KUBECTL_MAP[$candidate]}" ]] || return 1
+    [[ -z "${_DIU_KREW_BUILTIN_MAP[$first_command]-}" ]] || return 1
+    _diu_emit_record "${_DIU_TOOL_MAP[$candidate]}" "${_DIU_PACKAGE_MAP[$candidate]}" "${_DIU_EXECUTABLE_MAP[$candidate]}"
+}
+_diu_record_krew_plugin() {
+    (( has_assignments )) && return 1
+    [[ "$prefix" != env && "$prefix" != sudo ]] || return 1
+    local dispatcher="$1" first_command="" resolved
+    local -a candidates=()
+    local -i index
+    _diu_krew_candidates || return 1
+    case "$first_command" in help|__complete|__completeNoDesc|krew) return 1 ;; esac
+    if [[ "$dispatcher" != */* ]]; then
+        [[ "$(builtin whence -w -- "$dispatcher")" != *': function' ]] || return 1
+        dispatcher="$(builtin whence -p -- "$dispatcher")"
+    fi
+    for (( index=${#candidates}; index>0; index-- )); do
+        resolved="$(builtin whence -p -- "${candidates[index]}")" || continue
+        _diu_emit_krew_candidate "${candidates[index]}" "$resolved" "$dispatcher"
+        return $?
+    done
+    return 1
+}
 _diu_record_command() {
-    (( command_position )) && [[ "$1" != *=* ]] || return 1
+    (( command_position )) || return 1
+    if [[ "$1" == *=* ]]; then has_assignments=1; return 1; fi
     local word="${(Q)1}" tool package executable
     [[ "$1" == '~/'* ]] && word="$HOME/${word#\~/}"
     local invocation="$word" prefix="$command_prefix"
@@ -166,6 +214,9 @@ _diu_record_command() {
         return 0
     fi
     command_prefix=""
+    if [[ "$word" == kubectl ]]; then
+        _diu_record_krew_plugin "$invocation" && return 0
+    fi
     tool="${_DIU_TOOL_MAP[$word]-}"
     if [[ -z "$tool" ]]; then
         _diu_record_unmapped "$invocation" "$prefix"
@@ -177,7 +228,10 @@ _diu_record_command() {
 }
 _diu_parse_submitted() {
     local word
-    for word in ${(z)submitted}; do
+    local -a submitted_words=("${(@z)submitted}")
+    local -i word_index=0 has_assignments=0
+    for word in "${submitted_words[@]}"; do
+        (( word_index++ ))
         _diu_skip_pending_word "$word" && continue
         _diu_skip_redirection "$word" && continue
         _diu_skip_control_header "$word" && continue
@@ -291,6 +345,8 @@ func renderZshIntegration(targets []executableTarget, integrationPath string) (s
 	fmt.Fprintf(&source, "typeset -gi _DIU_RECORDER_LIMIT=%d\n", core.MaxRecorderWorkers)
 	source.WriteString("typeset -gA _DIU_TOOL_MAP _DIU_PACKAGE_MAP _DIU_EXECUTABLE_MAP\n")
 	source.WriteString("_DIU_TOOL_MAP=() _DIU_PACKAGE_MAP=() _DIU_EXECUTABLE_MAP=()\n")
+	source.WriteString("typeset -gA _DIU_KREW_PATH_MAP _DIU_KREW_KUBECTL_MAP _DIU_KREW_BUILTIN_MAP\n")
+	source.WriteString("_DIU_KREW_PATH_MAP=() _DIU_KREW_KUBECTL_MAP=() _DIU_KREW_BUILTIN_MAP=()\n")
 	for _, target := range targets {
 		if err := appendZshExecutableMaps(&source, target); err != nil {
 			return "", err
@@ -301,6 +357,7 @@ func renderZshIntegration(targets []executableTarget, integrationPath string) (s
 }
 
 func appendZshExecutableMaps(source *strings.Builder, target executableTarget) error {
+	appendKrewDispatchMaps(source, target)
 	fields := []zshMapField{
 		{mapName: "_DIU_TOOL_MAP", value: target.Tool},
 		{mapName: "_DIU_PACKAGE_MAP", value: target.Package},
@@ -312,6 +369,18 @@ func appendZshExecutableMaps(source *strings.Builder, target executableTarget) e
 		}
 	}
 	return nil
+}
+
+func appendKrewDispatchMaps(source *strings.Builder, target executableTarget) {
+	if target.KubectlPath == "" {
+		return
+	}
+	key := zshSingleQuote(target.Name)
+	fmt.Fprintf(source, "_DIU_KREW_PATH_MAP+=(%s %s)\n", key, zshSingleQuote(target.OriginalPath))
+	fmt.Fprintf(source, "_DIU_KREW_KUBECTL_MAP+=(%s %s)\n", key, zshSingleQuote(target.KubectlPath))
+	if target.KubectlBuiltin != "" {
+		fmt.Fprintf(source, "_DIU_KREW_BUILTIN_MAP+=(%s 1)\n", zshSingleQuote(target.KubectlBuiltin))
+	}
 }
 
 type zshMapField struct {

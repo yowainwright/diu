@@ -316,7 +316,7 @@ func mergePackageDetails(pkg, existing *core.PackageInfo) {
 		pkg.Version = existing.Version
 	}
 	switch pkg.Tool {
-	case core.ToolCargo, core.ToolPipx, core.ToolGem:
+	case core.ToolCargo, core.ToolPipx, core.ToolGem, core.ToolKrew:
 		return
 	}
 	if pkg.Path == "" {

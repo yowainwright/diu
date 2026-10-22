@@ -26,8 +26,8 @@ func NewMonitor(tool string) (Monitor, error) {
 		return NewGoMonitor(), nil
 	case core.ToolCargo:
 		return NewCargoMonitor(), nil
-	case core.ToolPipx:
-		return NewPipxMonitor(), nil
+	case core.ToolPipx, core.ToolKrew:
+		return newIsolatedToolMonitor(normalizedTool), nil
 	case core.ToolNPM, core.ToolPNPM, core.ToolBun:
 		return newJavaScriptMonitor(normalizedTool), nil
 	case core.ToolPip, core.ToolUV, core.ToolPoetry, core.ToolGem:
@@ -35,6 +35,13 @@ func NewMonitor(tool string) (Monitor, error) {
 	default:
 		return nil, fmt.Errorf("unsupported tool: %s", tool)
 	}
+}
+
+func newIsolatedToolMonitor(tool string) Monitor {
+	if tool == core.ToolKrew {
+		return NewKrewMonitor()
+	}
+	return NewPipxMonitor()
 }
 
 func newJavaScriptMonitor(tool string) Monitor {
