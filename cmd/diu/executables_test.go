@@ -96,7 +96,7 @@ func writeKrewExecutableFixture(t *testing.T, root, name string) {
 	}
 }
 
-const krewHelpFixtureScript = "#!/bin/sh\ncase \"$2\" in\n get|api-resources) printf 'Usage:\\n  kubectl %s [flags] [options]\\n' \"$2\" ;;\n *) printf 'Unknown help topic [`%s`]\\n\\nUsage:\\n  kubectl [flags] [options]\\n' \"$2\" ;;\nesac\n"
+const krewHelpFixtureScript = "#!/bin/sh\nshift\n[ \"$1\" != -- ] || shift\ncase \"$1\" in\n get|api-resources) printf 'Usage:\\n  kubectl %s [flags] [options]\\n' \"$1\" ;;\n *) printf 'Unknown help topic [`%s`]\\n\\nUsage:\\n  kubectl [flags] [options]\\n' \"$1\" ;;\nesac\n"
 
 func gemExecutableFixture(t *testing.T) (*core.Config, string) {
 	t.Helper()

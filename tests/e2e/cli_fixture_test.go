@@ -130,8 +130,10 @@ func writeCLIKrewPlugin(t *testing.T, root, name string) {
 
 const krewFixtureScript = `#!/bin/sh
 if [ "$1" = help ]; then
-    if [ "$2" = get ]; then printf 'Usage:\n  kubectl get [flags] [options]\n'; exit 0; fi
-    printf 'Unknown help topic [\140%s\140]\n\nUsage:\n  kubectl [flags] [options]\n' "$2"
+    shift
+    [ "$1" != -- ] || shift
+    if [ "$1" = get ]; then printf 'Usage:\n  kubectl get [flags] [options]\n'; exit 0; fi
+    printf 'Unknown help topic [\140%s\140]\n\nUsage:\n  kubectl [flags] [options]\n' "$1"
     exit 0
 fi
 case "$1" in get|version|-*) exit 0 ;; esac

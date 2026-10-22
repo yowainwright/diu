@@ -91,9 +91,10 @@ func krewDispatchTarget(target executableTarget) executableTarget {
 func readKubectlHelp(name string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), core.RecorderTimeout)
 	defer cancel()
-	command := exec.CommandContext(ctx, "kubectl", "help", name)
-	command.Env = append(os.Environ(), "LC_ALL=C", "LANG=C")
-	return command.CombinedOutput()
+	var output bytes.Buffer
+	runner := dx.NewRunner(nil, &output, &output)
+	err := runner.Run(ctx, "env", "LC_ALL=C", "LANG=C", "kubectl", "help", "--", name)
+	return output.Bytes(), err
 }
 
 func addCargoExecutables(config *core.Config, targets map[string]executableTarget) {
