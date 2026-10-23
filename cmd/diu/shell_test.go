@@ -61,6 +61,24 @@ func TestZshKrewDispatch(t *testing.T) {
 	}
 }
 
+func TestZshKrewUnderscoreNameCannotOverrideBuiltin(t *testing.T) {
+	config, root := krewExecutableFixture(t)
+	for _, path := range []string{"bin/kubectl-api_resources", "receipts/api-resources.yaml"} {
+		if err := os.Remove(filepath.Join(root, path)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeKrewExecutableFixture(t, root, "api_resources")
+	source, err := renderZshIntegration(discoverExecutables(config), "/unused/integration.zsh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := parseKrewSubmitted(t, source, "kubectl api-resources --help")
+	if got != "generic" {
+		t.Fatalf("built-in command attributed to Krew plugin: %s", got)
+	}
+}
+
 func krewDispatchCases() map[string]string {
 	cases := map[string]string{
 		"kubectl ctx":                               `"ctx"`,

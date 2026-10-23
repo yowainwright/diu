@@ -104,9 +104,24 @@ func TestCLIRealKrewDispatchAndRemoval(t *testing.T) {
 				startCLIDaemon(t, f)
 			}
 			assertCLIKrewLaunches(t, f)
+			assertCLIRealKrewBuiltinSpelling(t, f)
 			assertCLIRealKrewRemoval(t, f)
 		})
 	}
+}
+
+func assertCLIRealKrewBuiltinSpelling(t *testing.T, f *cliFixture) {
+	t.Helper()
+	command, input, output, stderr := startCLIZsh(t, f)
+	writeZshInput(t, input, "kubectl api-resources --help\nkubectl api_resources --help\nprint -r -- DIU_KREW_BUILTIN_DONE\n")
+	waitCLIZshOutput(t, output, "DIU_KREW_BUILTIN_DONE")
+	records := waitCLIRecords(t, f, 7)
+	if len(records) != 7 {
+		t.Fatalf("records = %#v, want seven launches", records)
+	}
+	assertCLIRecordedToolUse(t, f, core.ToolKrew, "api_resources", 1)
+	assertCLIRecordedToolUse(t, f, core.ToolExecutable, "kubectl", 3)
+	finishCLIZsh(t, command, input, stderr)
 }
 
 func assertCLIGemLaunches(t *testing.T, f *cliFixture) {

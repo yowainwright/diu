@@ -99,11 +99,20 @@ func TestCLIKrewUninstallPreservesOtherPluginsAndHistory(t *testing.T) {
 	assertCLIFile(t, historyPath, history)
 }
 
+func TestCLIKrewUninstallBypassesLongerPlugin(t *testing.T) {
+	f := newCLIKrewFixture(t)
+	f.setup(t)
+	writeCLIFile(t, filepath.Join(f.bin, "kubectl-krew-uninstall"), krewUninstallShadowScript, 0o700)
+	assertCLIExit(t, f.cli(t, "manage", "--uninstall", "ctx", "--tool", "krew", "--yes"), 0)
+	assertCLIMissing(t, filepath.Join(f.home, "krew root", "receipts", "ctx.yaml"))
+	assertCLIMissing(t, filepath.Join(f.home, "krew-shadow-called"))
+}
+
 func assertCLIKrewUninstallPreviewAndFailure(t *testing.T, f *cliFixture) {
 	t.Helper()
 	preview := f.cli(t, "manage", "--uninstall", "ctx", "--tool", "krew", "--dry-run")
 	assertCLIExit(t, preview, 0)
-	if !strings.Contains(preview.stdout, "kubectl krew uninstall ctx") {
+	if !strings.Contains(preview.stdout, "kubectl-krew uninstall ctx") {
 		t.Fatalf("unexpected Krew preview: %q", preview.stdout)
 	}
 	assertCLIMissing(t, filepath.Join(f.home, "krew-uninstall-args"))
@@ -119,6 +128,7 @@ func assertCLIKrewUninstallPreviewAndFailure(t *testing.T, f *cliFixture) {
 
 func assertCLIRealKrewRemoval(t *testing.T, f *cliFixture) {
 	t.Helper()
+	writeCLIFile(t, filepath.Join(f.bin, "kubectl-krew-uninstall"), krewUninstallShadowScript, 0o700)
 	historyPath := storage.ExecutionLogPath(f.config.Storage.JSONFile)
 	history := readCLIFile(t, historyPath)
 	preview := f.cli(t, "manage", "--uninstall", "ctx", "--tool", "krew", "--dry-run")
@@ -133,6 +143,7 @@ func assertCLIRealKrewRemoval(t *testing.T, f *cliFixture) {
 	assertCLIMissing(t, path)
 	assertCLIFile(t, filepath.Join(f.home, "krew root", "store", "view-secret", "v1.2.3", "plugin"), "#!/bin/sh\nexit 0\n")
 	assertCLIFile(t, historyPath, history)
+	assertCLIMissing(t, filepath.Join(f.home, "krew-shadow-called"))
 }
 
 func TestCLIRubyGemsUninstallPreservesOtherVersionsAndHistory(t *testing.T) {
