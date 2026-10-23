@@ -1128,7 +1128,7 @@ func krewUninstallPlan(pkg *core.PackageInfo) ([]string, error) {
 	if err := verifyKrewPackage(pkg); err != nil {
 		return nil, err
 	}
-	return []string{"kubectl", core.ToolKrew, uninstallSubcommand, pkg.Name}, nil
+	return []string{"kubectl-krew", uninstallSubcommand, pkg.Name}, nil
 }
 
 func verifyKrewPackage(pkg *core.PackageInfo) error {

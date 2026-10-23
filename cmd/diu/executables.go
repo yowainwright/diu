@@ -73,16 +73,17 @@ func krewDispatchTarget(target executableTarget) executableTarget {
 	if err != nil {
 		return target
 	}
-	output, err := readKubectlHelp(target.Package)
+	commandName := strings.ReplaceAll(target.Package, "_", "-")
+	output, err := readKubectlHelp(commandName)
 	if err != nil {
 		return target
 	}
 	if !bytes.Contains(output, []byte("\n  kubectl ")) {
 		return target
 	}
-	isUnknown := bytes.Contains(output, []byte("Unknown help topic [`"+target.Package+"`]"))
+	isUnknown := bytes.Contains(output, []byte("Unknown help topic [`"+commandName+"`]"))
 	if !isUnknown {
-		target.KubectlBuiltin = target.Package
+		target.KubectlBuiltin = commandName
 	}
 	target.KubectlPath = kubectl
 	return target

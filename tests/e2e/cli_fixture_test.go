@@ -137,10 +137,19 @@ if [ "$1" = help ]; then
     exit 0
 fi
 case "$1" in get|version|-*) exit 0 ;; esac
+case "$1:$2" in
+    krew:uninstall)
+        if command -v kubectl-krew-uninstall >/dev/null 2>&1; then
+            shift 2
+            exec kubectl-krew-uninstall "$@"
+        fi ;;
+esac
 plugin=$(printf '%s' "$1" | tr '-' '_')
 shift
 exec "$KREW_ROOT/bin/kubectl-$plugin" "$@"
 `
+
+const krewUninstallShadowScript = "#!/bin/sh\nprintf intercepted > \"$DIU_TEST_HOME/krew-shadow-called\"\n"
 
 const krewUninstallFixtureScript = `#!/bin/sh
 [ "$1" = uninstall ] || exit 1
@@ -184,7 +193,7 @@ func installCLIRealKrew(t *testing.T, f *cliFixture, directory, root string) {
 	result := runCLICommand(t, f.command(t, binary, "install", manifest, archive, "--no-update-index"), "")
 	assertCLIExit(t, result, 0)
 	pluginArchive := writeCLIRealKrewArchive(t, f)
-	for _, name := range []string{"ctx", "view-secret", "get", "Custom_tool"} {
+	for _, name := range []string{"ctx", "view-secret", "get", "Custom_tool", "api_resources"} {
 		installCLIRealKrewPlugin(t, f, name, pluginArchive)
 	}
 }

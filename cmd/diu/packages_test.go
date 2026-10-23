@@ -779,7 +779,7 @@ func TestUninstallPlanKrewVerifiesInstalledLocation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Join(plan, " "); got != "kubectl krew uninstall ctx" {
+	if got := strings.Join(plan, " "); got != "kubectl-krew uninstall ctx" {
 		t.Fatalf("uninstall plan = %q", got)
 	}
 	assertKrewUnsafeRemoval(t, pkg)
