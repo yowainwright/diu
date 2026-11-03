@@ -42,9 +42,12 @@ func newRootCommand() *command {
 func rootCommand() *command {
 	var shouldShowStyleguide bool
 	rootCmd := &command{
-		Use:     "diu",
-		Short:   "Do I Use - Package Manager Execution Tracker",
-		Long:    `DIU tracks when package managers and global development tools are executed, storing execution data for analysis and auditing.`,
+		Use:   "diu",
+		Short: "Do I Use - Package Manager Execution Tracker",
+		Long: `DIU tracks when package managers and global development tools are executed, storing execution data for analysis and auditing.
+
+Run 'diu setup' once after installation to enable tracking.
+Then open a new zsh terminal or run 'exec zsh -l'.`,
 		RunE:    runRootCommand,
 		Version: versionString,
 	}
