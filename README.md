@@ -12,7 +12,14 @@ brew install yowainwright/tap/diu
 diu setup
 ```
 
-Supports Apple Silicon and Intel Macs. Open a new zsh terminal after setup.
+Run `diu setup` once after installation to enable zsh tracking and start DIU at login.
+Open a new zsh terminal to start tracking, or restart the current shell:
+
+```sh
+exec zsh -l
+```
+
+Subsequent zsh terminals load tracking automatically. Supports Apple Silicon and Intel Macs.
 
 ## Why was this built?
 
@@ -28,12 +35,14 @@ We install a lot of tools on a macs every day. But, do we use them? DUI aims to 
 diu setup
 ```
 
-Enable zsh tracking and start DIU at login.
+Run once after installation to enable zsh tracking and start DIU at login.
 
 Final success output:
 
 ```text
 [ok] DIU setup completed
+Open a new zsh terminal to start tracking, or run:
+  exec zsh -l
 ```
 
 Example `.zshrc` change, using `/Users/you` as the home directory:

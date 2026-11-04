@@ -79,6 +79,9 @@ func TestGetInstalledPackagesCargoPreservesPartialInventory(t *testing.T) {
 }
 
 func TestCargoExecutablesResolvesInstallRoots(t *testing.T) {
+	host := t.TempDir()
+	writeFakeCommand(t, host, ".crates.toml", "[v1]\n")
+	t.Setenv("PATH", filepath.Join(host, "bin"))
 	for _, kind := range []string{"default", "cargo_home", "config"} {
 		t.Run(kind, func(t *testing.T) {
 			root := cargoRootFixture(t, kind)
@@ -95,6 +98,7 @@ func TestCargoExecutablesResolvesInstallRoots(t *testing.T) {
 
 func cargoRootFixture(t *testing.T, kind string) string {
 	t.Helper()
+	t.Setenv("PATH", t.TempDir())
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("CARGO_HOME", "")

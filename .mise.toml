@@ -34,7 +34,7 @@ run = "go build -o diu ./cmd/diu"
 
 [tasks.test]
 description = "Run all tests"
-run = "go test -v -race -coverprofile=coverage.out ./..."
+run = "go test -race -coverprofile=coverage.out ./..."
 
 [tasks.test-unit]
 description = "Run unit tests only"

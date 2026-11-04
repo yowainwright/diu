@@ -26,6 +26,8 @@ func setupProjectWithStopTimeout(stopTimeout time.Duration, waitForExit daemonEx
 		return err
 	}
 	activity.Success("DIU setup completed")
+	cliOutput().UILine("Open a new zsh terminal to start tracking, or run:")
+	cliOutput().UILine("  exec zsh -l")
 	return nil
 }
 
